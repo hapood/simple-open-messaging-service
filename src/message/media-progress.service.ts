@@ -86,6 +86,7 @@ export class MediaProgressService {
         (file) => file.digest === digest,
       ) ?? { digest, name: '' },
       status,
+      bytesPerSecond: null,
       loaded: Number(ready ? row.assetBytes : (row.received ?? 0n)),
       total:
         row.assetBytes !== null

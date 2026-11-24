@@ -2,42 +2,16 @@ use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use futures_util::{FutureExt, StreamExt};
+use futures_util::FutureExt;
 use log::warn;
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
 use crate::ServerSessionState;
 
-const SSE_CONNECT_TIMEOUT: Duration = Duration::from_millis(15_000);
-const SSE_IDLE_TIMEOUT: Duration = Duration::from_millis(30_000);
+#[cfg(test)]
+use crate::http_stream::{ReceiveDeadline, IDLE_TIMEOUT as SSE_IDLE_TIMEOUT};
 const SSE_HEARTBEAT_EVENT: &str = "heartbeat";
-
-/// A stream-scoped receive deadline. Control wakes cannot extend it, and dropping
-/// the attempt drops its timer. Empty chunks do not count as network progress.
-struct ReceiveDeadline {
-    timer: std::pin::Pin<Box<tokio::time::Sleep>>,
-}
-
-impl ReceiveDeadline {
-    fn new() -> Self {
-        Self {
-            timer: Box::pin(tokio::time::sleep(SSE_IDLE_TIMEOUT)),
-        }
-    }
-
-    fn received(&mut self, bytes: usize) {
-        if bytes > 0 {
-            self.timer
-                .as_mut()
-                .reset(tokio::time::Instant::now() + SSE_IDLE_TIMEOUT);
-        }
-    }
-
-    async fn expired(&mut self) {
-        self.timer.as_mut().await;
-    }
-}
 
 // Shared Rust /events protocol. Desktop commands below are transport control adapters;
 // Android's headless JNI adapter uses the same run_loop and typed publication sink.
@@ -67,9 +41,9 @@ struct SseForceLogout {
 }
 
 /// One parsed SSE frame: the `event:` name + the joined `data:` lines as parsed JSON (Null when empty).
-struct ParsedFrame {
-    event: String,
-    data: serde_json::Value,
+pub(crate) struct ParsedFrame {
+    pub(crate) event: String,
+    pub(crate) data: serde_json::Value,
 }
 
 /// Why one stream attempt ended → tells the supervisor loop whether to reconnect (back off + retry) or
@@ -770,6 +744,20 @@ async fn open_one_stream(
                 Ok(cursor) => {
                     // State-only request changes still enter the shared notification lane.
                     state_feed_wakes.send_replace(Some((user_id, -1)));
+                    if let Ok((work, request)) = crate::realtime::WORK_RUN.try_with(|run| run.login_request())
+                        .unwrap_or_else(|_| {
+                            let work = crate::native_db::capture_database_work()?;
+                            let request = crate::login_request::LoginRequest::capture(&state_proxy, work.owner().clone())?;
+                            Ok((work, request))
+                        })
+                    {
+                        crate::native_db::resource_scheduler::schedule_pending(
+                            work,
+                            request,
+                            user_id,
+                            state_events.clone(),
+                        );
+                    }
                     let _ = state_events.emit(
                         "soms-sse-event",
                         SseEventPayload {
@@ -788,13 +776,11 @@ async fn open_one_stream(
     let mut feed_head = ThreadFeedHead::default();
     let url = format!("{}/api/v1/events", origin.trim_end_matches('/'));
     // Bound the connect/headers phase: a server that never responds must not hang startup.
-    let request = tokio::time::timeout(
-        SSE_CONNECT_TIMEOUT,
+    let request = crate::http_stream::open(
         client
             .get(&url)
             .header("accept", "text/event-stream")
-            .header("authorization", format!("Bearer {}", token))
-            .send(),
+            .header("authorization", format!("Bearer {}", token)),
     );
     let response = tokio::select! { biased;
         _ = cancel.cancelled() => return StreamOutcome::Cancelled,
@@ -810,15 +796,9 @@ async fn open_one_stream(
         return StreamOutcome::Cancelled;
     }
     let resp = match response {
-        Ok(Ok(r)) => r,
-        // Surface WHY the connect failed (DNS / TLS / refused / timeout) — without this the supervisor
-        // retried silently and the webview console never learned the cause.
-        Ok(Err(e)) => {
-            warn!("sse connect to {url} failed: {e}");
-            return StreamOutcome::Err;
-        }
-        Err(_) => {
-            warn!("sse connect to {url} timed out");
+        Ok(r) => r,
+        Err(error) => {
+            warn!("sse connect failed: {error:?}");
             return StreamOutcome::Err;
         }
     };
@@ -842,10 +822,8 @@ async fn open_one_stream(
     *opened_once = true;
     emit_state(app, state, ConnectionState::Open);
 
-    let mut buf: Vec<u8> = Vec::with_capacity(8192);
-    let mut stream = resp.bytes_stream();
-    // Keep a persistent deadline: control wakes must not extend receive liveness.
-    let mut idle = ReceiveDeadline::new();
+    let mut framer = sse_framer::SseFramer::new();
+    let mut stream = crate::http_stream::Body::new(resp);
     loop {
         tokio::select! {
             biased;
@@ -864,18 +842,23 @@ async fn open_one_stream(
                     return outcome;
                 }
             }
-            _ = idle.expired() => {
-                warn!("sse stream received no data for 30s; reconnecting");
-                return StreamOutcome::Err;
-            }
             chunk = stream.next() => match chunk {
-                None => return StreamOutcome::StreamClosed,    // server closed → reconnect
-                Some(Err(_)) => return StreamOutcome::Err,     // network error → reconnect
-                Some(Ok(bytes)) => {
-                    idle.received(bytes.len());
+                Ok(None) => return StreamOutcome::StreamClosed,
+                Err(error) => {
+                    warn!("sse receive failed: {error:?}");
+                    return StreamOutcome::Err;
+                },
+                Ok(Some(bytes)) => {
                     if bytes.is_empty() { continue; }
-                    buf.extend_from_slice(&bytes);
-                    while let Some(content) = take_sse_frame(&mut buf) {
+                    for byte in bytes {
+                        let content = match framer.push(byte) {
+                            Ok(Some(content)) => content,
+                            Ok(None) => continue,
+                            Err(error) => {
+                                warn!("sse framing failed: {error}");
+                                return StreamOutcome::Err;
+                            }
+                        };
                         if !app.authenticated() { return StreamOutcome::Cancelled; }
                         if let Some(parsed) = parse_sse_frame(&content) {
                             // if/else-if (not `match parsed.event.as_str()`): the scrutinee of a match
@@ -925,6 +908,21 @@ async fn open_one_stream(
                                         .as_i64()
                                         .filter(|value| *value > 0)
                                     {
+                                        if let Ok((work, request)) = crate::realtime::WORK_RUN
+                                            .try_with(|run| run.login_request())
+                                            .unwrap_or_else(|_| {
+                                                let work = crate::native_db::capture_database_work()?;
+                                                let request = crate::login_request::LoginRequest::capture(&proxy, work.owner().clone())?;
+                                                Ok((work, request))
+                                            })
+                                        {
+                                            crate::native_db::resource_scheduler::schedule_pending(
+                                                work.clone(),
+                                                request,
+                                                user_id,
+                                                crate::realtime::NativeEvents::for_database_work(app.app(), work.clone()),
+                                            );
+                                        }
                                         let ns_proxy = proxy.clone();
                                         let ns_cancel = cancel.child_token();
                                         crate::realtime::spawn(app.clone(), async move {
@@ -1045,48 +1043,8 @@ fn jitter(ceil: u64) -> u64 {
     n % ceil
 }
 
-/// `(true, len)` if a logical SSE line-end (`\n`, `\r`, or `\r\n`) starts at `i`. Line-ends never appear
-/// inside UTF-8 continuation bytes (they're 0x80–0xBF), so byte-wise frame scanning is unambiguous and
-/// no streaming UTF-8 decoder is needed (unlike the JS worker's `TextDecoder({stream:true})`).
-fn line_end_at(buf: &[u8], i: usize) -> (bool, usize) {
-    if i >= buf.len() {
-        return (false, 1);
-    }
-    match buf[i] {
-        b'\n' => (true, 1),
-        b'\r' => {
-            if i + 1 < buf.len() && buf[i + 1] == b'\n' {
-                (true, 2)
-            } else {
-                (true, 1)
-            }
-        }
-        _ => (false, 1),
-    }
-}
-
-/// If a complete frame (text terminated by a blank line — two adjacent logical line-ends) is buffered at
-/// the front of `buf`, return its content and drain through the boundary. `None` when no full frame is
-/// present yet (the caller waits for more bytes).
-fn take_sse_frame(buf: &mut Vec<u8>) -> Option<Vec<u8>> {
-    let n = buf.len();
-    let mut i = 0;
-    while i < n {
-        let (is_end, len1) = line_end_at(buf, i);
-        if is_end {
-            let second = i + len1;
-            let (is_end2, len2) = line_end_at(buf, second);
-            if is_end2 {
-                let boundary_end = second + len2;
-                let content = buf[..i].to_vec();
-                buf.drain(..boundary_end);
-                return Some(content);
-            }
-        }
-        i += len1;
-    }
-    None
-}
+#[path = "sse_framer.rs"]
+pub(crate) mod sse_framer;
 
 /// Parse one frame's text into `{event, data}`. Implements the SSE wire slice the JS worker does: a line
 /// starting with `:` is a comment; one leading space after the `field:` colon is stripped; multiple
@@ -1094,7 +1052,7 @@ fn take_sse_frame(buf: &mut Vec<u8>) -> Option<Vec<u8>> {
 /// → `None` (dropped — e.g. the leading `: connected`). A non-empty `data:` payload that fails to parse
 /// as JSON → `None` (drop the frame, keep the stream alive — NOT the worker's `JSON.parse`-throws-kills-
 /// the-stream behavior).
-fn parse_sse_frame(content: &[u8]) -> Option<ParsedFrame> {
+pub(crate) fn parse_sse_frame(content: &[u8]) -> Option<ParsedFrame> {
     let text = std::str::from_utf8(content).ok()?;
     let mut event: Option<String> = None;
     let mut data_lines: Vec<String> = Vec::new();

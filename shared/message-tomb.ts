@@ -19,7 +19,8 @@ export interface MessageDeletionMarker {
 }
 
 /** A wire-only history tomb with its original slot identity, never a local display row.
- * Persistent caches retain only MessageDeletionMarker; mounted UI rows own their presentation. */
+ * Persistent caches store coordinate-only TOMB stubs directly in `messages`;
+ * mounted UI rows own presentation. */
 export type MessageTomb = MessageSlotIdentity & MessageDeletionMarker;
 
 export function messageTomb(

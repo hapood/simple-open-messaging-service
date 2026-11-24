@@ -690,7 +690,6 @@ describe('departure system message paths', () => {
         applyDeltaMirrorMetaItemInTx(tx, {
           group: {
             account: h.parent.account,
-            domain: h.peerDomain,
             publisherNamespaceId: h.namespaceId,
           },
           item: {
@@ -847,7 +846,6 @@ describe('departure system message paths', () => {
             .get(FederationThreadQueryDenialService)
             .handleThreadQueryForbidden(
               threadId,
-              peerDomain,
               namespaceId,
               state!.authorizationEpoch,
             );
@@ -939,7 +937,7 @@ describe('departure system message paths', () => {
       expect(
         await app
           .get(FederationThreadSourceService)
-          .resolve(h.threadId, peerDomain, namespaceId),
+          .resolve(h.threadId, namespaceId),
       ).toMatchObject({
         kind: 'GROUP',
         localGroupAuthority: path === 'hosted',
@@ -952,7 +950,6 @@ describe('departure system message paths', () => {
           .get(FederationThreadQueryDenialService)
           .handleThreadQueryForbidden(
             h.threadId,
-            peerDomain,
             namespaceId,
             state!.authorizationEpoch,
           ),
@@ -983,7 +980,7 @@ describe('departure system message paths', () => {
         await expect(
           app
             .get(FederationThreadSourceService)
-            .resolve(h.threadId, peerDomain, namespaceId),
+            .resolve(h.threadId, namespaceId),
         ).resolves.toMatchObject({ kind: 'GROUP', localGroupAuthority: false });
         return;
       }
@@ -1033,9 +1030,7 @@ describe('departure system message paths', () => {
             ?.active,
         ).toBe(false);
       await expect(
-        app
-          .get(FederationThreadSourceService)
-          .resolve(h.threadId, peerDomain, namespaceId),
+        app.get(FederationThreadSourceService).resolve(h.threadId, namespaceId),
       ).rejects.toThrow(FederationThreadSourceInactiveError);
     },
   );

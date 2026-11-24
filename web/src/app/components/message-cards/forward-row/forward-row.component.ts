@@ -9,7 +9,7 @@ import { TranslocoPipe } from '@jsverse/transloco';
 import { AvatarComponent } from '../../user-avatar/avatar.component';
 import type { AvatarView } from '../../user-avatar/avatar-view';
 import { messageSenderPresentation } from '../message-sender';
-import type { ChatMsgData } from '../chat-item';
+import type { ForwardMessageItem } from '../chat-item';
 import { DateRowComponent } from '../date-row/date-row.component';
 import { QuoteBlockComponent } from '../quote-block/quote-block.component';
 import type { HistoryAnchor } from '../../../services/history-anchor';
@@ -30,7 +30,7 @@ import { parseForwardCard } from './forward-card';
 })
 export class ForwardRowComponent {
   readonly senderView = input<AvatarView>();
-  readonly data = input.required<ChatMsgData>();
+  readonly data = input.required<ForwardMessageItem>();
   readonly quoteJump = output<HistoryAnchor>();
   readonly isShowHead = input(false);
   readonly isGroupStart = input(false);
@@ -46,15 +46,4 @@ export class ForwardRowComponent {
   readonly showName = this.sender.showName;
   readonly pos = computed(() => (this.isShowHead() ? 'head' : 'body'));
   readonly card = computed(() => parseForwardCard(this.data().text));
-  readonly statusTick = computed(
-    () => this.data().isSelf && !!this.data().status,
-  );
-  readonly isSending = computed(
-    () => this.data().isSelf && this.data().status === 'sending',
-  );
-  readonly isFailed = computed(
-    () => this.data().isSelf && this.data().status === 'failed',
-  );
-  readonly retry = output<number>();
-  readonly cancel = output<number>();
 }

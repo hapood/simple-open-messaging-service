@@ -18,6 +18,7 @@ impl NotificationOpening {
         (target.valid() && valid_seq).then_some(Self { target, latest_seq })
     }
 
+    #[cfg(any(target_os = "android", target_os = "macos", test))]
     pub(crate) fn parse(raw: &str) -> Option<Self> {
         let value: Self = serde_json::from_str(raw).ok()?;
         Self::new(value.target, value.latest_seq)

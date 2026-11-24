@@ -5,6 +5,8 @@ pub(crate) mod requests;
 pub(crate) use target::NotificationTarget;
 pub(crate) mod content;
 pub(crate) mod delivery;
+pub(crate) mod restoration;
+pub(crate) mod platform;
 pub(crate) mod presentation;
 pub(crate) mod runtime;
 #[cfg(any(target_os = "macos", test))]
@@ -24,7 +26,7 @@ async fn refresh_requests_owned(work: DatabaseWork, user_id: i64) -> Result<(), 
     batch.requests_existing_only = true;
     #[cfg(target_os = "android")]
     { crate::android_notifications::deliver_batch(batch, false).await }
-    #[cfg(not(target_os = "android"))]
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
     {
         #[cfg(desktop)]
         if let Some(app) = APP.get() {
@@ -306,8 +308,6 @@ mod tests {
                 alias: None,
                 message_end_seq: 10,
                 thread_profile_rev: 0,
-                tombstone_end_seq: 4,
-                group_meta_feed_end_id: None,
                 join_request_end_feed_id: 0,
                 join_request_read_feed_id: -1,
                 group_invite_end_feed_id: 0,

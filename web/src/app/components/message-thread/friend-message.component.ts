@@ -108,16 +108,11 @@ import { ChatboxStickyOverlaysComponent } from '../message-cards/chatbox-sticky-
 import { uuid } from '../../lib/uuid';
 import { assetUrl, isAndroidNative } from '../../services/runtime';
 import { SessionLifecycleService } from '../../services/session-lifecycle.service';
-import {
-  MediaAvailabilityRegistration,
-  MediaAvailabilityService,
-} from '../../services/media-availability.service';
 import { UserService } from '../../services/user.service';
 import { WebsocketService } from '../../services/websocket.service';
 import { LayoutService } from '../../services/layout.service';
 import { ConversationListService } from '../../services/conversation-list.service';
 import { GalleryViewerService } from '../gallery-viewer/gallery-viewer.service';
-import { FileDetailService } from '../file-detail-viewer/file-detail-viewer.service';
 import { NavStateMachineService } from '../../services/nav-state.service';
 import {
   displayThreadName,
@@ -178,7 +173,6 @@ import {
 } from '../../lib/message-entity';
 import type { ChatMember } from '../chat-editor/chat-editor.component';
 import { StableReadTracker } from './stable-read-tracker';
-import { watchMountedMessageDeletions } from './mounted-message-deletion';
 import {
   applyMessageSelectionState,
   messageMemberIds,
@@ -288,7 +282,6 @@ export class MessageThreadComponent implements OnDestroy {
   });
   private readonly envInjector = inject(EnvironmentInjector);
   private readonly threadAdapter = inject(MESSAGE_THREAD_ADAPTER);
-  private readonly mediaAvailability = inject(MediaAvailabilityService);
   private readonly userService = inject(UserService);
   readonly selfUserId = computed(() => this.userService.sessionProfile()?.id);
   private readonly profileRepo = inject(ProfileRepository);
@@ -296,7 +289,6 @@ export class MessageThreadComponent implements OnDestroy {
   private readonly wsService = inject(WebsocketService);
   private readonly layout = inject(LayoutService);
   private readonly galleryViewer = inject(GalleryViewerService);
-  private readonly fileDetail = inject(FileDetailService);
   private readonly nav = inject(NavStateMachineService);
   private readonly convList = inject(ConversationListService);
   private readonly transfers = inject(MediaTransferService);
@@ -552,6 +544,19 @@ export class MessageThreadComponent implements OnDestroy {
         ) ||
       this.pasteOpen(),
   );
+  /** A higher layer requires the composer to step aside. The browser composer stays mounted under every
+   *  routed dialog; the native composer stays under non-chatbox dialogs via `nativeComposerOccluded`. */
+  readonly composerAvoided = computed(() =>
+    this.nativeComposer.supported
+      ? this.chatboxDialogOpen() || this.nativeComposerOccluded()
+      : this.dialogOpen() || this.nativeComposerOccluded(),
+  );
+  /** Static gray silhouette that permanently occupies the composer slot beneath the real composer, so a
+   *  composer sliding out reveals it instead of an empty gap. Banner states and the selection bar own the
+   *  slot themselves. */
+  readonly composerPlaceholderVisible = computed(
+    () => !!this.composerBinding() && !this.selectionMode(),
+  );
   /** Sending tasks live outside history and do not suppress its empty state. */
   readonly threadEmpty = computed(() => this.mountedMessageCount() === 0);
   /** Hero-card content for the empty-thread placeholder. P2P shows the peer; GROUP shows the group. The name
@@ -764,7 +769,6 @@ export class MessageThreadComponent implements OnDestroy {
   private closeDeletedMessageSurfaces(threadId: number, seq: number): void {
     // These surfaces can outlive the message's mounted row.
     this.galleryViewer.closeIfDeleted(threadId, seq);
-    this.fileDetail.closeIfDeleted(threadId, seq);
     this.messageInteraction.removeMessage(seq);
   }
 
@@ -1102,21 +1106,12 @@ export class MessageThreadComponent implements OnDestroy {
             ? null
             : absorbAlbumTail(target, incoming),
       },
-      entryGapLabel: (state) =>
-        String(
-          this.transloco.translate(
-            {
-              idle: 'chat.loadSkippedMessages',
-              loading: 'chat.loadingSkippedMessages',
-              failed: 'chat.retrySkippedMessages',
-            }[state],
-          ),
-        ),
       onWindowJump: (options) => this.replaceMessageWindow(options),
       onScroll: (info) => this.onScroll(info),
       onViewportPaint: () => this.updateStickyOverlays(),
-      onItemMounted: (item, rendered) =>
-        this.bindMessageDeletion(rendered, item),
+      committedTombs$: this.threadAdapter.deletedLive$,
+      onMountedTomb: ({ seq, type }) =>
+        this.replaceMountedDeletedMessage(seq, type),
       onFullyVisibleEnter: (entries) => {
         for (const entry of entries) {
           this.pulseVisibleMention(entry.item, entry.el);
@@ -1145,8 +1140,8 @@ export class MessageThreadComponent implements OnDestroy {
       this.threadAdapter.deletedLive$.subscribe({
         next: ({ threadId, deletions }) => {
           if (threadId !== binding.threadId) return;
-          // The thread subscription owns detached surfaces only. Each mounted body
-          // owns its own row mutation, including the durable post-mount recheck.
+          // This subscription owns detached surfaces only. The kernel consumes
+          // committed tombs for mounted bodies after load-result application.
           for (const { seq } of deletions)
             this.closeDeletedMessageSurfaces(threadId, seq);
         },
@@ -1204,32 +1199,9 @@ export class MessageThreadComponent implements OnDestroy {
       trd,
       this.convList.entryReadSeq(trd.threadId),
       {
-        onNewerAvailable: () => {
+        onNewerAvailable: (_seq, previousLatestSeq) => {
           this.scrollState.noteNewerAvailable();
-          this.scroller?.notifyNewerAvailable?.();
-        },
-        // Shared media availability change → re-render the one card in place.
-        // updateItemData is synchronous + height-neutral, so no async/catch and no anchor shift.
-        onMediaStatus: (seq: number, status: MediaStatus) => {
-          const data = this.scroller?.getMountedGeometry(seq)?.item.data;
-          if (!data || data.type !== 'msg') return;
-          const images = (data.images ?? []).map((image) =>
-            image.msgId === seq ? { ...image, status } : image,
-          );
-          const states = images.map(
-            (image) => image.status ?? MEDIA_STATUS.READY,
-          );
-          const aggregate = states.includes(MEDIA_STATUS.FAILED)
-            ? MEDIA_STATUS.FAILED
-            : states.includes(MEDIA_STATUS.DOWNLOADING)
-              ? MEDIA_STATUS.DOWNLOADING
-              : states.includes(MEDIA_STATUS.PENDING)
-                ? MEDIA_STATUS.PENDING
-                : status;
-          this.scroller?.updateItemData(seq, {
-            images,
-            mediaStatus: aggregate,
-          });
+          this.scroller?.notifyNewerAvailable?.(previousLatestSeq);
         },
         onQuoteUpdated: (replySeq, quote) => {
           this.scroller?.mutateItem(replySeq, (item) => ({
@@ -1370,11 +1342,9 @@ export class MessageThreadComponent implements OnDestroy {
       isGroupStart,
       showDate,
       this.envInjector,
-      (msgId) => this.retrySend(msgId),
       (images, index) =>
         this.galleryViewer.open(images, index, this.threadId() ?? 0),
-      (data) => this.fileDetail.open(data, this.threadId() ?? 0),
-      (clientMessageId) => void this.cancelPending(clientMessageId),
+      (data) => this.galleryViewer.openFile(data, this.threadId() ?? 0),
       isUnreadStart
         ? String(this.transloco.translate('chat.unreadDivider'))
         : undefined,
@@ -1394,7 +1364,6 @@ export class MessageThreadComponent implements OnDestroy {
       this.selectedMessageIds(),
       contextId,
     );
-    this.bindMediaAvailability(rendered, item);
     if (item.data.quote && this.source?.mountQuote) {
       const unregister = this.source.mountQuote(item.id, item.data.quote);
       const destroy = rendered.destroy.bind(rendered);
@@ -1476,117 +1445,6 @@ export class MessageThreadComponent implements OnDestroy {
     this.tailCueVisible.set(visible);
   }
 
-  private bindMessageDeletion(
-    rendered: CbElement<ChatItemData>,
-    initialItem: CbItem<ChatItemData>,
-  ): void {
-    const binding = this.lifecycle.binding;
-    const scroller = this.scroller;
-    if (!binding || !scroller) return;
-    let unregister: (() => void) | undefined;
-    let key = '';
-    const sync = (item: CbItem<ChatItemData>) => {
-      const seqs =
-        item.data.type === 'msg'
-          ? (item.ids ?? [item.id]).filter((seq) => seq >= 0)
-          : [];
-      const nextKey = JSON.stringify(seqs);
-      if (nextKey === key) return;
-      key = nextKey;
-      unregister?.();
-      unregister = undefined;
-      if (!seqs.length) return;
-      unregister = watchMountedMessageDeletions(
-        this.threadAdapter,
-        binding.threadId,
-        seqs,
-        binding.signal,
-        ({ seq, type }) => {
-          if (this.lifecycle.binding !== binding || this.scroller !== scroller)
-            return;
-          // A replaced row with the same coordinate belongs to a new registration.
-          if (scroller.getMountedGeometry(seq)?.el !== rendered.el) return;
-          this.replaceMountedDeletedMessage(seq, type);
-        },
-        (error) => console.error('[chat] mounted deletion check failed', error),
-      );
-    };
-    sync(initialItem);
-    const update = rendered.update.bind(rendered);
-    rendered.update = (item, prev) => {
-      update(item, prev);
-      sync(item);
-    };
-    const destroy = rendered.destroy.bind(rendered);
-    rendered.destroy = () => {
-      unregister?.();
-      destroy();
-    };
-  }
-
-  private bindMediaAvailability(
-    rendered: CbElement<ChatItemData>,
-    initialItem: CbItem<ChatItemData>,
-  ): void {
-    const registrations = new Map<number, MediaAvailabilityRegistration>();
-    const sync = (item: CbItem<ChatItemData>) => {
-      const wanted = this.mediaStatuses(item);
-      for (const [seq, registration] of registrations) {
-        if (!wanted.has(seq)) {
-          registration.unregister();
-          registrations.delete(seq);
-        }
-      }
-      const threadId = this.threadId() ?? 0;
-      if (threadId === 0) return;
-      for (const [seq, status] of wanted) {
-        if (!registrations.has(seq)) {
-          registrations.set(
-            seq,
-            this.mediaAvailability.register(threadId, seq, status),
-          );
-        }
-      }
-    };
-    sync(initialItem);
-    const baseUpdate = rendered.update.bind(rendered);
-    rendered.update = (item, prev) => {
-      baseUpdate(item, prev);
-      sync(item);
-    };
-    const baseDestroy = rendered.destroy.bind(rendered);
-    rendered.destroy = () => {
-      for (const registration of registrations.values()) {
-        registration.unregister();
-      }
-      registrations.clear();
-      baseDestroy();
-    };
-  }
-
-  private mediaStatuses(item: CbItem<ChatItemData>): Map<number, MediaStatus> {
-    const statuses = new Map<number, MediaStatus>();
-    const data = item.data;
-    if (data.type !== 'msg' || item.id < 1) return statuses;
-    if (
-      !['IMAGE', 'VIDEO', 'FILE', 'AUDIO', 'GALLERY'].includes(data.contentType)
-    ) {
-      return statuses;
-    }
-    for (const image of data.images ?? []) {
-      if (image.msgId && image.msgId > 0) {
-        statuses.set(
-          image.msgId,
-          image.status ?? data.mediaStatus ?? MEDIA_STATUS.READY,
-        );
-      }
-    }
-    if (statuses.size === 0 && data.msgId > 0) {
-      statuses.set(data.msgId, data.mediaStatus ?? MEDIA_STATUS.READY);
-    }
-    return statuses;
-  }
-
   private onMessageInteraction(
     intent: 'select' | 'open-menu',
     item: CbItem<ChatItemData>,
@@ -1603,7 +1461,6 @@ export class MessageThreadComponent implements OnDestroy {
               memberId,
             );
       const itemCount =
-        (this.canCancelSend(contextItem.data) ? 1 : 0) +
         (this.canCopyMessage(contextItem.data) ? 1 : 0) +
         (this.canQuote(contextItem.data) ? 1 : 0) +
         (this.canDirectForward(contextItem.data) ? 1 : 0) +
@@ -1847,8 +1704,6 @@ export class MessageThreadComponent implements OnDestroy {
   canWithdrawOrReport(message: ChatMsgData): boolean {
     return (
       isConfirmedMessage(message) &&
-      message.status !== 'sending' &&
-      message.status !== 'failed' &&
       message.contentType !== 'SYSTEM' &&
       (!message.isSelf || this.canWithdraw(message))
     );
@@ -1937,30 +1792,6 @@ export class MessageThreadComponent implements OnDestroy {
 
   canQuote(message: ChatMsgData): boolean {
     return isConfirmedMessage(message) && message.contentType !== 'SYSTEM';
-  }
-
-  /** Pending rows (optimistic sends whose server echo has not replaced the
-   *  placeholder) expose exactly one context action: cancel the in-flight
-   *  send. Every other capability needs a confirmed seq. Cancel follows the
-   *  media-row bubble convention (`isSelf && status === 'sending'`): once the
-   *  HTTP send is accepted the server has committed, so `accepted`/`failed`
-   *  rows lose the cancel entry (`accepted` keeps only the echo spinner;
-   *  `failed` keeps the bubble retry). */
-  canCancelSend(message: ChatMsgData): boolean {
-    return (
-      message.type === 'msg' &&
-      message.isSelf &&
-      message.status === 'sending' &&
-      !isConfirmedMessage(message)
-    );
-  }
-
-  cancelContextSend(): void {
-    const context = this.messageContextMenu();
-    if (!context || !this.canCancelSend(context.targetItem.data)) return;
-    const clientMessageId = context.sourceItem.clientMessageId;
-    this.closeContextMenu();
-    if (clientMessageId) void this.cancelPending(clientMessageId);
   }
 
   openSelectedForwardDialog(): void {

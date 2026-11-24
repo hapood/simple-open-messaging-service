@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
-import { of, Subject } from 'rxjs';
+import { of, Subject, type Observable } from 'rxjs';
+import type { DigestDownloadProgress } from '../federation/federation-download-scheduler.js';
 import type { MessageEvent } from '@nestjs/common';
 import type { FastifyRequest } from 'fastify';
 import { MessageController } from './message.controller.js';
@@ -7,7 +8,8 @@ import { MessageController } from './message.controller.js';
 function setup() {
   const hasMessageMediaDigest = vi.fn().mockResolvedValue(true);
   const participant = vi.fn().mockResolvedValue({});
-  const observeDigest = vi.fn(() => of({ received: 2, total: 4 }));
+  const observeDigest = vi.fn((): Observable<DigestDownloadProgress | null> => of({ received: 2, total: 4, status: 'downloading', bytesPerSecond: 2 }));
+  const hasDigest = vi.fn(() => true);
   const terminal = new Subject<MessageEvent>();
   const controller = new MessageController(
     { queryMediaStatus: async () => [{}], hasMessageMediaDigest } as never,
@@ -27,7 +29,7 @@ function setup() {
     {} as never,
     {} as never,
     { registerMediaFileProgress: () => terminal } as never,
-    { observeDigest, hasDigest: () => false } as never,
+    { observeDigest, hasDigest } as never,
     { snapshot: vi.fn() } as never,
   );
   const req = { user: { userId: 1 } } as FastifyRequest;
@@ -69,6 +71,7 @@ describe('authorized digest download progress', () => {
           status: 'downloading',
           loaded: 2,
           total: 4,
+          bytesPerSecond: 2,
         }),
       }),
     );

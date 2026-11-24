@@ -1,16 +1,19 @@
 import { useTranslation } from 'react-i18next';
 import { Badge } from '@/components/ui/badge';
-import type { FederationTrustLevel } from '@/types/api';
+import type { FederationPeerRuntimeStatus } from '@/types/api';
 
 /** The trust-level badge, color-coded so the lifecycle state is scannable at a glance in the list +
  *  detail header. The variant set has no green/amber, so lifecycle colors are className
  *  overrides on the outline variant; halted reuses the destructive variant. */
 const STYLE: Record<
-  FederationTrustLevel,
+  FederationPeerRuntimeStatus,
   { variant?: 'destructive' | 'outline'; cls: string }
 > = {
   available: {
     cls: 'border-transparent bg-emerald-500/15 text-emerald-700 dark:text-emerald-400',
+  },
+  cooldown: {
+    cls: 'border-transparent bg-sky-500/15 text-sky-700 dark:text-sky-400',
   },
   establishing: {
     cls: 'border-transparent bg-blue-500/15 text-blue-700 dark:text-blue-400',
@@ -25,7 +28,7 @@ const STYLE: Record<
   halted: { variant: 'destructive', cls: '' },
 };
 
-export function PeerStatusBadge({ level }: { level: FederationTrustLevel }) {
+export function PeerStatusBadge({ level }: { level: FederationPeerRuntimeStatus }) {
   const { t } = useTranslation();
   const s = STYLE[level] ?? STYLE.unrecognized;
   return (

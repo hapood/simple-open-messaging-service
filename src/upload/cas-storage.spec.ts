@@ -1,5 +1,6 @@
 import { Logger } from '@nestjs/common';
 import { createHash } from 'node:crypto';
+import { tmpdir } from 'node:os';
 import {
   mkdtemp,
   mkdir,
@@ -25,7 +26,7 @@ describe('atomic CAS publication', () => {
   const bytes = Buffer.from('complete original bytes');
 
   beforeEach(async () => {
-    root = await mkdtemp('/tmp/opencode/cas-publication-');
+    root = await mkdtemp(join(tmpdir(), 'cas-publication-'));
     source = join(root, 'source.part');
     target = join(
       root,

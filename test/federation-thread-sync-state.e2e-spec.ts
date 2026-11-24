@@ -295,6 +295,23 @@ describe('federation thread synchronization state', () => {
   }
 
   it('re-enters with a valid gap when the retained remote cursor is ahead of the local head', async () => {
+    await database.db
+      .update(messageThread)
+      .set({ curSeq: 50 })
+      .where(eq(messageThread.id, threadId));
+    await database.db.insert(message).values(
+      withMessageDigest({
+        threadId,
+        seq: 50,
+        originSeq: 50,
+        publisherNamespaceId: namespaceId,
+        creatorAccount: 'bob',
+        profileNamespaceId: namespaceId,
+        contentType: 'PURE_TEXT',
+        content: JSON.stringify({ text: 'anchor 50' }),
+        updatedAt: new Date(),
+      }),
+    );
     await database.db.insert(federationThreadSyncState).values({
       threadId,
       namespaceId,
@@ -311,19 +328,20 @@ describe('federation thread synchronization state', () => {
 
     await initializeTail(100);
     expect(await states.require(threadId, namespaceId)).toMatchObject({
-      messageProcessedThroughSeq: 99,
+      messageTargetSeq: 100,
+      messageProcessedThroughSeq: 50,
       authorizationEpoch: 1,
     });
     expect(
       await database.db.query.federationThreadHistoryGap.findFirst({
         where: eq(federationThreadHistoryGap.threadId, threadId),
       }),
-    ).toMatchObject({ startSeq: 51, endSeq: 99, messageSeqOffset: 0 });
+    ).toMatchObject({ startSeq: 51, endSeq: 100, messageSeqOffset: 0 });
     expect(
       await database.db.query.messageThread.findFirst({
         where: eq(messageThread.id, threadId),
       }),
-    ).toMatchObject({ curSeq: 99 });
+    ).toMatchObject({ curSeq: 100 });
   });
 
   it('sets read from the reserved local window start, not subsequent forward targets', async () => {
@@ -342,9 +360,9 @@ describe('federation thread synchronization state', () => {
       database.db.query.accountThreadState.findFirst({
         where: eq(accountThreadState.id, reader.id),
       });
-    expect(await read()).toMatchObject({ lastReadSeq: 109, unreadCount: 0 });
+    expect(await read()).toMatchObject({ lastReadSeq: 110, unreadCount: 0 });
     await initializeTail(200);
-    expect(await read()).toMatchObject({ lastReadSeq: 109 });
+    expect(await read()).toMatchObject({ lastReadSeq: 110 });
     await database.db
       .update(messageThread)
       .set({ authorizationEpoch: 1, curSeq: 110 })
@@ -372,7 +390,7 @@ describe('federation thread synchronization state', () => {
           await tx.query.accountThreadState.findFirst({
             where: eq(accountThreadState.id, reader.id),
           }),
-        ).toMatchObject({ lastReadSeq: 99 });
+        ).toMatchObject({ lastReadSeq: 100 });
         throw rollback;
       }),
     ).rejects.toBe(rollback);
@@ -393,12 +411,12 @@ describe('federation thread synchronization state', () => {
     ).toMatchObject({ curSeq: 0 });
   });
 
-  it('keeps the newest advertised message forward and creates an inclusive older gap', async () => {
+  it('includes the newest advertised message in the inclusive reverse gap', async () => {
     await initializeTail(100);
 
     await expect(states.require(threadId, namespaceId)).resolves.toMatchObject({
       messageTargetSeq: 100,
-      messageProcessedThroughSeq: 99,
+      messageProcessedThroughSeq: 0,
       deletionTargetSeq: 0,
       deletionProcessedThroughSeq: 0,
       authorizationEpoch: 0,
@@ -407,25 +425,25 @@ describe('federation thread synchronization state', () => {
       .select()
       .from(federationThreadHistoryGap)
       .where(eq(federationThreadHistoryGap.threadId, threadId));
-    expect(gap).toMatchObject({ startSeq: 1, endSeq: 99, recoverable: true });
+    expect(gap).toMatchObject({ startSeq: 1, endSeq: 100, recoverable: true });
   });
 
   it('commits STUB insertion and reverse gap shrink in one transaction', async () => {
     await initializeTail(100);
-    const state = await states.require(threadId, namespaceId);
-    const applyDependencies = vi.fn();
+    const window = await states.resolveReverseWindow(threadId, namespaceId);
+    const writeMessages = vi.fn();
 
     await database.db.transaction((tx) =>
       FederationThreadSyncStateService.commitReverseBatchInTx(tx, {
         threadId,
         namespaceId,
         authorizationEpoch: 0,
-        gapId: state.activeGapId!,
-        beforeSeq: 100,
+        gapId: window!.gapId,
+        beforeSeq: 101,
         scannedThrough: 50,
         throughSeq: 1,
         closesGap: false,
-        applyDependencies: async () => {
+        writeMessages: async () => {
           await tx.insert(message).values(
             withMessageDigest({
               threadId,
@@ -446,7 +464,7 @@ describe('federation thread synchronization state', () => {
               updatedAt: new Date(),
             }),
           );
-          await applyDependencies();
+          await writeMessages();
         },
       }),
     );
@@ -454,19 +472,19 @@ describe('federation thread synchronization state', () => {
     const [gap] = await database.db
       .select()
       .from(federationThreadHistoryGap)
-      .where(eq(federationThreadHistoryGap.id, state.activeGapId!));
+      .where(eq(federationThreadHistoryGap.id, window!.gapId));
     expect(gap).toMatchObject({ startSeq: 1, endSeq: 49 });
     await expect(
       database.db.query.message.findFirst({
         where: eq(message.threadId, threadId),
       }),
     ).resolves.toMatchObject({ seq: 99, localState: 'STUB' });
-    expect(applyDependencies).toHaveBeenCalledOnce();
+    expect(writeMessages).toHaveBeenCalledOnce();
   });
 
   it('invalidates buffered facts on P2P deactivation without advancing the epoch on retries', async () => {
     await initializeTail(100);
-    const state = await states.require(threadId, namespaceId);
+    const window = await states.resolveReverseWindow(threadId, namespaceId);
     const [pair] = await database.db
       .insert(relationshipPair)
       .values({
@@ -519,7 +537,7 @@ describe('federation thread synchronization state', () => {
         })
       )?.authorizationEpoch,
     ).toBe(1);
-    const applyDependencies = vi.fn();
+    const writeMessages = vi.fn();
 
     await expect(
       database.db.transaction((tx) =>
@@ -527,22 +545,22 @@ describe('federation thread synchronization state', () => {
           threadId,
           namespaceId,
           authorizationEpoch: 0,
-          gapId: state.activeGapId!,
-          beforeSeq: 100,
+          gapId: window!.gapId,
+          beforeSeq: 101,
           scannedThrough: 50,
           throughSeq: 1,
           closesGap: false,
-          applyDependencies,
+          writeMessages,
         }),
       ),
     ).rejects.toThrow('federation round authorization epoch changed');
 
-    expect(applyDependencies).not.toHaveBeenCalled();
+    expect(writeMessages).not.toHaveBeenCalled();
     const [gap] = await database.db
       .select()
       .from(federationThreadHistoryGap)
-      .where(eq(federationThreadHistoryGap.id, state.activeGapId!));
-    expect(gap).toMatchObject({ startSeq: 1, endSeq: 99 });
+      .where(eq(federationThreadHistoryGap.id, window!.gapId));
+    expect(gap).toMatchObject({ startSeq: 1, endSeq: 100 });
     expect(
       await database.db.query.messageThread.findFirst({
         where: eq(messageThread.id, threadId),
@@ -562,26 +580,27 @@ describe('federation thread synchronization state', () => {
     ).toMatchObject({ federationRoundsEnabled: true, authorizationEpoch: 1 });
   });
 
-  it('deletes the final gap only after switching synchronization state to terminal', async () => {
+  it('deletes the final gap when closing the last interval', async () => {
     await initializeTail(2);
-    const state = await states.require(threadId, namespaceId);
+    const window = await states.resolveReverseWindow(threadId, namespaceId);
 
     await database.db.transaction((tx) =>
       FederationThreadSyncStateService.commitReverseBatchInTx(tx, {
         threadId,
         namespaceId,
         authorizationEpoch: 0,
-        gapId: state.activeGapId!,
-        beforeSeq: 2,
+        gapId: window!.gapId,
+        beforeSeq: 3,
         scannedThrough: 1,
         throughSeq: 1,
         closesGap: true,
+        writeMessages: async () => undefined,
       }),
     );
 
-    await expect(states.require(threadId, namespaceId)).resolves.toMatchObject({
-      activeGapId: null,
-    });
+    await expect(
+      states.resolveReverseWindow(threadId, namespaceId),
+    ).resolves.toBeNull();
     const gaps = await database.db
       .select()
       .from(federationThreadHistoryGap)
@@ -686,47 +705,38 @@ describe('federation thread synchronization state', () => {
             },
           ),
         );
-      const first = await states.require(threadId, namespaceId);
-      const second = await states.require(threadId, other.id);
-      expect(first.activeGapId).not.toBe(second.activeGapId);
-      await expect(
-        database.db
-          .update(federationThreadSyncState)
-          .set({ activeGapId: second.activeGapId })
-          .where(
-            and(
-              eq(federationThreadSyncState.threadId, threadId),
-              eq(federationThreadSyncState.namespaceId, namespaceId),
-            ),
-          ),
-      ).rejects.toMatchObject({ cause: { code: '23503' } });
-      await database.db.transaction((tx) =>
+      const first = await states.resolveReverseWindow(threadId, namespaceId);
+      const second = await states.resolveReverseWindow(threadId, other.id);
+      expect(first!.gapId).not.toBe(second!.gapId);
+      await database.db.transaction<unknown>((tx) =>
         mode === 'commit'
           ? FederationThreadSyncStateService.commitReverseBatchInTx(tx, {
               threadId,
               namespaceId,
               authorizationEpoch: 0,
-              gapId: first.activeGapId!,
-              beforeSeq: 10,
+              gapId: first!.gapId,
+              beforeSeq: 11,
               scannedThrough: 1,
               throughSeq: 1,
               closesGap: true,
+              writeMessages: async () => undefined,
             })
           : FederationThreadSyncStateService.markReverseGapUnavailableInTx(tx, {
               threadId,
               namespaceId,
               authorizationEpoch: 0,
-              gapId: first.activeGapId!,
+              gapId: first!.gapId,
+              beforeSeq: 11,
             }),
       );
-      expect(await states.require(threadId, namespaceId)).toMatchObject({
-        activeGapId: null,
-      });
+      await expect(
+        states.resolveReverseWindow(threadId, namespaceId),
+      ).resolves.toBeNull();
       expect(
         await states.resolveReverseWindow(threadId, other.id),
       ).toMatchObject({
-        gapId: second.activeGapId,
-        beforeSeq: 10,
+        gapId: second!.gapId,
+        beforeSeq: 11,
         throughSeq: 1,
       });
     },

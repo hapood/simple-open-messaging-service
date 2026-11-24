@@ -1,4 +1,7 @@
-import type { AuthoredMessageItem } from '../message-cards/chat-item';
+import type {
+  AuthoredMessageItem,
+  AuthoredMessageContent,
+} from '../message-cards/chat-item';
 import {
   canCopyMessage,
   messageCopyBody,
@@ -16,7 +19,10 @@ const labels = {
 };
 
 function message(
-  overrides: Partial<AuthoredMessageItem> = {},
+  overrides: Partial<
+    Omit<AuthoredMessageItem, 'contentType' | 'images' | 'file'>
+  > &
+    (AuthoredMessageContent | { contentType?: 'PURE_TEXT' | 'FORWARD' }) = {},
 ): AuthoredMessageItem {
   return {
     type: 'msg',
@@ -43,7 +49,20 @@ describe('message copy', () => {
       'FILE',
       'GALLERY',
     ] as const) {
-      expect(canCopyMessage(message({ contentType }))).toBe(false);
+      const content: AuthoredMessageContent =
+        contentType === 'FILE'
+          ? {
+              contentType,
+              images: null,
+              file: {
+                url: '/uploads/test',
+                name: 'test',
+                size: 1,
+                mimeType: 'application/octet-stream',
+              },
+            }
+          : { contentType, images: [], file: null };
+      expect(canCopyMessage(message(content))).toBe(false);
     }
     expect(canCopyMessage(message({ contentType: 'PURE_TEXT' }))).toBe(true);
   });
@@ -69,6 +88,7 @@ describe('message copy', () => {
       messageCopyBody(
         message({
           contentType: 'FILE',
+          images: null,
           file: {
             name: '计划.pdf',
             url: '/uploads/private-token',
@@ -86,6 +106,7 @@ describe('message copy', () => {
       messageCopyBody(
         message({
           contentType: 'VIDEO',
+          file: null,
           images: [
             {
               kind: 'video',
@@ -93,6 +114,11 @@ describe('message copy', () => {
               w: 100,
               h: 100,
               name: '演示.mp4',
+              duration: 12,
+              size: 4096,
+              mimeType: 'video/mp4',
+              senderName: null,
+              sentAt: null,
             },
           ],
         }),

@@ -83,6 +83,7 @@ export class RelationshipController {
       req.user.userId,
       dto.requestId,
       'REJECT',
+      dto.note,
     );
   }
 
@@ -97,6 +98,7 @@ export class RelationshipController {
       req.user.userId,
       dto.requestId,
       'WITHDRAW',
+      dto.note,
     );
   }
 
@@ -112,14 +114,14 @@ export class RelationshipController {
   })
   async revokeRelationship(
     @Request() req: FastifyRequest,
-    @Body() _dto: RevokeRelationshipDto,
+    @Body() dto: RevokeRelationshipDto,
   ) {
-    void _dto;
     // Only an established pair is terminable here; pending request rounds are
     // decided solely by their exact requestId on the request routes.
     const outcome = await this.userIntents.endEstablishedRelationship({
       userId: req.user.userId,
       threadId: req.threadAccess!.threadId,
+      ...(dto.note !== undefined ? { note: dto.note } : {}),
     });
     if (isBusinessRejection(outcome) && outcome.code === BusinessCode.NOT_FOUND)
       return businessEnvelope(BusinessCode.FRIEND_NOT_FOUND, outcome.message, {
@@ -195,6 +197,7 @@ export class RelationshipController {
       req.user.userId,
       dto.requestId,
       'ACCEPT',
+      dto.note,
     );
   }
 
@@ -203,6 +206,7 @@ export class RelationshipController {
     userId: number,
     requestId: string,
     decision: 'ACCEPT' | 'REJECT' | 'WITHDRAW',
+    note?: string,
   ) {
     // The personal routes decide any round the caller's SENT/RECEIVED pages
     // surface: FRIEND rounds settle through the P2P intent command, group
@@ -215,8 +219,14 @@ export class RelationshipController {
         userId,
         requestId,
         decision,
+        note,
       );
-    return this.userIntents.decidePersonalRequest(userId, requestId, decision);
+    return this.userIntents.decidePersonalRequest(
+      userId,
+      requestId,
+      decision,
+      note,
+    );
   }
 
   private memberIntentResult(

@@ -15,6 +15,7 @@ function accountState(overrides: Partial<AccountState>): AccountState {
     threadFeedCursor: null,
     stateFeedId: null,
     stateFeedFullThrough: null,
+    stateFeedTarget: 0,
     profileNamespaceChangeEndId: null,
     intentRequestEndId: null,
     intentRequestReadId: null,
@@ -26,22 +27,26 @@ function accountState(overrides: Partial<AccountState>): AccountState {
 function storage(start = 0) {
   let cursor = start;
   let boundary: number | undefined;
+  let target = 0;
   return {
+    advanceStateFeedTarget: vi.fn(async (incoming: number) => { target = Math.max(target, incoming); }),
     readAccountState: vi.fn(async () =>
       accountState({
         stateFeedId: cursor === 0 ? null : cursor,
         stateFeedFullThrough: boundary ?? null,
+        stateFeedTarget: target,
       }),
     ),
     applyStateFeedPage: vi.fn(
       async (
         _items: ClientStateFeedItem[],
         next: number,
-        _reset: boolean,
-        full?: number | null,
+        full?: number,
+        incomingTarget?: number,
       ) => {
         cursor = next;
-        if (full !== undefined) boundary = full ?? undefined;
+        if (full !== undefined) boundary = Math.max(boundary ?? 0, full);
+        if (incomingTarget !== undefined) target = Math.max(target, incomingTarget);
       },
     ),
   };
@@ -67,21 +72,22 @@ describe('database-worker state-feed executor', () => {
     db.bindSessionCache(cache);
     await db.openForUser('94082');
     try {
-      await db.applyStateFeedPage([], 1, true, 3);
+      await db.applyStateFeedPage([], 1, 3, 5);
       expect((await db.readAccountState()).stateFeedFullThrough).toBe(3);
       expect((await db.readAccountState()).stateFeedId).toBe(1);
-      await expect(db.applyStateFeedPage([], 2, false, 1)).rejects.toThrow(
+      await expect(db.applyStateFeedPage([], 2, -1)).rejects.toThrow(
         'invalid state-feed full boundary',
       );
       expect((await db.readAccountState()).stateFeedId).toBe(1);
-      await db.applyStateFeedPage([], 3, false, null);
-      expect((await db.readAccountState()).stateFeedFullThrough).toBeNull();
+      await db.applyStateFeedPage([], 3, 3, 3);
+      expect((await db.readAccountState()).stateFeedFullThrough).toBe(3);
+      expect((await db.readAccountState()).stateFeedTarget).toBe(5);
       expect((await db.readAccountState()).stateFeedId).toBe(3);
     } finally {
       await db.closeAndDelete('94082');
     }
   });
-  it('persists the full boundary until the last page and ignores an already consumed wake', async () => {
+  it('retains the full boundary after the last page and ignores an already consumed wake', async () => {
     const db = storage();
     const request = vi
       .fn()
@@ -93,14 +99,14 @@ describe('database-worker state-feed executor', () => {
       { mode: 'full', after: 1, through: 3, take: 100 },
     ]);
     expect(
-      db.applyStateFeedPage.mock.calls.map(([, cursor, reset, full]) => [
+      db.applyStateFeedPage.mock.calls.map(([, cursor, full, target]) => [
         cursor,
-        reset,
         full,
+        target,
       ]),
     ).toEqual([
-      [1, true, 3],
-      [3, false, null],
+      [1, 3, 3],
+      [3, 3, 3],
     ]);
     expect(await synchronizeStateFeed(db, 3, request)).toBe(3);
     expect(request).toHaveBeenCalledTimes(2);
@@ -134,10 +140,12 @@ describe('database-worker state-feed executor', () => {
         code: 30006,
         data: { resumeAfter: 0, resumeBefore: 3 },
       })
-      .mockResolvedValueOnce(page('full', 2, 2));
-    expect(await synchronizeStateFeed(db, 9, request)).toBe(2);
-    expect(db.applyStateFeedPage).toHaveBeenCalledWith([], 2, true, null);
-    expect((await db.readAccountState()).stateFeedId).toBe(2);
+      .mockResolvedValueOnce(page('full', 2, 2))
+      .mockResolvedValueOnce(page('delta', 9, 9));
+    expect(await synchronizeStateFeed(db, 9, request)).toBe(9);
+    expect(db.applyStateFeedPage).toHaveBeenCalledWith([], 0, 2, 9);
+    expect((await db.readAccountState()).stateFeedId).toBe(9);
+    expect((await db.readAccountState()).stateFeedTarget).toBe(9);
   });
 
   it('rejects a stalled page without advancing the local cursor', async () => {

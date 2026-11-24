@@ -1,7 +1,13 @@
-import type { ClientStateFeedItem } from './user.service';
+import {
+  parseClientStateFeedItem,
+  type ClientStateFeedItem,
+} from '../../../../shared/client-state-feed';
 import type { WebdbStorage } from './webdb-storage';
 
-type Storage = Pick<WebdbStorage, 'readAccountState' | 'applyStateFeedPage'>;
+type Storage = Pick<
+  WebdbStorage,
+  'readAccountState' | 'applyStateFeedPage' | 'advanceStateFeedTarget'
+>;
 type Page = {
   mode: 'full' | 'delta';
   items: ClientStateFeedItem[];
@@ -41,13 +47,21 @@ function validate(
     page.stateFeedEndId < page.scannedThrough ||
     typeof page.hasMore !== 'boolean' ||
     (page.hasMore && page.scannedThrough >= through) ||
-    page.items.some(
-      (item, index) =>
+    page.items.some((item, index) => {
+      if (
         !safeCursor(item.feedId) ||
         item.feedId <= after ||
         item.feedId > page.scannedThrough ||
-        (index > 0 && item.feedId <= page.items[index - 1].feedId),
-    )
+        (index > 0 && item.feedId <= page.items[index - 1].feedId)
+      )
+        return true;
+      try {
+        parseClientStateFeedItem(item);
+        return false;
+      } catch {
+        return true;
+      }
+    })
   )
     throw new Error('invalid state-feed page');
 }
@@ -64,11 +78,14 @@ export async function synchronizeStateFeed(
   if (persisted !== undefined && !safeCursor(persisted))
     throw new Error('invalid state-feed cursor');
   let after = persisted === undefined ? 0 : persisted;
+  if (!safeCursor(state.stateFeedTarget))
+    throw new Error('invalid persisted state-feed target');
   const boundary = state.stateFeedFullThrough ?? undefined;
-  if (boundary !== undefined && (!safeCursor(boundary) || boundary <= after))
+  if (boundary !== undefined && !safeCursor(boundary))
     throw new Error('invalid state-feed full boundary');
   let target = Math.max(
     wake,
+    state.stateFeedTarget,
     boundary === undefined ? 0 : (boundary as number),
   );
   let fullThrough =
@@ -77,11 +94,12 @@ export async function synchronizeStateFeed(
         ? target
         : undefined
       : (boundary as number);
-  let reset = after === 0 && fullThrough !== undefined;
+  await storage.advanceStateFeedTarget(target);
   let recovered = false;
   while (after < target) {
-    const through = fullThrough ?? target;
-    const mode = fullThrough === undefined ? 'delta' : 'full';
+    const full = fullThrough !== undefined && after < fullThrough;
+    const through = full ? fullThrough! : target;
+    const mode = full ? 'full' : 'delta';
     const envelope = await request({ mode, after, through, take: 100 });
     if (envelope.code === 30006) {
       if (recovered) throw new Error('state-feed recovery did not progress');
@@ -95,34 +113,24 @@ export async function synchronizeStateFeed(
       )
         throw new Error('invalid state-feed recovery window');
       after = window.resumeAfter;
-      target = window.resumeBefore - 1;
-      fullThrough = target > after ? target : undefined;
-      reset = true;
+      fullThrough = window.resumeBefore - 1;
+      target = Math.max(target, fullThrough);
+      await storage.advanceStateFeedTarget(target);
       recovered = true;
-      if (target === after)
-        await storage.applyStateFeedPage([], after, true, null);
+      await storage.applyStateFeedPage([], after, fullThrough, target);
       continue;
     }
     if (envelope.code !== 0 || !envelope.data)
       throw new Error(`state-feed response ${envelope.code}`);
     const page = envelope.data as Page;
     validate(page, mode, after, through);
-    const nextFull =
-      fullThrough === undefined
-        ? undefined
-        : page.scannedThrough < fullThrough
-          ? fullThrough
-          : null;
     await storage.applyStateFeedPage(
       page.items,
       page.scannedThrough,
-      reset,
-      nextFull,
+      fullThrough,
+      page.stateFeedEndId,
     );
     after = page.scannedThrough;
-    reset = false;
-    if (fullThrough !== undefined && after >= fullThrough)
-      fullThrough = undefined;
     target = Math.max(target, page.stateFeedEndId);
     if (!page.hasMore && after < through)
       throw new Error('state-feed response ended before requested boundary');

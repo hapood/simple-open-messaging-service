@@ -166,42 +166,15 @@ describe('PlaygroundMessageThreadAdapter', () => {
       { threadId: 1 } as ConversationItem,
       0,
     ) as MockItemSource;
-    const optimistic: CbItem<ChatItemData> = {
-      id: -1,
-      clientMessageId: 'contact-1',
-      data: {
-        type: 'msg',
-        msgId: -1,
-        creator: JSON.stringify([0, 'me']),
-        isSelf: true,
-        name: 'Updated profile name',
-        sender: {
-          kind: 'snapshot',
-          name: 'Updated profile name',
-          imageUrl: 'data:image/webp;base64,test',
-        },
-        text: JSON.stringify({ displayName: 'Maya', account: 'maya' }),
-        time: '12:00',
-        contentType: 'CONTACT_CARD',
-        images: null,
-        file: null,
-        createdAtMs: Date.now(),
-      },
-    };
-    source.addPending(optimistic);
-
     expect(
       (
-        await adapter.sendContact({
+        await adapter.sendIntent({
           threadId: 1,
-          target: {
-            account: 'alice',
-            namespaceId: 0,
-            profileRev: 1,
+          item: {
+            type: 'CONTACT_CARD',
+            target: { account: 'alice', namespaceId: 0, profileRev: 1 },
           },
           clientMessageId: 'contact-1',
-          optimistic,
-          source,
         })
       ).code,
     ).toBe(0);
@@ -209,20 +182,14 @@ describe('PlaygroundMessageThreadAdapter', () => {
       const items = await source.getNewer(10, 10);
       expect(items.length).toBe(2);
       expect(items[0].data.type).toBe('msg');
-      expect(items[0].data).toMatchObject({
-        creator: JSON.stringify([0, 'me']),
-        name: 'Updated profile name',
-        sender: {
-          kind: 'snapshot',
-          name: 'Updated profile name',
-          imageUrl: 'data:image/webp;base64,test',
-        },
+      expect(items[0].clientMessageId).toBe('contact-1');
+      expect(JSON.parse(items[0].data.text)).toEqual({
+        account: 'alice', namespaceId: 0, profileRev: 1,
       });
       expect(items[0].data.type === 'msg' && items[0].data.contentType).toBe(
         'CONTACT_CARD',
       );
       expect(items[1].data.type === 'msg' && items[1].data.isSelf).toBe(false);
-      expect(source.getPending()).toHaveLength(0);
     });
   });
 
@@ -351,26 +318,9 @@ describe('PlaygroundMessageThreadAdapter', () => {
       { threadId: 1 } as ConversationItem,
       0,
     ) as MockItemSource;
-    first.addPending({
-      id: -1,
-      clientMessageId: 'link-1',
-      data: {
-        type: 'msg',
-        msgId: -1,
-        creator: JSON.stringify([0, 'user-1']),
-        isSelf: true,
-        name: 'Me',
-        text: 'Link for first thread',
-        time: '12:00',
-        contentType: 'LINK',
-        images: null,
-        file: null,
-        createdAtMs: Date.now(),
-      },
-    });
-    const sending = adapter.sendLink({
+    const sending = adapter.sendIntent({
       threadId: 1,
-      generationId: 'generation-1',
+      item: { type: 'LINK', generationId: 'generation-1' },
       clientMessageId: 'link-1',
     });
     const second = adapter.createSource(

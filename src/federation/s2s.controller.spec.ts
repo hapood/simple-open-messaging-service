@@ -748,7 +748,7 @@ describe('S2sController feed-head recovery', () => {
       4n,
     );
     expect(roundScheduler.wakeStateFeed).toHaveBeenCalledExactlyOnceWith(
-      'a.example',
+      7,
       11n,
     );
   });

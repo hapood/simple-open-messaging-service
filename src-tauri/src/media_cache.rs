@@ -21,6 +21,8 @@ const CACHE_BLOCK_SIZE: u64 = 1024 * 1024;
 type KeyLock = Arc<Mutex<()>>;
 static KEY_LOCKS: OnceLock<Mutex<HashMap<String, Weak<Mutex<()>>>>> = OnceLock::new();
 static CACHE_MAINTENANCE: OnceLock<RwLock<()>> = OnceLock::new();
+static THUMBNAIL_CACHE_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+mod thumbnail;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct CacheMeta {
@@ -207,74 +209,28 @@ pub(crate) async fn fetch_thumbnail(
     proxy: &ServerSessionState,
     path: &str,
 ) -> Result<Vec<u8>, String> {
-    let maintenance = CACHE_MAINTENANCE.get_or_init(|| RwLock::new(()));
-    validate_path(path)?;
-    if !path.starts_with("/uploads/thumbnails/") {
-        return Err("invalid thumbnail path".into());
-    }
-    let (origin, token, key) = request_identity(proxy, path);
+    let canonical = thumbnail::canonical_path(path)?;
+    let owner = crate::native_db::active_login().map_err(|e| e.to_string())?;
+    let endpoint = crate::login_request::LoginRequest::capture(proxy, owner.clone())?.endpoint()?;
+    let key = cache_key(&endpoint.origin, Some(&endpoint.credential), &canonical);
     let output = thumbnail_path(app, &key)?;
-    let lock = key_lock(&format!("thumbnail:{key}")).await;
-    let _guard = lock.lock().await;
-    {
-        let _maintenance = maintenance.read().await;
-        if let Ok(bytes) = tokio::fs::read(&output).await {
-            if request_identity(proxy, path).2 != key {
-                return Err("thumbnail session changed".into());
-            }
-            return Ok(bytes);
-        }
-    }
-    let mut request = proxy
-        .api_client(&origin)
-        .get(format!("{origin}{path}"))
+    let request = endpoint.client.get(format!("{}{path}", endpoint.origin))
+        .bearer_auth(&endpoint.credential)
         .timeout(std::time::Duration::from_secs(30));
-    if let Some(token) = token.as_ref() {
-        request = request.bearer_auth(token);
-    }
-    let response = request.send().await.map_err(|e| e.to_string())?;
-    if !response.status().is_success() {
-        return Err(format!("thumbnail HTTP {}", response.status()));
-    }
-    let digest = response
-        .headers()
-        .get("x-thumbnail-digest")
-        .and_then(|v| v.to_str().ok())
-        .ok_or("missing thumbnail digest")?
-        .to_string();
-    let mut stream = response.bytes_stream();
-    let mut bytes = Vec::new();
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|e| e.to_string())?;
-        if bytes.len() + chunk.len() > 1024 * 1024 {
-            return Err("thumbnail too large".into());
+    let current_owner = owner.clone();
+    let result = thumbnail::fetch(
+        output, owner.id().to_string(), request, owner.cancellation(),
+        move || current_owner.assert_active().is_ok(),
+    ).await;
+    if result.is_ok() {
+        let maintenance = CACHE_MAINTENANCE.get_or_init(|| RwLock::new(()));
+        let _guard = maintenance.read().await;
+        if let Ok(root) = app.path().app_cache_dir().map(|p| p.join(CACHE_DIR)) {
+            prune_cache(app, &root, &key).await;
         }
-        bytes.extend_from_slice(&chunk);
     }
-    if sha256_hex(&bytes) != digest {
-        return Err("thumbnail digest mismatch".into());
-    }
-    if request_identity(proxy, path).2 != key {
-        return Err("thumbnail session changed".into());
-    }
-    let _maintenance = maintenance.read().await;
-    if request_identity(proxy, path).2 != key {
-        return Err("thumbnail session changed".into());
-    }
-    let temporary = output.with_extension("tmp");
-    tokio::fs::write(&temporary, &bytes)
-        .await
-        .map_err(|e| e.to_string())?;
-    tokio::fs::rename(&temporary, &output)
-        .await
-        .map_err(|e| e.to_string())?;
-    if let Ok(root) = app.path().app_cache_dir().map(|p| p.join(CACHE_DIR)) {
-        prune_cache(app, &root, &key).await;
-    }
-    if request_identity(proxy, path).2 != key {
-        return Err("thumbnail session changed".into());
-    }
-    Ok(bytes)
+    owner.assert_active().map_err(|e| e.to_string())?;
+    result
 }
 
 async fn key_lock(key: &str) -> KeyLock {
@@ -1520,6 +1476,7 @@ pub(crate) async fn set_media_cache_limit(
 pub(crate) async fn clear_media_cache(app: tauri::AppHandle) -> Result<MediaCacheInfo, String> {
     let maintenance = CACHE_MAINTENANCE.get_or_init(|| RwLock::new(()));
     let _guard = maintenance.write().await;
+    THUMBNAIL_CACHE_GENERATION.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
     let root = app
         .path()
         .app_cache_dir()

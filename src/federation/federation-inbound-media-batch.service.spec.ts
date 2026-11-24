@@ -30,17 +30,7 @@ function serviceWith(overrides?: {
   const update = vi.fn().mockReturnValue({ set });
   const deleteWhere = vi.fn().mockResolvedValue([]);
   const remove = vi.fn().mockReturnValue({ where: deleteWhere });
-  const selectWhere = vi.fn().mockResolvedValue([
-    {
-      totalFiles: overrides?.progressRows?.length ?? 0,
-      completedFiles:
-        overrides?.progressRows?.filter(
-          (row) => (row as { status?: string }).status === 'COMPLETED',
-        ).length ?? 0,
-    },
-  ]);
-  const from = vi.fn().mockReturnValue({ where: selectWhere });
-  const select = vi.fn().mockReturnValue({ from });
+  const select = vi.fn();
   const database = {
     db: {
       query: {
@@ -78,18 +68,11 @@ function serviceWith(overrides?: {
   };
   const promoter = { promote: vi.fn().mockResolvedValue(null) };
   const mediaRanges = { fetch: vi.fn() };
-  const sse = {
-    onMediaMessageDownloadProgress: vi.fn(),
-    hasMediaMessageProgressSubscriber: vi.fn().mockReturnValue(true),
-    completeMediaMessageDownloadProgress: vi.fn(),
-    completeMediaFileDownloadProgress: vi.fn(),
-  };
   const service = new FederationInboundMediaBatchService(
     database as never,
     fileSync as never,
     promoter as never,
     mediaRanges as never,
-    sse as never,
   );
   return {
     service,
@@ -97,57 +80,25 @@ function serviceWith(overrides?: {
     fileSync,
     promoter,
     mediaRanges,
-    sse,
     set,
     returning,
   };
 }
 
 describe('FederationInboundMediaBatchService', () => {
-  it('publishes batch progress through task ownership after coordination is removed', async () => {
-    const s = serviceWith({
-      progress: { messageId: 23n },
-      message: { threadId: 8, seq: 13 },
-      progressRows: [{ status: 'COMPLETED' }, { status: 'PENDING' }],
-    });
-    s.fileSync.runBatch.mockImplementation(
-      async (_id, _fetch, _promote, _fail, start) => {
-        await start('batch-a');
-      },
+  it('starts file execution without reading aggregate counts or mirroring runtime state', async () => {
+    const s = serviceWith();
+    const fetch = vi.fn();
+    await s.service.runFileSyncBatch('batch-a', fetch);
+    expect(s.fileSync.runBatch).toHaveBeenCalledExactlyOnceWith(
+      'batch-a',
+      fetch,
+      expect.any(Function),
+      expect.any(Function),
     );
-    await s.service.runFileSyncBatch('batch-a', vi.fn());
+    expect(s.database.db.select).not.toHaveBeenCalled();
     expect(s.database.db.query.pendingMedia.findFirst).not.toHaveBeenCalled();
-    expect(s.sse.onMediaMessageDownloadProgress).toHaveBeenCalledWith({
-      threadId: 8,
-      seq: 13,
-      status: 'downloading',
-      completedFiles: 1,
-      totalFiles: 2,
-      activeFile: null,
-    });
-  });
-
-  it('publishes the runtime downloading phase without mirroring it into a batch row', async () => {
-    const s = serviceWith({
-      pendingMedia: { ...inboundBatch, status: 'pending' },
-      message: { threadId: 8, seq: 13 },
-      progressRows: [{ status: 'PENDING' }],
-    });
-    s.fileSync.runBatch.mockImplementation(
-      async (_id, _fetch, _promote, _fail, start) => {
-        await start('batch-a');
-      },
-    );
-    await s.service.runFileSyncBatch('batch-a', vi.fn());
     expect(s.set).not.toHaveBeenCalled();
-    expect(s.sse.onMediaMessageDownloadProgress).toHaveBeenCalledWith({
-      threadId: 8,
-      seq: 13,
-      status: 'downloading',
-      completedFiles: 0,
-      totalFiles: 1,
-      activeFile: null,
-    });
   });
 
   it('stops durable tasks without requiring or rewriting temporary coordination', async () => {
@@ -303,9 +254,7 @@ describe('FederationInboundMediaBatchService', () => {
     expect(s.set).toHaveBeenCalledWith(
       expect.objectContaining({ localState: 'FAILED' }),
     );
-    expect(s.sse.completeMediaMessageDownloadProgress).toHaveBeenCalledWith(
-      expect.objectContaining({ threadId: 8, seq: 13, status: 'failed' }),
-    );
+    expect(s.database.db.select).not.toHaveBeenCalled();
   });
 
   it('does not project an obsolete failure after retry resets tasks under the message lock', async () => {
@@ -327,7 +276,7 @@ describe('FederationInboundMediaBatchService', () => {
     expect(s.database.db.execute).toHaveBeenCalledOnce();
     expect(s.database.db.query.pendingMedia.findFirst).not.toHaveBeenCalled();
     expect(s.database.db.update).not.toHaveBeenCalled();
-    expect(s.sse.completeMediaMessageDownloadProgress).not.toHaveBeenCalled();
+    expect(s.database.db.select).not.toHaveBeenCalled();
   });
 
   it('does not let an old failure callback overwrite a stopped batch', async () => {
@@ -349,7 +298,7 @@ describe('FederationInboundMediaBatchService', () => {
       tables.fileSyncProgress,
     );
     expect(s.database.db.update).not.toHaveBeenCalledWith(tables.pendingMedia);
-    expect(s.sse.completeMediaMessageDownloadProgress).not.toHaveBeenCalled();
+    expect(s.database.db.select).not.toHaveBeenCalled();
   });
 
   it('rechecks durable stop after waiting for the failure transaction message lock', async () => {
@@ -378,7 +327,7 @@ describe('FederationInboundMediaBatchService', () => {
     await execution;
     expect(s.database.db.update).toHaveBeenCalledWith(tables.message);
     expect(s.database.db.update).not.toHaveBeenCalledWith(tables.pendingMedia);
-    expect(s.sse.completeMediaMessageDownloadProgress).not.toHaveBeenCalled();
+    expect(s.database.db.select).not.toHaveBeenCalled();
   });
 
   it('rejects recovery for a batch outside the inbound durable queue', async () => {
@@ -406,13 +355,7 @@ describe('FederationInboundMediaBatchService', () => {
       expect(s.fileSync.runBatch).not.toHaveBeenCalled();
       expect(s.mediaRanges.fetch).not.toHaveBeenCalled();
       expect(s.database.db.update).not.toHaveBeenCalled();
-      expect(s.sse.completeMediaMessageDownloadProgress).toHaveBeenCalledWith(
-        expect.objectContaining({
-          status: 'ready',
-          completedFiles: 2,
-          totalFiles: 2,
-        }),
-      );
+      expect(s.database.db.select).not.toHaveBeenCalled();
     },
   );
 
@@ -496,8 +439,8 @@ describe('FederationInboundMediaBatchService', () => {
     );
   });
 
-  it('closes message and file progress streams after a completed batch is promoted', async () => {
-    const { service, promoter, sse } = serviceWith({
+  it('delegates promotion without querying aggregate progress', async () => {
+    const { service, promoter, database } = serviceWith({
       pendingMedia: {
         id: 11n,
         batchId: 'batch-a',
@@ -532,15 +475,8 @@ describe('FederationInboundMediaBatchService', () => {
 
     await service.promotePendingMessage('batch-a');
 
-    expect(sse.completeMediaMessageDownloadProgress).toHaveBeenCalledWith({
-      threadId: 8,
-      seq: 13,
-      status: 'ready',
-      completedFiles: 2,
-      totalFiles: 2,
-      activeFile: null,
-    });
-    expect(sse.completeMediaFileDownloadProgress).not.toHaveBeenCalled();
+    expect(promoter.promote).toHaveBeenCalledExactlyOnceWith('batch-a');
+    expect(database.db.select).not.toHaveBeenCalled();
   });
 
   it('retains failed progress and its authorization route for administrative retry', async () => {
@@ -559,7 +495,7 @@ describe('FederationInboundMediaBatchService', () => {
       namespaceId: 3,
       expectedAuthorizationEpoch: 4,
     };
-    const { service, database, fileSync, sse, set } = serviceWith({
+    const { service, database, fileSync, set } = serviceWith({
       pendingMedia: batch,
       message: { threadId: 8, seq: 13 },
       progress: { errorKind: 'REMOTE_IO' },
@@ -593,14 +529,6 @@ describe('FederationInboundMediaBatchService', () => {
         localState: 'FAILED',
       }),
     );
-    expect(sse.completeMediaMessageDownloadProgress).toHaveBeenCalledWith({
-      threadId: 8,
-      seq: 13,
-      status: 'failed',
-      completedFiles: 0,
-      totalFiles: 1,
-      activeFile: null,
-    });
-    expect(sse.completeMediaFileDownloadProgress).not.toHaveBeenCalled();
+    expect(database.db.select).not.toHaveBeenCalled();
   });
 });

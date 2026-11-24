@@ -91,29 +91,15 @@ resolution uses the platform runtime rather than that request/SSE helper.
 
 ### Goal
 
-Replace old account-level media status push assumptions with temporary per-message and per-file SSE streams.
+Replace old account-level media status push assumptions with temporary per-file SSE streams. The obsolete message-level progress endpoint and aggregate counting are removed.
 
 ### Current backend endpoints
 
 ```text
-GET /message/media-message-progress?threadId=&seq=
 GET /message/media-file-progress?threadId=&seq=&digest=
 ```
 
 The backend closes each temporary SSE stream after terminal `ready` or `failed`.
-
-### Message-level event
-
-```ts
-{
-  threadId: number;
-  seq: number;
-  status: 'downloading' | 'ready' | 'failed';
-  completedFiles: number;
-  totalFiles: number;
-  activeFile: { digest: string; name: string } | null;
-}
-```
 
 ### File-level event
 
@@ -122,10 +108,12 @@ The backend closes each temporary SSE stream after terminal `ready` or `failed`.
   threadId: number;
   seq: number;
   file: { digest: string; name: string };
-  status: 'downloading' | 'ready' | 'failed';
   loaded: number;
   total: number | null;
-}
+} & (
+  | { status: 'downloading'; bytesPerSecond: number }
+  | { status: 'pending' | 'ready' | 'failed'; bytesPerSecond: null }
+)
 ```
 
 `loaded` is always a number. `total` may be `null` when the remote total size is unknown.
@@ -133,7 +121,6 @@ The backend closes each temporary SSE stream after terminal `ready` or `failed`.
 ### TODO
 
 - Stop relying on old `MEDIA_STATUS` SSE push. `/message/media-status` remains only as a snapshot/probe endpoint.
-- Subscribe to message-level progress when rendering or opening a media message that is not ready.
 - Subscribe to file-level progress for the concrete file/digest being downloaded.
 - Clear local progress state when the stream ends after `ready` or `failed`.
 - Display GALLERY/BUNDLE progress without merging multiple files into one file-level byte progress.
@@ -144,7 +131,7 @@ The backend closes each temporary SSE stream after terminal `ready` or `failed`.
 
 - `web/src/app/services/image-download.service.ts`
 - `web/src/app/services/image-download.adapter.ts`
-- `web/src/app/services/media-availability.service.ts`
+- `web/src/app/services/media-file-progress.service.ts`
 - message media card/gallery/file/audio components under `web/src/app/components/message-cards/`
 
 ### Likely Tauri/native files

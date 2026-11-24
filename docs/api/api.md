@@ -428,6 +428,30 @@ task coalescing, and optimistic client correction semantics.
 
 - **Body**: `{ name, avatar?, description? }`. Creates the local `GroupAccount`, `MessageThread(GROUP)`, selected immutable profile, and canonical Group Meta state. Invitations use the separate invite operation; no `inviteUserIds` input is accepted. Returns `{ threadId }`.
 
+### POST `/group/members`
+
+- **Body**: `{ threadId, search?, excludeSelf?, take?, cursor? }`. Returns current
+  members for the member list and mention picker. `take` defaults to 50 and is
+  bounded to 1–100; `excludeSelf` defaults to false. Search is trimmed, at most
+  128 characters, and matches case-insensitive literal substrings of account or
+  the cached selected profile name. `%` and `_` have no wildcard meaning.
+- **Data**: `{ items: [{ account, publisherNamespaceId, profileNamespaceId,
+  profileRev, role }], nextCursor }`. No display profile content is returned;
+  clients use the existing profile-resolution/cache path. Missing cached profiles
+  do not exclude account matches or unfiltered members.
+- Results use account (`C` collation), then numeric profile namespace order.
+  `nextCursor: null` means exhausted. Other cursors are opaque and bound to the
+  thread, trimmed search, and self-exclusion setting. Each page queries current
+  state, not a frozen cross-request snapshot; refresh to see insertions before
+  the cursor. Changing search settings requires starting a new page sequence.
+- Every page requires an active local membership and a non-dissolved group.
+  Authorization and page data share one read-only repeatable-read transaction.
+  Historical message visibility alone is insufficient. Mirrored groups query
+  their committed local replica, without synchronous S2S profile fetching.
+- Before a mirror has established its first roster (or its local namespace
+  binding is unavailable), returns business code `40009` (`GROUP_MEMBERS_NOT_READY`).
+  Later full recovery does not block queries of the previously committed roster.
+
 ### POST `/group/invite`
 
 - **Body**: `{ groupId, users: [{ account, namespaceId, snapshot: { displayName, avatar } }] }` — author one GROUP invitation per valid namespace-bound user. The caller must be an active OWNER or ADMIN; friendship with the invitee is not required. The server resolves each target to its authoritative identity without selecting an identity copied from another peer's group. Namespace `0` selects local users. Duplicate normalized targets are coalesced; the synchronous response reports `invited` and `skipped` targets with rejection details.
@@ -778,8 +802,7 @@ data: <json>
 | `PUSH_SUBSCRIPTION_CHANGED`                 | session-specific push recovery `{ sessionId, pushSubscriptionRev }`                                           | `HELLO.pushSubscriptionRev`                  |
 | `STATE_FEED_UPDATED`                        | identity-only Client State Feed wake `{ feedId }`                                                             | `HELLO.stateFeedEndId` + ranged state pull   |
 | `THREAD_FEED_UPDATED`                       | one-second thread-feed hint `{ threadFeedEndId, sseUuid? }`                                                   | `HELLO.threadFeedEndId` + ranged thread pull |
-| `MEDIA_MESSAGE_DOWNLOAD_PROGRESS`           | temporary media-message download progress `{ threadId, seq, completedFiles, totalFiles, activeFile, status }` | terminal frame closes the temporary stream   |
-| `MEDIA_FILE_DOWNLOAD_PROGRESS`              | temporary single-file byte progress `{ threadId, seq, file, loaded, total, status }`                          | terminal frame closes the temporary stream   |
+| `MEDIA_FILE_DOWNLOAD_PROGRESS`              | temporary single-file server progress `{ threadId, seq, file, loaded, total, status, bytesPerSecond }`                          | terminal frame closes the temporary stream   |
 | `CALL_EVENT` / `CALL_SIGNAL`                | ephemeral call lifecycle and WebRTC signaling                                                                 | active-call snapshot/new negotiation         |
 | `FORCE_LOGOUT`                              | terminate a revoked session                                                                                   | authentication state                         |
 | `PROFILE_AVAILABLE` / `PROFILE_UNAVAILABLE` | exact profile-resolution result wake, keyed by publisher/subject/account/revision                             | retry exact profile demand                   |

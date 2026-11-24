@@ -1,4 +1,6 @@
 import { TestBed } from '@angular/core/testing';
+import { ProfileRepository } from './profile-store.service';
+import { ProfileWatchService } from './profile-watch.service';
 import { Observable, Subject, of } from 'rxjs';
 import { provideZonelessChangeDetection, signal } from '@angular/core';
 import { WebdbService } from './webdb.service';
@@ -66,6 +68,8 @@ describe('MessageRepository', () => {
         provideZonelessChangeDetection(),
         MessageRepository,
         WebdbService,
+        ProfileRepository,
+        { provide: ProfileWatchService, useValue: { watchProfile: () => of(null) } },
         { provide: WebsocketService, useValue: { eventSubject, reconnect$ } },
         {
           provide: MsgService,
@@ -125,6 +129,53 @@ describe('MessageRepository', () => {
     TestBed.inject(SessionLifecycleService).invalidateSession();
     resolve(facts);
     await expect(pending).rejects.toThrow();
+  });
+
+  it('clips full intersecting wire gaps to the mounted scan without changing outside coverage or rows', async () => {
+    await webdb.commitBrowserMessagePage({
+      threadId: 42,
+      scan: { left: 0, right: 100 },
+      messages: [msg(42, 10, 'outside-left'), msg(42, 90, 'outside-right')],
+      gaps: [{ left: 20, right: 80, state: 'SERVER_PENDING' }],
+    });
+    let stream!: ReadableStreamDefaultController<Uint8Array>;
+    const fetch = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(
+      new ReadableStream<Uint8Array>({ start(controller) { stream = controller; } }),
+    ));
+    queryMessageHistoryPageSpy.mockReturnValue(of({ code: 0, data: {
+      messages: [msg(42, 76)], gaps: [
+        { startSeq: 1, endSeq: 74, recoverable: false },
+        { startSeq: 78, endSeq: 100, recoverable: false },
+      ],
+      scannedThrough: 71, hasMore: true,
+    } }));
+    const pages: Array<{ left: number; right: number }> = [];
+    const subscription = repo.watchHistoryInterval(42, 20, 80).subscribe((page) => pages.push(page));
+    try {
+      stream.enqueue(new TextEncoder().encode('event: MESSAGE_HISTORY_INTERVAL\ndata: {"threadId":42,"left":20,"right":80}\n\n'));
+      await vi.waitFor(() => expect(pages).toHaveLength(1));
+      expect(pages[0]).toMatchObject({ left: 70, right: 80, items: [
+        { kind: 'serverGap', left: 70, right: 74, state: 'SERVER_UNAVAILABLE' },
+        { kind: 'message', message: { seq: 76 } },
+        { kind: 'serverGap', left: 77, right: 80, state: 'SERVER_UNAVAILABLE' },
+      ] });
+      expect((await webdb.getMessage(42, 10))?.content).toBe('outside-left');
+      expect((await webdb.getMessage(42, 90))?.content).toBe('outside-right');
+      expect(await webdb.getMessageRanges(42)).toEqual([
+        { threadId: 42, left: 0, right: 20, state: 'LOCAL_COVERED' },
+        { threadId: 42, left: 20, right: 70, state: 'SERVER_PENDING' },
+        { threadId: 42, left: 70, right: 74, state: 'SERVER_UNAVAILABLE' },
+        { threadId: 42, left: 74, right: 77, state: 'LOCAL_COVERED' },
+        { threadId: 42, left: 77, right: 80, state: 'SERVER_UNAVAILABLE' },
+        { threadId: 42, left: 80, right: 100, state: 'LOCAL_COVERED' },
+      ]);
+      expect(queryMessageHistoryPageSpy).toHaveBeenCalledExactlyOnceWith({
+        threadId: 42, before: 81, through: 21, take: 50,
+      });
+    } finally {
+      subscription.unsubscribe();
+      fetch.mockRestore();
+    }
   });
 
   it('resolves origin navigation to local seq without extending coverage', async () => {
@@ -705,6 +756,7 @@ describe('MessageRepository', () => {
       TestBed.inject(ThreadSendOutbox),
       { onNewerAvailable: available },
       TestBed.inject(MsgService),
+      TestBed.inject(ProfileRepository),
     );
     scroller.bind(source, { chatId: 42 });
     await scroller.openWindow({ kind: 'cached' });
@@ -911,7 +963,7 @@ describe('MessageRepository', () => {
     const db = await webdb.db();
     const raw = await db.get('messages', [42, 10]);
     expect(raw?.isDeleted).toBe(true);
-    expect(raw && 'content' in raw).toBe(false);
+    expect(raw?.contentType).not.toBe('TOMB');
   });
 
   it('turns an existing cached message into a tombstone atomically with its HWM', async () => {
@@ -937,10 +989,9 @@ describe('MessageRepository', () => {
     const db = await webdb.db();
     const raw = await db.get('messages', [42, 10]);
     expect(raw?.isDeleted).toBe(true);
-    expect(raw && 'content' in raw).toBe(false);
-    expect(raw).toMatchObject({
-      contentType: 'TOMB',
-      deletionType: 'MODERATION_REMOVAL',
-    });
+    expect(raw?.contentType).not.toBe('TOMB');
+    expect(await webdb.getMessageDeletions(42, [10])).toEqual([
+      { seq: 10, type: 'MODERATION_REMOVAL' },
+    ]);
   });
 });

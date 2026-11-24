@@ -1,4 +1,4 @@
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 use std::path::{Path, PathBuf};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -46,17 +46,8 @@ impl DeviceConnection {
         let connection =
             Connection::open(path).map_err(|e| format!("open device database: {e}"))?;
         super::configure(&connection)?;
-        connection
-            .execute_batch(
-                "CREATE TABLE IF NOT EXISTS client_preferences (
-               scope TEXT NOT NULL,
-               key TEXT NOT NULL,
-               value_json TEXT NOT NULL,
-               updated_at INTEGER NOT NULL,
-               PRIMARY KEY (scope, key)
-             );",
-            )
-            .map_err(|e| format!("initialize device database: {e}"))?;
+        super::app_state::ensure_schema(&connection)?;
+        migrate_preferences(&connection)?;
         *database = Some(Initialized {
             path: path.to_path_buf(),
             connection,
@@ -85,6 +76,103 @@ impl DeviceConnection {
             .ok_or("device database is not initialized")?;
         operation(&mut initialized.connection)
     }
+}
+
+fn migrate_preferences(conn: &Connection) -> Result<(), String> {
+    let exists: bool = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='client_preferences'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .map(|count| count > 0)
+        .map_err(|e| format!("inspect preferences table: {e}"))?;
+    if !exists {
+        return conn
+            .execute_batch(
+                "CREATE TABLE client_preferences (
+                    key TEXT PRIMARY KEY,
+                    value_json TEXT NOT NULL,
+                    updated_at INTEGER NOT NULL
+                 );",
+            )
+            .map_err(|e| format!("create preferences: {e}"));
+    }
+    let has_scope: bool = conn
+        .prepare("PRAGMA table_info(client_preferences)")
+        .map_err(|e| e.to_string())?
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(|e| e.to_string())?
+        .filter_map(Result::ok)
+        .any(|name| name == "scope");
+    if !has_scope {
+        return Ok(());
+    }
+    let journal: Option<String> = conn
+        .query_row(
+            "SELECT value_json FROM client_preferences WHERE scope='device' AND key='soms.native-login-session.v1'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| format!("read legacy login journal: {e}"))?;
+    conn.execute_batch(
+        "CREATE TABLE client_preferences_next (
+            key TEXT PRIMARY KEY,
+            value_json TEXT NOT NULL,
+            updated_at INTEGER NOT NULL
+         );
+         INSERT INTO client_preferences_next(key, value_json, updated_at)
+         SELECT key, value_json, updated_at FROM client_preferences
+         WHERE scope='global' AND key IN ('language','theme');
+         INSERT OR IGNORE INTO client_preferences_next(key, value_json, updated_at)
+         SELECT key, value_json, updated_at FROM client_preferences
+         WHERE scope='device'
+           AND key NOT IN (
+             'language','theme',
+             'soms.login-session.v1','soms.native-login-session.v1','soms.lastUserId','device_id'
+           )
+           AND key NOT LIKE 'push-registration:%';",
+    )
+    .map_err(|e| format!("copy preferences: {e}"))?;
+    for key in ["notificationPreviewMode", "notificationEnabled", "notificationSound"] {
+        let stricter = if key == "notificationPreviewMode" {
+            "\"private\""
+        } else {
+            "false"
+        };
+        conn.execute(
+            "INSERT INTO client_preferences_next(key, value_json, updated_at)
+             SELECT ?1, ?2, updated_at FROM client_preferences
+             WHERE key=?1 AND value_json=?2
+             ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json, updated_at=excluded.updated_at",
+            rusqlite::params![key, stricter],
+        )
+        .map_err(|e| format!("keep stricter notification preference: {e}"))?;
+    }
+    conn.execute_batch(
+        "DROP TABLE client_preferences;
+         ALTER TABLE client_preferences_next RENAME TO client_preferences;",
+    )
+    .map_err(|e| format!("replace preferences table: {e}"))?;
+    if super::app_state::get(conn, super::app_state::LOGIN_STATE_KEY)?.is_none() {
+        if let Some(raw) = journal {
+            if let Ok(value) = serde_json::from_str::<serde_json::Value>(&raw) {
+                let phase = value.get("phase").and_then(|item| item.as_str()).unwrap_or("");
+                let session = value.get("session").and_then(|item| item.as_str());
+                let state = match phase {
+                    "active" => "active",
+                    "ending" | "revoking" => "cleaning",
+                    _ => "signed-out",
+                };
+                super::app_state::put(conn, super::app_state::LOGIN_STATE_KEY, state)?;
+                if let Some(uuid) = session.filter(|_| state != "signed-out") {
+                    super::app_state::put(conn, super::app_state::SESSION_UUID_KEY, uuid)?;
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 pub(super) static DEVICE_CONNECTION: DeviceConnection = DeviceConnection::new();

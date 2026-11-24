@@ -16,11 +16,8 @@ CREATE TABLE threads (
   blocked INTEGER NOT NULL,
   alias TEXT,
   thread_profile_rev INTEGER NOT NULL CHECK(thread_profile_rev >= 0),
-  message_end_seq INTEGER NOT NULL CHECK(message_end_seq >= 0),
-  tombstone_end_seq INTEGER NOT NULL CHECK(tombstone_end_seq >= 0),
   message_head INTEGER CHECK(message_head >= 0),
   deleted_hwm INTEGER NOT NULL CHECK(deleted_hwm >= 0),
-  group_meta_feed_end_id TEXT,
   join_request_end_feed_id INTEGER NOT NULL,
   join_request_read_feed_id INTEGER NOT NULL,
   group_invite_end_feed_id INTEGER NOT NULL,
@@ -82,11 +79,8 @@ pub(super) fn validate_schema(conn: &Connection) -> Result<(), String> {
         "blocked",
         "alias",
         "thread_profile_rev",
-        "message_end_seq",
-        "tombstone_end_seq",
         "message_head",
         "deleted_hwm",
-        "group_meta_feed_end_id",
         "join_request_end_feed_id",
         "join_request_read_feed_id",
         "group_invite_end_feed_id",
@@ -114,7 +108,7 @@ pub(super) fn validate_schema(conn: &Connection) -> Result<(), String> {
 /// threads are changed through operation-scoped commits; an INSERT conflict
 /// is an invariant error, never an implicit upsert. Mention and preference
 /// columns start at their defaults; later page commits own them.
-/// Deletion progress starts at this snapshot's tombstone bound, while the optional
+/// Deletion progress starts at zero, while the optional
 /// message head remains unknown until history learns it independently of the feed.
 pub(super) fn insert(
     conn: &Connection,
@@ -140,19 +134,21 @@ pub(super) fn insert(
     {
         return Err("invalid thread identity".into());
     }
+    super::thread_resource_sync::advance(
+        conn, user_id, i64::from(snapshot.thread_id), i64::from(snapshot.message_end_seq), 0, "0",
+    )?;
     // Every persisted value has its own typed SQLite column; the sender's
     // profile content is deliberately not stored here.
     conn.execute(
         "INSERT INTO threads(user_id,thread_id,kind,authority_namespace_id,
           subject_account,
           thread_feed_id,conversation_state,blocked,alias,thread_profile_rev,
-          message_end_seq,tombstone_end_seq,group_meta_feed_end_id,
           join_request_end_feed_id,join_request_read_feed_id,group_invite_end_feed_id,
           server_last_read_seq,announcement_read_feed_id,server_unread_count,
           last_mention_seq,local_read_seq,
           role,self_mention_namespace_id,deleted_hwm)
          VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,
-           ?17,?18,?19,?20,?21,?22,?23,?12)",
+           ?17,?18,?19,?20,0)",
         params![
             user_id,
             snapshot.thread_id,
@@ -164,9 +160,6 @@ pub(super) fn insert(
             snapshot.blocked,
             snapshot.alias,
             snapshot.thread_profile_rev,
-            snapshot.message_end_seq,
-            snapshot.tombstone_end_seq,
-            snapshot.group_meta_feed_end_id,
             snapshot.join_request_end_feed_id,
             snapshot.join_request_read_feed_id,
             snapshot.group_invite_end_feed_id,
@@ -203,10 +196,6 @@ pub(super) fn read(
            meta.announcement_created_at AS group_announcement_created_at,
            meta.announcement_origin_created_at AS group_announcement_origin_created_at,
            meta.recovery_through AS group_meta_recovery_through,
-           meta.recovery_announcement_feed_id AS group_recovery_announcement_feed_id,
-           meta.recovery_announcement_text AS group_recovery_announcement_text,
-           meta.recovery_announcement_created_at AS group_recovery_announcement_created_at,
-           meta.recovery_announcement_origin_created_at AS group_recovery_announcement_origin_created_at,
            preview.created_at AS preview_created_at,muted,pinned,pinned_at,
            CASE preview.status
              WHEN 'LIVE' THEN COALESCE(preview.text,'')
@@ -217,11 +206,14 @@ pub(super) fn read(
            preview.sender_namespace_id AS last_message_sender_namespace_id,mention_me,mention_all,
            unread_count,last_read_seq,role,
            thread_feed_id,conversation_state,blocked,alias,thread_profile_rev,
-           message_end_seq,tombstone_end_seq,group_meta_feed_end_id,
+           targets.message_end_seq,targets.tombstone_end_seq,
+           CASE WHEN kind='GROUP' THEN targets.group_meta_feed_end_id ELSE NULL END AS group_meta_feed_end_id,
            join_request_end_feed_id,join_request_read_feed_id,group_invite_end_feed_id,
            server_last_read_seq,announcement_read_feed_id,server_unread_count,
            last_mention_seq,local_read_seq,self_mention_namespace_id
-         FROM threads LEFT JOIN group_meta meta
+         FROM threads JOIN thread_resource_sync targets
+           ON targets.user_id=threads.user_id AND targets.thread_id=threads.thread_id
+         LEFT JOIN group_meta meta
            ON meta.user_id=threads.user_id AND meta.thread_id=threads.thread_id
          LEFT JOIN thread_previews preview
            ON preview.user_id=threads.user_id AND preview.thread_id=threads.thread_id
@@ -276,10 +268,6 @@ pub(super) fn read(
                     "announcementCreatedAt": row.get::<_, Option<i64>>("group_announcement_created_at")?,
                     "announcementOriginCreatedAt": row.get::<_, Option<i64>>("group_announcement_origin_created_at")?,
                     "recoveryThrough": row.get::<_, Option<String>>("group_meta_recovery_through")?,
-                    "recoveryAnnouncementFeedId": row.get::<_, Option<String>>("group_recovery_announcement_feed_id")?,
-                    "recoveryAnnouncementText": row.get::<_, Option<String>>("group_recovery_announcement_text")?,
-                    "recoveryAnnouncementCreatedAt": row.get::<_, Option<i64>>("group_recovery_announcement_created_at")?,
-                    "recoveryAnnouncementOriginCreatedAt": row.get::<_, Option<i64>>("group_recovery_announcement_origin_created_at")?,
                 });
             }
             Ok(item)
@@ -333,7 +321,6 @@ pub(crate) fn insert_test_thread(
         "selfMentionNamespaceId": 0, "conversationState": "ACTIVE", "blocked": false,
         "role": null, "profileAccount": "peer", "profileRev": 1,
         "threadFeedId": 1, "alias": null, "messageEndSeq": 0,
-        "tombstoneEndSeq": tombstone_end, "groupMetaFeedEndId": null,
         "joinRequestEndFeedId": 0, "joinRequestReadFeedId": -1,
         "groupInviteEndFeedId": 0, "lastReadSeq": 0,
         "announcementReadFeedId": 0, "unreadCount": 0, "lastMentionSeq": null,
@@ -341,6 +328,9 @@ pub(crate) fn insert_test_thread(
     }))
     .unwrap();
     insert(conn, user_id, &snapshot, 0).unwrap();
+    if tombstone_end > 0 {
+        super::thread_resource_sync::advance(conn, user_id, thread_id, 0, tombstone_end, "0").unwrap();
+    }
 }
 
 #[cfg(test)]
@@ -358,6 +348,8 @@ mod tests {
         )
         .unwrap();
         conn.execute_batch(SCHEMA).unwrap();
+        conn.execute_batch(super::super::thread_resource_sync::SCHEMA)
+            .unwrap();
         conn.execute_batch(PREVIEW_SCHEMA).unwrap();
         conn.execute_batch(super::super::group_meta_store::SCHEMA)
             .unwrap();
@@ -366,8 +358,7 @@ mod tests {
             "profileAccount": "!room", "profileRev": 3, "role": null,
             "selfMentionNamespaceId": 12,
             "threadFeedId":1,"conversationState":"ACTIVE","blocked":false,"alias":null,
-            "messageEndSeq":4,"tombstoneEndSeq":0,
-            "groupMetaFeedEndId":"3","joinRequestEndFeedId":0,
+            "messageEndSeq":4,"joinRequestEndFeedId":0,
             "joinRequestReadFeedId":0,"groupInviteEndFeedId":0,
             "lastReadSeq":0,"announcementReadFeedId":0,
             "unreadCount":2,"lastMentionSeq":null,"previews":[]
@@ -375,6 +366,7 @@ mod tests {
         let snapshot: super::super::attention::ThreadFeedSnapshot =
             serde_json::from_value(input.clone()).unwrap();
         insert(&conn, 1, &snapshot, 0).unwrap();
+        super::super::thread_resource_sync::advance(&conn, 1, 7, 0, 0, "3").unwrap();
         assert_eq!(
             read(&conn, 1, 7).unwrap().unwrap()["meta"]["memberCount"],
             0
@@ -387,10 +379,6 @@ mod tests {
             announcement_created_at: None,
             announcement_origin_created_at: None,
             recovery_through: None,
-            recovery_announcement_feed_id: None,
-            recovery_announcement_text: None,
-            recovery_announcement_created_at: None,
-            recovery_announcement_origin_created_at: None,
         };
         super::super::group_meta_store::commit(&conn, 1, 7, &meta).unwrap();
         let restored = read(&conn, 1, 7).unwrap().unwrap();
@@ -485,10 +473,7 @@ mod tests {
         meta.announcement_feed_id = Some("4".into());
         meta.announcement_created_at = Some(1_000);
         meta.announcement_origin_created_at = Some(500);
-        meta.recovery_announcement_feed_id = Some("5".into());
-        meta.recovery_announcement_text = Some("Notice".into());
-        meta.recovery_announcement_created_at = Some(2_000);
-        meta.recovery_announcement_origin_created_at = Some(1_500);
+        meta.recovery_through = Some("5".into());
         super::super::group_meta_store::commit(&conn, 1, 7, &meta).unwrap();
         // Reinitialization is rejected rather than overwriting committed facts.
         assert!(insert(&conn, 1, &snapshot, 0).is_err());
@@ -499,13 +484,8 @@ mod tests {
         assert_eq!(restored["meta"]["announcementCreatedAt"], 1_000);
         assert_eq!(restored["meta"]["announcementOriginCreatedAt"], 500);
         assert_eq!(restored["meta"]["announcementText"], Value::Null);
-        assert_eq!(restored["meta"]["recoveryAnnouncementFeedId"], "5");
-        assert_eq!(restored["meta"]["recoveryAnnouncementText"], "Notice");
-        assert_eq!(restored["meta"]["recoveryAnnouncementCreatedAt"], 2_000);
-        assert_eq!(
-            restored["meta"]["recoveryAnnouncementOriginCreatedAt"],
-            1_500
-        );
+        assert_eq!(restored["meta"]["recoveryThrough"], "5");
+        assert!(restored["meta"].get("recoveryAnnouncementFeedId").is_none());
         meta.announcement_feed_id = None;
         meta.announcement_text = Some("Missing feed id".into());
         assert!(super::super::group_meta_store::commit(&conn, 1, 7, &meta).is_err());

@@ -2,6 +2,7 @@ import { QuotaModule } from '../quota/quota.module.js';
 import { UserQuotaService } from '../quota/user-quota.service.js';
 import { Module } from '@nestjs/common';
 import { GroupService } from './group.service.js';
+import { GroupMemberQueryService } from './member-query/group-member-query.service.js';
 import { RolesGuard } from './roles.guard.js';
 import { MessageModule } from '../message/message.module.js';
 import { DurableTaskModule } from '../durable-task/durable-task.module.js';
@@ -41,6 +42,7 @@ import { ClientStateFeedModule } from '../client-state-feed/client-state-feed.mo
   // AccountThreadStateModule and resolved for the controllers declared in AppModule.
   providers: [
     GroupService,
+    GroupMemberQueryService,
     RolesGuard,
     GroupRevokeFanoutService,
     DisbandGroupTaskHandler,
@@ -57,6 +59,7 @@ import { ClientStateFeedModule } from '../client-state-feed/client-state-feed.mo
         federation: FederationStateFeedPushService,
         relationshipMutations: GroupRelationshipMutationService,
         quota: UserQuotaService,
+        groupMeta: GroupMetaFeedService,
       ) =>
         new GroupAuthoredMembershipIntentService(
           database,
@@ -65,6 +68,7 @@ import { ClientStateFeedModule } from '../client-state-feed/client-state-feed.mo
           federation,
           relationshipMutations,
           quota,
+          groupMeta,
         ),
       inject: [
         DatabaseService,
@@ -73,6 +77,7 @@ import { ClientStateFeedModule } from '../client-state-feed/client-state-feed.mo
         FederationStateFeedPushService,
         GroupRelationshipMutationService,
         UserQuotaService,
+        GroupMetaFeedService,
       ],
     },
     {
@@ -83,6 +88,7 @@ import { ClientStateFeedModule } from '../client-state-feed/client-state-feed.mo
         relationshipMutations: GroupRelationshipMutationService,
         federation: FederationStateFeedPushService,
         quota: UserQuotaService,
+        groupMeta: GroupMetaFeedService,
       ) =>
         new MemberAuthoredGroupMembershipIntentService(
           database,
@@ -90,6 +96,7 @@ import { ClientStateFeedModule } from '../client-state-feed/client-state-feed.mo
           relationshipMutations,
           federation,
           quota,
+          groupMeta,
         ),
       inject: [
         DatabaseService,
@@ -97,6 +104,7 @@ import { ClientStateFeedModule } from '../client-state-feed/client-state-feed.mo
         GroupRelationshipMutationService,
         FederationStateFeedPushService,
         UserQuotaService,
+        GroupMetaFeedService,
       ],
     },
     {
@@ -146,6 +154,7 @@ import { ClientStateFeedModule } from '../client-state-feed/client-state-feed.mo
   ],
   exports: [
     GroupService,
+    GroupMemberQueryService,
     RolesGuard,
     GroupAuthoredMembershipIntentService,
     MemberAuthoredGroupMembershipIntentService,

@@ -1,5 +1,35 @@
 import { FEDERATION_THREAD_SEQUENCE_MAX } from './federation-thread-round.constants.js';
 
+/** Inputs for a NEW reservation. Existing gaps retain their stored offset. */
+export interface NewPublisherReservation {
+  firstOriginSeq: number;
+  curSeq: number;
+}
+
+export function calculatePublisherReservationOffset(
+  params: NewPublisherReservation,
+): number {
+  assertThreadSequence(params.firstOriginSeq, 'first reserved publisher seq');
+  for (const [label, value] of Object.entries(params)) {
+    if (
+      !Number.isSafeInteger(value) ||
+      value < 0 ||
+      value > FEDERATION_THREAD_SEQUENCE_MAX
+    )
+      throw new Error(`invalid reservation coordinate: ${label}`);
+  }
+  const offset = params.curSeq + 1 - params.firstOriginSeq;
+  if (!Number.isSafeInteger(offset) || offset < 0)
+    throw new Error(
+      'publisher reservation offset must be a non-negative integer',
+    );
+  assertThreadSequence(
+    params.firstOriginSeq + offset,
+    'first reserved local seq',
+  );
+  return offset;
+}
+
 export interface MapFederationOriginSequence {
   kind: 'MAP_ORIGIN';
   beforeSeq: number;

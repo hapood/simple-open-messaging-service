@@ -369,7 +369,7 @@ export class AdminListFederationPeersDto {
     required: false,
     example: 'available',
     description:
-      'Filter by lifecycle: unrecognized | establishing | available | degraded | halted',
+      'Filter by runtime status: unrecognized | establishing | available | cooldown | degraded | halted',
   })
   @IsOptional()
   @IsString()

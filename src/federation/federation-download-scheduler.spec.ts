@@ -415,7 +415,12 @@ describe('FederationDownloadScheduler', () => {
     );
     const observed = vi.fn();
     const subscription = subject.observeDigest('digest').subscribe(observed);
-    expect(observed).toHaveBeenCalledWith({ received: 2, total: 4 });
+    expect(observed).toHaveBeenCalledWith({
+      received: 2,
+      total: 4,
+      status: 'downloading',
+      bytesPerSecond: 0,
+    });
     subscription.unsubscribe();
     firstController.abort(new Error('consumer left'));
     await cancelled;

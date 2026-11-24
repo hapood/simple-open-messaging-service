@@ -8,13 +8,14 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { removeStagingFiles } from './staging-cleanup.js';
 
 describe('staging cleanup', () => {
   let root: string;
   beforeEach(async () => {
-    root = await mkdtemp('/tmp/opencode/staging-cleanup-');
+    root = await mkdtemp(join(tmpdir(), 'staging-cleanup-'));
   });
   afterEach(async () => {
     await rm(root, { recursive: true, force: true });

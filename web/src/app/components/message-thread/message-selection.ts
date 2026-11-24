@@ -21,15 +21,19 @@ export function albumMemberItem(
   memberId: number,
 ): CbItem<ChatItemData> {
   if (item.data.serverGap || (item.ids?.length ?? 0) < 2) return item;
-  const media = item.data.images?.find((entry) => entry.msgId === memberId);
+  const data = item.data;
+  if (data.images === null)
+    throw new Error('Album selection requires media content');
+  const media = data.images.find((entry) => entry.msgId === memberId);
+  if (!media) throw new Error('Selected member is not in the album');
   return {
     ...item,
     id: memberId,
     ids: undefined,
     data: {
-      ...item.data,
+      ...data,
       msgId: memberId,
-      images: media ? [media] : item.data.images,
+      images: [media],
     },
   };
 }

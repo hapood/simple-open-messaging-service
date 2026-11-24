@@ -10,12 +10,14 @@ const WINDOW: FederationReverseWindow = {
   messageSeqOffset: 8,
 };
 
-function harness(window: FederationReverseWindow = WINDOW) {
+function harness(window: FederationReverseWindow | null = WINDOW) {
   const states = {
+    prepareMessageRound: vi.fn().mockResolvedValue(undefined),
+    reserveReverseTail: vi.fn().mockResolvedValue(undefined),
     resolveReverseWindow: vi.fn().mockResolvedValue(window),
     require: vi.fn().mockResolvedValue({
-      authorizationEpoch: window.authorizationEpoch,
-      activeGapId: window.gapId,
+      authorizationEpoch: window?.authorizationEpoch ?? 0,
+      activeGapId: window?.gapId ?? null,
     }),
   };
   const driver = {
@@ -38,28 +40,41 @@ describe('FederationThreadReverseRoundService', () => {
   it('runs one quantum from the active inclusive gap', async () => {
     const { service, driver } = harness();
 
-    await expect(service.run(31, 'peer.test', 12, driver)).resolves.toEqual({
+    await expect(
+      service.run(31, 12, driver, new AbortController().signal),
+    ).resolves.toEqual({
       beforeSeq: 100,
       throughSeq: 1,
       batchOldestSeq: 50,
       nextBeforeSeq: 50,
       fetchedMessages: true,
-      closesReverseHistory: false,
-      continuation: null,
+      committed: true,
+      closesGap: false,
     });
     expect(driver.fetchMessages).toHaveBeenCalledWith({
       threadId: 31,
-      peerDomain: 'peer.test',
       before: 100,
       through: 1,
       take: 50,
     });
     expect(driver.complete).toHaveBeenCalledWith({
       threadId: 31,
-      peerDomain: 'peer.test',
       context: expect.objectContaining({ nextBeforeSeq: 50 }),
       closesGap: false,
     });
+  });
+
+  it('reserves a new tail only when dirty is true', async () => {
+    const { service, states, driver } = harness();
+
+    await service.run(31, 12, driver, new AbortController().signal, 50, false);
+    expect(states.prepareMessageRound).not.toHaveBeenCalled();
+    expect(states.reserveReverseTail).not.toHaveBeenCalled();
+    expect(states.resolveReverseWindow).toHaveBeenCalledWith(31, 12);
+
+    await service.run(31, 12, driver, new AbortController().signal, 50, true);
+    expect(states.prepareMessageRound).toHaveBeenCalledWith(31, 12);
+    expect(states.reserveReverseTail).toHaveBeenCalledWith(31, 12);
   });
 
   it('closes the gap when a committed batch scans through its inclusive start', async () => {
@@ -71,15 +86,14 @@ describe('FederationThreadReverseRoundService', () => {
     });
 
     await expect(
-      service.run(31, 'peer.test', 12, driver),
+      service.run(31, 12, driver, new AbortController().signal),
     ).resolves.toMatchObject({
       nextBeforeSeq: 1,
-      closesReverseHistory: true,
-      continuation: null,
+      committed: true,
+      closesGap: true,
     });
     expect(driver.complete).toHaveBeenCalledWith({
       threadId: 31,
-      peerDomain: 'peer.test',
       context: {
         authorizationEpoch: 7,
         gapId: 12n,
@@ -93,20 +107,14 @@ describe('FederationThreadReverseRoundService', () => {
   });
 
   it('does no work when latest=1 produced no reverse gap', async () => {
-    const { service, driver } = harness({
-      authorizationEpoch: 7,
-      gapId: null,
-      beforeSeq: 0,
-      throughSeq: null,
-      messageSeqOffset: 0,
-    });
+    const { service, driver } = harness(null);
 
     await expect(
-      service.run(31, 'peer.test', 12, driver),
+      service.run(31, 12, driver, new AbortController().signal),
     ).resolves.toMatchObject({
       fetchedMessages: false,
-      closesReverseHistory: true,
-      continuation: null,
+      committed: false,
+      closesGap: false,
     });
     expect(driver.fetchMessages).not.toHaveBeenCalled();
   });
@@ -116,10 +124,11 @@ describe('FederationThreadReverseRoundService', () => {
     driver.fetchMessages.mockResolvedValueOnce({ kind: 'history-boundary' });
 
     await expect(
-      service.run(31, 'peer.test', 12, driver),
+      service.run(31, 12, driver, new AbortController().signal),
     ).resolves.toMatchObject({
-      closesReverseHistory: true,
-      continuation: null,
+      fetchedMessages: true,
+      committed: false,
+      closesGap: false,
     });
     expect(driver.complete).not.toHaveBeenCalled();
     expect(driver.markUnavailable).toHaveBeenCalledOnce();

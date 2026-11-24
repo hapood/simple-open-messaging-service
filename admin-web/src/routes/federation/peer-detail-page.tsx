@@ -181,7 +181,7 @@ export function PeerDetailPage() {
               <h1 className="font-mono text-2xl font-semibold tracking-tight">
                 {peer.domain}
               </h1>
-              <PeerStatusBadge level={peer.trustLevel} />
+              <PeerStatusBadge level={peer.trustLevel === 'available' && peer.cooldown !== null ? 'cooldown' : peer.trustLevel} />
             </div>
             {isSuper ? (
               <div className="flex gap-2">

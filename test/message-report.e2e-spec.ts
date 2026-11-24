@@ -8,7 +8,7 @@ import { DatabaseService } from '../src/database/database.service.js';
 import { MessageDeleteType } from '../src/database/enums.js';
 import {
   admin,
-  deletedMessage,
+  messageTombstone,
   message,
   messageReport,
   durableTask,
@@ -217,11 +217,11 @@ describe('message report workflow', () => {
     );
     expect(new Set(results.map((result) => result.deletionSeq)).size).toBe(1);
     await deletion.deleteByModeration(threadId, 1);
-    const facts = await database.db.select().from(deletedMessage);
+    const facts = await database.db.select().from(messageTombstone);
     expect(facts).toHaveLength(1);
     expect(facts[0]).toMatchObject({
       threadId,
-      messageSeq: 1,
+      localMessageSeq: 1,
       deletionSeq: 1,
       type: MessageDeleteType.MODERATION_REMOVAL,
     });

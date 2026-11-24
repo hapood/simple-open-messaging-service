@@ -71,6 +71,8 @@ export async function writeMirrorLocalGroupLeftInTx(
     ), member_watermark AS (
       UPDATE "AccountThreadState" state
       SET "messageVisibleThroughSeq" = notice.seq,
+        "tombstoneVisibleThroughSeq" = (SELECT "tombstoneEndSeq" FROM seq_alloc),
+        "groupMetaVisibleThroughId" = COALESCE((SELECT "clientMetaEndId" FROM "GroupMeta" WHERE "threadId" = ${input.threadId}), 0),
         "updatedAt" = CURRENT_TIMESTAMP
       FROM system_message notice
       WHERE state."threadId" = ${input.threadId}
@@ -90,7 +92,6 @@ export async function writeMirrorLocalGroupLeftInTx(
         (SELECT id FROM "Account" WHERE account = '$system'),
         jsonb_build_object('threadId', ${input.threadId}::integer,
           'messageEndSeq', (SELECT seq FROM system_message),
-          'tombstoneEndSeq', (SELECT "tombstoneEndSeq" FROM seq_alloc),
           'accountId', ${input.localMemberId}::integer),
         ${accountScope}, 'PENDING'::"DurableTaskStatus"
       WHERE EXISTS (SELECT 1 FROM system_message)

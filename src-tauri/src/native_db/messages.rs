@@ -87,22 +87,35 @@ fn prepare_message(mut message: Value) -> Result<Value, String> {
         .and_then(Value::as_i64)
         .filter(|id| *id > 0)
         .ok_or("message has invalid threadId")?;
-    let seq = message_seq(&message, thread_id)?;
-    if message.get("contentType").and_then(Value::as_str) == Some("TOMB") {
-        let reason = message
-            .get("deletionType")
-            .and_then(Value::as_str)
-            .ok_or("tomb has no deletion type")?;
-        return message_tomb(thread_id, seq, reason);
-    }
-    if message.get("isDeleted").and_then(Value::as_bool) == Some(true) {
-        return Err("deleted messages must use the TOMB contract".into());
+    message_seq(&message, thread_id)?;
+    if message.get("contentType").and_then(Value::as_str) == Some("TOMB")
+        || message.get("isDeleted").and_then(Value::as_bool) == Some(true) {
+        return Err("message pages must contain live bodies only".into());
     }
     normalize_message_creator(&mut message);
     Ok(message)
 }
 
-/// No slot reads or merges: deletion feeds replace every matched row with anonymous coordinates.
+fn store_message_deletion(
+    tx: &rusqlite::Transaction<'_>,
+    user_id: i64,
+    thread_id: i64,
+    seq: i64,
+    reason: &str,
+) -> Result<(), String> {
+    let tomb = message_tomb(thread_id, seq, reason)?;
+    tx.execute(
+        "INSERT INTO messages(user_id, thread_id, seq, created_at, payload_json)
+         VALUES(?1, ?2, ?3, 0, ?4)
+         ON CONFLICT(user_id, thread_id, seq) DO UPDATE SET
+           created_at=0, payload_json=excluded.payload_json",
+        params![user_id, thread_id, seq, json_text(&tomb)?],
+    )
+    .map_err(|e| format!("store message deletion tomb: {e}"))?;
+    Ok(())
+}
+
+/// Insert live bodies only. Deletion-feed writes own tomb replacement separately.
 fn upsert_message_batch(
     tx: &rusqlite::Transaction<'_>,
     user_id: i64,
@@ -117,8 +130,7 @@ fn upsert_message_batch(
          SELECT ?1, json_extract(value, '$.threadId'), json_extract(value, '$.seq'),
                 COALESCE(json_extract(value, '$.createdAt'), 0), value
          FROM json_each(?2) WHERE 1
-         ON CONFLICT(user_id, thread_id, seq) DO UPDATE SET
-           created_at=excluded.created_at, payload_json=excluded.payload_json",
+         ON CONFLICT(user_id, thread_id, seq) DO NOTHING",
         )
         .map_err(|e| format!("prepare message batch: {e}"))?;
     // Bound serialized statement size without imposing SQLite's per-variable limit on a page.
@@ -139,11 +151,11 @@ fn upsert_message_batch(
 fn insert_uncovered_messages(
     tx: &rusqlite::Transaction<'_>,
     user_id: i64,
-    thread_id: i64,
+    _thread_id: i64,
     current: &[MessageRange],
     messages: Vec<Value>,
 ) -> Result<(), String> {
-    let mut candidates: Vec<Value> = messages
+    let candidates: Vec<Value> = messages
         .into_iter()
         .filter(|message| {
             let seq = message["seq"]
@@ -153,15 +165,6 @@ fn insert_uncovered_messages(
                 .is_some_and(|range| range.state == MessageRangeState::LocalCovered)
         })
         .collect();
-    let seqs = candidates
-        .iter()
-        .map(|message| message["seq"].as_i64().unwrap())
-        .collect();
-    let tombs: BTreeSet<i64> = load_message_deletions(tx, user_id, thread_id, seqs)?
-        .into_iter()
-        .map(|deletion| deletion.seq)
-        .collect();
-    candidates.retain(|message| !tombs.contains(&message["seq"].as_i64().unwrap()));
     upsert_message_batch(tx, user_id, &candidates)
 }
 
@@ -303,6 +306,7 @@ pub(crate) enum MessageRangeState {
 }
 
 impl MessageRangeState {
+    #[cfg(test)]
     pub(super) fn as_str(self) -> &'static str {
         match self {
             Self::LocalCovered => "LOCAL_COVERED",
@@ -753,7 +757,8 @@ async fn read_native_message_head(
                 // Preserve unknown for a structural placeholder with no history/head yet.
                 "SELECT CASE WHEN message_head IS NULL AND message_end_seq=0 THEN NULL
                    ELSE MAX(COALESCE(message_head,0),message_end_seq) END
-                 FROM threads WHERE user_id=?1 AND thread_id=?2",
+                 FROM threads JOIN thread_resource_sync targets USING(user_id,thread_id)
+                 WHERE threads.user_id=?1 AND threads.thread_id=?2",
                 params![user_id, thread_id],
                 |row| row.get::<_, Option<i64>>(0),
             )
@@ -1166,6 +1171,15 @@ async fn walk_native_history_with_mode(
         .await?;
         work.assert_current().map_err(|e| e.to_string())?;
         emit_message_commit(&intent.events, user_id, thread_id);
+        {
+            super::resource_scheduler::wake_tomb_cutoff(
+                work.clone(),
+                intent.request.clone(),
+                user_id,
+                thread_id,
+                intent.events.clone(),
+            );
+        }
         ranges = committed.ranges;
         let Some(scan) = scan else {
             return Ok(DirectionalWalk {
@@ -1205,6 +1219,7 @@ pub(crate) async fn commit_native_message_page(
     gaps: Vec<ServerMessageRange>,
     known_newest_seq: Option<i64>,
 ) -> Result<CommittedMessagePage, String> {
+    let commit_work = work.clone();
     super::spawn_owned_database(Ok(work), move |conn| {
         if known_newest_seq.is_some_and(|seq| seq < 0) {
             return Err("known newest message sequence is invalid".to_string());
@@ -1270,6 +1285,7 @@ pub(crate) async fn commit_native_message_page(
         if let Some(incoming) = known_newest_seq {
             update_message_head(&tx, user_id, thread_id, incoming)?;
         }
+        commit_work.assert_current().map_err(|e| e.to_string())?;
         tx.commit()
             .map_err(|e| format!("commit message page: {e}"))?;
         Ok(CommittedMessagePage {
@@ -1281,7 +1297,16 @@ pub(crate) async fn commit_native_message_page(
     .map_err(|e| format!("join message page commit: {e}"))?
 }
 
+#[path = "history_interval.rs"]
+mod history_interval;
+pub(crate) use history_interval::HistoryIntervalEvent;
+
 impl NativeHistoryIntent {
+    pub(super) fn isolate_consumer(&mut self) -> tokio_util::sync::CancellationToken {
+        self.work = self.work.child();
+        self.work.cancellation()
+    }
+
     /// Retain an opening/live hint under the captured login before walking history.
     /// This is a server ceiling only; it never certifies local range coverage.
     pub(super) async fn get_with_head(
@@ -1552,13 +1577,39 @@ fn put_cached_messages(
 }
 
 #[tauri::command]
+pub(crate) async fn native_db_set_message_media_status(
+    user_id: i64, thread_id: i64, seq: i64, status: String,
+) -> Result<bool, String> {
+    if user_id <= 0 || thread_id <= 0 || seq <= 0 ||
+        !matches!(status.as_str(), "ready" | "pending" | "downloading" | "failed") {
+        return Err("invalid message media status update".into());
+    }
+    super::spawn_owned_database(super::capture_database_work(), move |conn| {
+        conn.execute(
+            "UPDATE messages SET payload_json=json_set(payload_json,'$.mediaStatus',?4)
+             WHERE user_id=?1 AND thread_id=?2 AND seq=?3
+               AND COALESCE(json_extract(payload_json,'$.isDeleted'),0)=0
+               AND json_extract(payload_json,'$.contentType')!='TOMB'
+               AND COALESCE(json_extract(payload_json,'$.mediaStatus'),'')!=?4",
+            params![user_id, thread_id, seq, status],
+        ).map(|count| count > 0).map_err(|e| format!("update message media status: {e}"))
+    }).await.map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
 pub(crate) async fn native_db_put_cached_messages(
     app: tauri::AppHandle,
+    proxy: tauri::State<'_, ServerSessionState>,
     user_id: i64,
     messages: Vec<Value>,
 ) -> Result<(), String> {
     let work = super::capture_database_work()?;
     let commit_events = crate::realtime::NativeEvents::for_database_work(Some(&app), work.clone());
+    let request = LoginRequest::capture(&proxy, work.owner().clone())?;
+    let body_threads: BTreeSet<i64> = messages.iter()
+        .filter(|message| message.get("contentType").and_then(Value::as_str) != Some("TOMB"))
+        .filter_map(|message| message.get("threadId").and_then(Value::as_i64))
+        .collect();
     let thread_ids: BTreeSet<i64> = messages
         .iter()
         .filter_map(|message| message.get("threadId").and_then(Value::as_i64))
@@ -1576,6 +1627,15 @@ pub(crate) async fn native_db_put_cached_messages(
     work.assert_current().map_err(|e| e.to_string())?;
     for thread_id in thread_ids {
         emit_message_commit(&commit_events, user_id, thread_id);
+        if body_threads.contains(&thread_id) {
+            super::resource_scheduler::wake_tomb_cutoff(
+                work.clone(),
+                request.clone(),
+                user_id,
+                thread_id,
+                commit_events.clone(),
+            );
+        }
     }
     Ok(())
 }
@@ -1599,6 +1659,14 @@ pub(crate) async fn native_db_put_message_head(
     })
     .await
     .map_err(|error| format!("join message head write: {error}"))?
+}
+
+pub(super) fn read_tombstone_cutoff(conn: &Connection, user_id: i64, thread_id: i64) -> Result<i64, String> {
+    conn.query_row("SELECT MAX(
+        COALESCE((SELECT MAX(seq) FROM messages WHERE user_id=?1 AND thread_id=?2),0),
+        COALESCE((SELECT MAX(right_inclusive) FROM message_ranges WHERE user_id=?1 AND thread_id=?2),0))",
+        params![user_id,thread_id], |row| row.get(0))
+        .map_err(|e| format!("read tombstone cutoff: {e}"))
 }
 
 pub(super) fn read_deleted_hwm(
@@ -1652,7 +1720,6 @@ pub(super) async fn apply_deleted_messages(
         let tx = conn
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|e| format!("begin deleted-message write: {e}"))?;
-        let mut tombs = Vec::with_capacity(items.len());
         for item in items {
             let item_thread_id = item
                 .get("threadId")
@@ -1677,13 +1744,12 @@ pub(super) async fn apply_deleted_messages(
                 .get("type")
                 .and_then(Value::as_str)
                 .ok_or_else(|| "deleted message has no deletion type".to_string())?;
-            tombs.push(message_tomb(thread_id, message_seq, reason)?);
+            store_message_deletion(&tx, user_id, thread_id, message_seq, reason)?;
         }
-        upsert_message_batch(&tx, user_id, &tombs)?;
         let updated = tx
             .execute(
                 "UPDATE threads SET deleted_hwm=MAX(deleted_hwm,?3)
-             WHERE user_id=?1 AND thread_id=?2",
+                 WHERE user_id=?1 AND thread_id=?2",
                 params![user_id, thread_id, hwm],
             )
             .map_err(|e| format!("advance deleted hwm: {e}"))?;
@@ -1745,8 +1811,9 @@ pub(crate) fn load_message_deletions(
         .prepare(
             "SELECT seq, json_extract(payload_json, '$.deletionType') FROM messages
              WHERE user_id = ?1 AND thread_id = ?2
-             AND seq IN (SELECT value FROM json_each(?3))
-             AND json_extract(payload_json, '$.contentType') = 'TOMB'
+               AND seq IN (SELECT value FROM json_each(?3))
+               AND json_extract(payload_json, '$.isDeleted') = 1
+               AND json_extract(payload_json, '$.contentType') = 'TOMB'
              ORDER BY seq",
         )
         .map_err(|e| format!("prepare tombstone read: {e}"))?;
@@ -1988,16 +2055,15 @@ fn reset_thread_message_cache(
     user_id: i64,
     thread_id: i64,
 ) -> Result<(), String> {
-    // Tomb stubs are synchronization facts, not disposable bodies. Retain them
-    // with the deletion cursor so an in-flight body cannot resurrect a deletion.
+    // Independent deletion facts survive body eviction together with the cursor,
+    // so an in-flight body cannot resurrect a deletion.
     owner
         .with_database(|conn| {
             let tx = conn
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(|e| format!("begin delete thread messages: {e}"))?;
             tx.execute(
-                "DELETE FROM messages WHERE user_id = ?1 AND thread_id = ?2
-             AND COALESCE(json_extract(payload_json, '$.contentType'), '') != 'TOMB'",
+                "DELETE FROM messages WHERE user_id = ?1 AND thread_id = ?2",
                 params![user_id, thread_id],
             )
             .map_err(|e| format!("delete thread messages: {e}"))?;

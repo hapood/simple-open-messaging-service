@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { API_BASE } from '@/lib/constants';
 import { forceLogout } from '@/auth/force-logout';
 import type { DownloaderSnapshot } from '@/api/media';
-import { consumeSse } from '../../../shared/sse-client';
+import { consumeAdminSse } from '../lib/sse-client';
 
 type State = 'connecting' | 'open' | 'reconnecting' | 'closed';
 
@@ -18,7 +18,7 @@ export function useDownloaderStream(page: number, take: number) {
       setState('connecting');
       while (!lifetime.signal.aborted) {
         try {
-          await consumeSse(
+          await consumeAdminSse(
             `${API_BASE}/admin/media/downloader/stream?skip=${page * take}&take=${take}`,
             {
               signal: lifetime.signal,

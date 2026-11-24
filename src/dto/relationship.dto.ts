@@ -56,6 +56,16 @@ export class RevokeRelationshipDto {
   @IsInt()
   @Min(1)
   threadId!: number;
+
+  @ApiProperty({
+    required: false,
+    example: 'Goodbye',
+    description: 'Optional revocation note (≤255 chars)',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(255)
+  note?: string;
 }
 
 export class AcceptRelationshipDto extends RequestDecisionDto {}

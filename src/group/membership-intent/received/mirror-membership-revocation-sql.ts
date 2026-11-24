@@ -83,7 +83,7 @@ export function mirrorMembershipRevocationSql(
       -- snapshot on re-activation.
       UPDATE "GroupMeta" f
         SET "metaTargetId" = 0, "metaProcessedThroughId" = 0,
-          "metaRecoveryThroughId" = NULL, "updatedAt" = CURRENT_TIMESTAMP
+          "metaRecoveryThroughId" = 0, "updatedAt" = CURRENT_TIMESTAMP
       FROM epoch_bump WHERE f."threadId" = epoch_bump.id
       RETURNING f."threadId"
     )

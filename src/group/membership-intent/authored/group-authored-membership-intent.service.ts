@@ -20,6 +20,12 @@ import {
   groupAuthoredInvitationLocatorSql,
   type GroupMembershipAuthorizationRow,
 } from './group-authored-membership-authorization-sql.js';
+import { reconcileClientMemberCountInTx } from '../../meta/reconcile-client-member-count-in-tx.js';
+import {
+  enqueueThreadMetaFanoutInTx,
+  enqueueThreadTombFanoutInTx,
+} from '../../../message/thread-fanout-task.js';
+import { GroupMetaFeedService } from '../../meta/group-meta-feed.service.js';
 import {
   groupMembershipRevocationIntentWrite,
   groupMembershipRevocationSql,
@@ -51,7 +57,11 @@ import type {
   DatabaseService,
   DatabaseTransaction,
 } from '../../../database/database.service.js';
-import { relationshipPair } from '../../../database/schema.js';
+import {
+  groupMeta,
+  messageThread,
+  relationshipPair,
+} from '../../../database/schema.js';
 import type {
   ClientStateFeedService,
   PendingClientStateFeedUpdate,
@@ -77,7 +87,7 @@ export type GroupAuthoredMembershipIntentCommand =
       decision: 'ACCEPTED';
       target: { account: string; namespaceId: number };
       scope: 'APPLICATION' | 'INVITATION';
-      note?: never;
+      note?: string;
     }
   | {
       threadId: number;
@@ -85,7 +95,7 @@ export type GroupAuthoredMembershipIntentCommand =
       decision: 'REVOKED';
       target: { account: string; namespaceId: number };
       scope: 'APPLICATION' | 'INVITATION' | 'MEMBER';
-      note?: never;
+      note?: string;
     };
 
 export type GroupAuthoredMembershipIntentResult =
@@ -179,6 +189,7 @@ export class GroupAuthoredMembershipIntentService {
     private readonly federation: FederationStateFeedPusher,
     private readonly relationshipMutations: GroupRelationshipMutationService,
     private readonly quota: UserQuotaService,
+    private readonly groupMeta: GroupMetaFeedService,
   ) {}
 
   async execute(
@@ -687,12 +698,14 @@ export class GroupAuthoredMembershipIntentService {
         groupProfileRev: row.profileRev,
         memberAccount: member.account,
         profileNamespaceId: member.namespaceId,
-        // An application keeps the applicant's note; completing an invitation
-        // preserves the group's own invitation note through the promotion.
+        // An application keeps the applicant's note unless the manager supplies one;
+        // completing an invitation preserves the group's own invitation note.
         note:
-          row.memberIntentStatus === 'REQUESTED'
-            ? memberNote
-            : (row.groupIntentNote ?? ''),
+          params.note !== undefined
+            ? params.note.slice(0, 255)
+            : row.memberIntentStatus === 'REQUESTED'
+              ? memberNote
+              : (row.groupIntentNote ?? ''),
         acceptedAt: new Date(),
       },
     });
@@ -792,6 +805,7 @@ export class GroupAuthoredMembershipIntentService {
           account: member.account,
           namespaceId: member.namespaceId,
         },
+        note: (params.note ?? '').slice(0, 255),
       },
     });
   }
@@ -955,6 +969,11 @@ export class GroupAuthoredMembershipIntentService {
     clientUpdates: PendingClientStateFeedUpdate[],
   ): Promise<Map<number, bigint>> {
     const { tx } = context;
+    await this.groupMeta.reconcileProfileInTx(
+      tx,
+      context.params.threadId,
+      context.input.groupProfileRev,
+    );
     for (const write of groupMembershipAcceptanceIntentWrites(context.input))
       await tx.execute(write);
     const result = await tx.execute<{
@@ -968,6 +987,31 @@ export class GroupAuthoredMembershipIntentService {
     const row = result.rows[0];
     if (!row) throw new Error('group membership acceptance update disappeared');
     if (row.invalidPeerHead) throw new Error('conflicting peer content head');
+    if (row.canonicalRosterChanged)
+      await reconcileClientMemberCountInTx(tx, context.threadLock);
+    if (context.localMemberId !== null) {
+      const [heads] = await tx
+        .select({
+          tombstoneEndSeq: messageThread.tombstoneEndSeq,
+          clientMetaEndId: groupMeta.clientMetaEndId,
+        })
+        .from(messageThread)
+        .leftJoin(groupMeta, eq(groupMeta.threadId, messageThread.id))
+        .where(eq(messageThread.id, context.params.threadId))
+        .limit(1);
+      if (heads && heads.tombstoneEndSeq > 0) {
+        await enqueueThreadTombFanoutInTx(tx, context.threadLock, {
+          threadId: context.params.threadId,
+          tombstoneEndSeq: heads.tombstoneEndSeq,
+        });
+      }
+      if (heads?.clientMetaEndId && heads.clientMetaEndId > 0) {
+        await enqueueThreadMetaFanoutInTx(tx, context.threadLock, {
+          threadId: context.params.threadId,
+          groupMetaFeedEndId: heads.clientMetaEndId,
+        });
+      }
+    }
     // Participant updates ride the thread feed, not the retired client intent feed.
     if (context.localMemberId !== null)
       clientUpdates.push(
@@ -1008,6 +1052,8 @@ export class GroupAuthoredMembershipIntentService {
     }>(groupMembershipRevocationSql(context.input));
     const row = result.rows[0];
     if (!row) throw new Error('group membership revocation update disappeared');
+    if (row.pairChanged)
+      await reconcileClientMemberCountInTx(tx, context.threadLock);
     if (row.pairChanged && context.localMemberId !== null)
       clientUpdates.push(
         ...(await captureGroupDepartureUpdatesInTx(

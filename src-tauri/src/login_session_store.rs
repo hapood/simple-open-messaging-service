@@ -190,7 +190,7 @@ impl SessionStore {
     pub(crate) fn read(conn: &Connection) -> Result<Option<Journal>, String> {
         let raw: Option<String> = conn
             .query_row(
-                "SELECT value_json FROM client_preferences WHERE scope='device' AND key=?1",
+                "SELECT value FROM app_state WHERE key=?1",
                 [JOURNAL_KEY],
                 |row| row.get(0),
             )
@@ -214,9 +214,8 @@ impl SessionStore {
         let value = serde_json::to_string(&journal)
             .map_err(|e| format!("encode native login journal: {e}"))?;
         tx.execute(
-            "INSERT INTO client_preferences(scope,key,value_json,updated_at)
-             VALUES('device',?1,?2,CAST(strftime('%s','now') AS INTEGER)*1000)
-             ON CONFLICT(scope,key) DO UPDATE SET value_json=excluded.value_json,updated_at=excluded.updated_at",
+            "INSERT INTO app_state(key,value) VALUES(?1,?2)
+             ON CONFLICT(key) DO UPDATE SET value=excluded.value",
             params![JOURNAL_KEY, value],
         ).map_err(|e| format!("write native login journal: {e}"))?;
         tx.commit()
@@ -257,7 +256,9 @@ impl SessionStore {
         })
     }
 
-    /// Validate a retained secure credential for revocation only, never for business admission.
+    /// Inspect the journal's retained revocation credential in lifecycle tests.
+    /// Production revocation uses the credential captured by the logout operation.
+    #[cfg(test)]
     pub(crate) fn revoking_session(
         conn: &Connection,
         token: &str,
@@ -439,9 +440,8 @@ mod tests {
 
     fn open(path: &Path) -> Connection {
         let conn = Connection::open(path).unwrap();
-        conn.execute_batch("CREATE TABLE IF NOT EXISTS client_preferences (
-            scope TEXT NOT NULL,key TEXT NOT NULL,value_json TEXT NOT NULL,updated_at INTEGER NOT NULL,
-            PRIMARY KEY(scope,key));").unwrap();
+        conn.execute_batch("CREATE TABLE IF NOT EXISTS app_state (
+            key TEXT PRIMARY KEY, value TEXT NOT NULL);").unwrap();
         conn
     }
 

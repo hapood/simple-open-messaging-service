@@ -6,7 +6,9 @@ use serde_json::Value;
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ClientStateFeedItem {
     pub(super) feed_id: Option<i64>,
-    body: IncomingRequestHead,
+    #[serde(rename = "type")]
+    pub(super) kind: String,
+    pub(super) body: Value,
 }
 
 #[derive(Deserialize)]
@@ -14,6 +16,20 @@ pub(crate) struct ClientStateFeedItem {
 struct IncomingRequestHead {
     request_end_id: String,
     request_read_id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ThreadTombHead {
+    thread_id: i64,
+    tombstone_end_seq: i64,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ThreadMetaHead {
+    thread_id: i64,
+    group_meta_feed_end_id: String,
 }
 
 #[derive(Deserialize)]
@@ -46,7 +62,6 @@ pub(super) struct GroupMetaCommitPatch {
 pub(crate) struct ClientGroupMetaPage {
     #[serde(default)]
     pub(super) account: String,
-    pub(super) mode: String,
     pub(super) items: Vec<ClientGroupMetaItem>,
     pub(super) scanned_through: String,
     #[serde(default)]
@@ -190,9 +205,7 @@ pub(super) fn begin_group_meta_recovery(
     let changed = tx
         .execute(
             "UPDATE group_meta SET member_count=0, feed_id='0',
-      recovery_through=?3,
-      recovery_announcement_feed_id=NULL, recovery_announcement_text=NULL,
-      recovery_announcement_created_at=NULL, recovery_announcement_origin_created_at=NULL
+      recovery_through=?3
       WHERE user_id=?1 AND thread_id=?2",
             params![user_id, thread_id, through],
         )
@@ -210,19 +223,20 @@ pub(super) fn apply_state_feed_page(
     feed_id: i64,
     group_meta: Vec<ClientGroupMetaApply>,
 ) -> Result<Vec<GroupMetaCommitPatch>, String> {
-    apply_state_feed_page_with_resume(conn, user_id, items, feed_id, group_meta, None)
+    apply_state_feed_page_with_resume(conn, user_id, items, feed_id, group_meta, None, None)
 }
 
-/// The native executor persists its full-snapshot boundary with the page and cursor. `None`
-/// leaves this independent recovery marker alone (e.g. a group-meta-only write); `Some(None)`
-/// removes it only when the last full page has committed.
+/// Persist the full-snapshot boundary with the page and cursor. None leaves the
+/// boundary unchanged. Completed boundaries remain stored; cursor comparison
+/// determines whether full recovery is still required.
 pub(super) fn apply_state_feed_page_with_resume(
     conn: &mut Connection,
     user_id: i64,
     items: Vec<ClientStateFeedItem>,
     feed_id: i64,
     group_meta: Vec<ClientGroupMetaApply>,
-    full_through: Option<Option<i64>>,
+    full_through: Option<i64>,
+    target: Option<i64>,
 ) -> Result<Vec<GroupMetaCommitPatch>, String> {
     let tx = conn
         .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -231,9 +245,6 @@ pub(super) fn apply_state_feed_page_with_resume(
     for update in group_meta {
         if update.namespace_id < 0 {
             return Err("group-meta publisher namespace must be non-negative".into());
-        }
-        if update.page.mode != "full" && update.page.mode != "delta" {
-            return Err("group-meta mode must be full or delta".into());
         }
         let mut meta = super::group_meta_store::read(&tx, user_id, update.thread_id)?;
         for item in update.page.items {
@@ -258,110 +269,25 @@ pub(super) fn apply_state_feed_page_with_resume(
                 {
                     return Err("invalid GROUP_ANNOUNCEMENT text".into());
                 }
-                if update.page.mode == "full" {
-                    meta.recovery_announcement_feed_id = Some(item.feed_id);
-                    meta.recovery_announcement_text = text.as_str().map(str::to_owned);
-                    meta.recovery_announcement_created_at = Some(item.created_at);
-                    meta.recovery_announcement_origin_created_at = item.origin_created_at;
-                } else {
-                    meta.announcement_feed_id = Some(item.feed_id);
-                    meta.announcement_text = text.as_str().map(str::to_owned);
-                    meta.announcement_created_at = Some(item.created_at);
-                    meta.announcement_origin_created_at = item.origin_created_at;
-                }
+                meta.announcement_feed_id = Some(item.feed_id);
+                meta.announcement_text = text.as_str().map(str::to_owned);
+                meta.announcement_created_at = Some(item.created_at);
+                meta.announcement_origin_created_at = item.origin_created_at;
                 continue;
             }
-            if item.operation == "GROUP_PROFILE" {
-                item.body
-                    .get("profileRev")
-                    .and_then(Value::as_i64)
-                    .filter(|rev| *rev >= 0)
-                    .ok_or("GROUP_PROFILE has no valid profileRev")?;
-                // The complete thread feed selects the avatar revision. Meta may
-                // arrive first, so it cannot write a competing version into threads.
-                continue;
+            if item.operation != "GROUP_MEMBER_COUNT" {
+                return Err("unsupported group-meta operation".into());
             }
-            if item.operation != "MEMBER_UPSERT" && item.operation != "MEMBER_DEPART" {
-                return Err("group-meta operation must be MEMBER_UPSERT or MEMBER_DEPART".into());
-            }
-            let body = item.body;
-            let account = body
-                .get("account")
-                .and_then(Value::as_str)
-                .ok_or("group-meta member has no account")?;
-            let namespace_id = body
-                .get("namespaceId")
+            let member_count = item
+                .body
+                .get("memberCount")
                 .and_then(Value::as_i64)
-                .ok_or("group-meta member has no namespaceId")?;
-            if account.is_empty() {
-                return Err("group-meta member has no subject account".into());
-            }
-            if namespace_id < 0 {
-                return Err("group-meta member namespace must be non-negative".into());
-            }
-            // Both member operations carry the complete member body on the wire;
-            // a departure only needs the address, but the page contract is
-            // validated as a whole so an out-of-contract page is rejected
-            // instead of silently coerced into stored member state.
-            let role = body
-                .get("role")
-                .and_then(Value::as_str)
-                .filter(|role| matches!(*role, "OWNER" | "ADMIN" | "MEMBER"))
-                .ok_or("group-meta member has invalid role")?;
-            let profile_rev = body
-                .get("profileRev")
-                .and_then(Value::as_i64)
-                .filter(|rev| *rev >= 0)
-                .ok_or("group-meta member has invalid profileRev")?;
-            if item.operation == "MEMBER_DEPART" {
-                tx.execute(
-                    "UPDATE members SET left_state=1
-                         WHERE user_id=?1 AND thread_id=?2 AND member_account=?3
-                           AND namespace_id=?4",
-                    params![user_id, update.thread_id, account, namespace_id],
-                )
-                .map_err(|e| format!("depart group member: {e}"))?;
-                continue;
-            }
-            tx.execute(
-                "INSERT INTO members(
-                       user_id,thread_id,member_account,namespace_id,role,left_state,
-                       profile_rev
-                     ) VALUES(?1,?2,?3,?4,?5,0,?6)
-                     ON CONFLICT(user_id,thread_id,member_account,namespace_id)
-                     DO UPDATE SET role=excluded.role,left_state=0,
-                       profile_rev=excluded.profile_rev",
-                params![
-                    user_id,
-                    update.thread_id,
-                    account,
-                    namespace_id,
-                    role,
-                    profile_rev,
-                ],
-            )
-            .map_err(|e| format!("upsert group member: {e}"))?;
-        }
-        meta.member_count = tx
-            .query_row(
-                "SELECT COUNT(*) FROM members WHERE user_id=?1 AND thread_id=?2 AND left_state=0",
-                params![user_id, update.thread_id],
-                |row| row.get(0),
-            )
-            .map_err(|e| format!("count current group members: {e}"))?;
-        if update.page.mode == "full" && !update.page.has_more {
-            meta.announcement_feed_id = meta.recovery_announcement_feed_id.take();
-            meta.announcement_text = meta.recovery_announcement_text.take();
-            meta.announcement_created_at = meta.recovery_announcement_created_at.take();
-            meta.announcement_origin_created_at =
-                meta.recovery_announcement_origin_created_at.take();
+                .filter(|count| *count >= 0)
+                .ok_or("GROUP_MEMBER_COUNT has no valid memberCount")?;
+            meta.member_count = member_count;
         }
         if !update.page.has_more {
             meta.recovery_through = None;
-            meta.recovery_announcement_feed_id = None;
-            meta.recovery_announcement_text = None;
-            meta.recovery_announcement_created_at = None;
-            meta.recovery_announcement_origin_created_at = None;
         }
         meta.feed_id = update.page.scanned_through;
         super::group_meta_store::commit(&tx, user_id, update.thread_id, &meta)?;
@@ -377,38 +303,74 @@ pub(super) fn apply_state_feed_page_with_resume(
         });
     }
     for op in &items {
-        let end = super::account_state::request_id_to_sqlite(&op.body.request_end_id)?;
-        let read = super::account_state::request_id_to_sqlite(&op.body.request_read_id)?;
-        if read > end {
-            return Err("request read ID exceeds end ID".into());
+        match op.kind.as_str() {
+            "REQUEST_HEAD" => {
+                let head: IncomingRequestHead = serde_json::from_value(op.body.clone())
+                    .map_err(|e| format!("invalid incoming request head: {e}"))?;
+                let end = super::account_state::request_id_to_sqlite(&head.request_end_id)?;
+                let read = super::account_state::request_id_to_sqlite(&head.request_read_id)?;
+                if read > end {
+                    return Err("request read ID exceeds end ID".into());
+                }
+                tx.execute(
+                    "INSERT INTO account_state(user_id,intent_request_end_id,intent_request_read_id)
+                     VALUES(?1,?2,?3) ON CONFLICT(user_id) DO UPDATE SET
+                     intent_request_end_id=excluded.intent_request_end_id,
+                     intent_request_read_id=excluded.intent_request_read_id,
+                     intent_request_optimistic_read_id=CASE
+                       WHEN account_state.intent_request_optimistic_read_id <= excluded.intent_request_read_id
+                       THEN NULL ELSE account_state.intent_request_optimistic_read_id END",
+                    params![user_id, end, read],
+                )
+                .map_err(|e| format!("save incoming request head: {e}"))?;
+            }
+            "THREAD_TOMB_HEAD" => {
+                let head: ThreadTombHead = serde_json::from_value(op.body.clone())
+                    .map_err(|e| format!("invalid thread tomb head: {e}"))?;
+                if head.thread_id <= 0 || head.tombstone_end_seq < 0 {
+                    return Err("invalid thread tomb head coordinates".into());
+                }
+                super::thread_resource_sync::advance(
+                    &tx, user_id, head.thread_id, 0, head.tombstone_end_seq, "0",
+                )?;
+            }
+            "THREAD_META_HEAD" => {
+                let head: ThreadMetaHead = serde_json::from_value(op.body.clone())
+                    .map_err(|e| format!("invalid thread meta head: {e}"))?;
+                if head.thread_id <= 0 {
+                    return Err("invalid thread meta head threadId".into());
+                }
+                let next_end = head
+                    .group_meta_feed_end_id
+                    .parse::<u64>()
+                    .map_err(|_| "invalid groupMetaFeedEndId".to_string())?;
+                if head.group_meta_feed_end_id != next_end.to_string() {
+                    return Err("invalid groupMetaFeedEndId".into());
+                }
+                super::thread_resource_sync::advance(
+                    &tx, user_id, head.thread_id, 0, 0, &head.group_meta_feed_end_id,
+                )?;
+            }
+            _ => return Err("unsupported client state feed item type".into()),
         }
+    }
+    if let Some(target) = target {
+        if target < 0 { return Err("invalid state-feed target".into()); }
         tx.execute(
-            "INSERT INTO account_state(user_id,intent_request_end_id,intent_request_read_id)
-             VALUES(?1,?2,?3) ON CONFLICT(user_id) DO UPDATE SET
-             intent_request_end_id=excluded.intent_request_end_id,
-             intent_request_read_id=excluded.intent_request_read_id,
-             intent_request_optimistic_read_id=CASE
-               WHEN account_state.intent_request_optimistic_read_id <= excluded.intent_request_read_id
-               THEN NULL ELSE account_state.intent_request_optimistic_read_id END",
-            params![user_id, end, read],
-        ).map_err(|e| format!("save incoming request head: {e}"))?;
+            "INSERT INTO account_state(user_id,state_feed_target) VALUES(?1,?2)
+             ON CONFLICT(user_id) DO UPDATE SET state_feed_target=MAX(state_feed_target,excluded.state_feed_target)",
+            params![user_id, target],
+        ).map_err(|e| format!("save state-feed target: {e}"))?;
     }
     match full_through {
-        Some(Some(boundary)) if boundary > feed_id => {
+        Some(boundary) if boundary >= 0 => {
             tx.execute(
                 "INSERT INTO account_state(user_id,state_feed_full_through) VALUES(?1,?2)
-                 ON CONFLICT(user_id) DO UPDATE SET state_feed_full_through=excluded.state_feed_full_through",
+                 ON CONFLICT(user_id) DO UPDATE SET state_feed_full_through=MAX(COALESCE(account_state.state_feed_full_through,0),excluded.state_feed_full_through)",
                 params![user_id, boundary],
             ).map_err(|e| format!("save state-feed full boundary: {e}"))?;
         }
-        Some(Some(_)) => return Err("invalid state-feed full boundary".into()),
-        Some(None) => {
-            tx.execute(
-                "UPDATE account_state SET state_feed_full_through=NULL WHERE user_id=?1",
-                [user_id],
-            )
-            .map_err(|e| format!("finish state-feed full snapshot: {e}"))?;
-        }
+        Some(_) => return Err("invalid state-feed full boundary".into()),
         None => {}
     }
     tx.execute(

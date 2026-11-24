@@ -1,10 +1,13 @@
-import { firstValueFrom, Subject } from 'rxjs';
+import { firstValueFrom, Subject, of } from 'rxjs';
+import { ProfileRepository } from '../../services/profile-store.service';
+import { ProfileWatchService } from '../../services/profile-watch.service';
 import { HttpItemSource } from './http-item-source';
 import { TestBed } from '@angular/core/testing';
 import { signal } from '@angular/core';
 import {
   MessageRepository,
   type NativeMessageHistoryResult,
+  type MessageHistoryIntervalPage,
 } from '../../services/message-repository.service';
 import { UserService } from '../../services/user.service';
 import { ThreadSendOutbox } from '../../services/thread-send-outbox.service';
@@ -42,6 +45,8 @@ function setup(readSeq = 100) {
     failed: false,
   });
   const query = vi.fn().mockImplementation(async () => empty());
+  const pages = new Subject<MessageHistoryIntervalPage>();
+  const watchHistoryInterval = vi.fn(() => pages);
   const repo = {
     slotsChanged$: new Subject<number>(),
     deletedLive$: new Subject(),
@@ -52,6 +57,7 @@ function setup(readSeq = 100) {
     retainNewestSeq: vi.fn(),
     queryBrowserMessageHistory: query,
     queryNativeMessageHistory: query,
+    watchHistoryInterval,
   };
   const users = {
     sessionProfile:
@@ -67,6 +73,8 @@ function setup(readSeq = 100) {
       { provide: UserService, useValue: users },
       { provide: ThreadSendOutbox, useValue: outbox },
       { provide: MsgService, useValue: {} },
+      ProfileRepository,
+      { provide: ProfileWatchService, useValue: { watchProfile: () => of(null) } },
     ],
   });
   const conversation = createP2PConversation({
@@ -84,8 +92,9 @@ function setup(readSeq = 100) {
     TestBed.inject(ThreadSendOutbox),
     {},
     TestBed.inject(MsgService),
+    TestBed.inject(ProfileRepository),
   );
-  return { source, query, empty };
+  return { source, query, empty, pages, watchHistoryInterval };
 }
 
 function mountKernel(source: HttpItemSource, height = 200) {
@@ -106,6 +115,7 @@ function mountKernel(source: HttpItemSource, height = 200) {
         el.style.height = '40px';
         el.dataset['presentation'] = presentation.kind;
         el.dataset['kind'] = item.data.serverGap ? 'gap' : 'message';
+        if (item.data.serverGap) el.textContent = item.data.serverGap.state;
         return {
           el,
           update: () => {},
@@ -161,11 +171,12 @@ describe('HttpItemSource to kernel entry', () => {
     }
   });
 
-  it('retains a server gap as a gap item rather than an edge spinner', async () => {
+  it('retains an older server gap beside real cached messages', async () => {
     const { source, query } = setup();
     query.mockResolvedValueOnce({
       items: [
         { kind: 'serverGap', left: 90, right: 110, state: 'SERVER_PENDING' },
+        { kind: 'message', message: message(111) },
       ],
       hasOlder: true,
       hasNewer: true,
@@ -190,6 +201,48 @@ describe('HttpItemSource to kernel entry', () => {
     } finally {
       warning.mockRestore();
       mounted.destroy();
+    }
+  });
+
+  it('replaces a pending gap with an unavailable label at unchanged bounds without subscription churn', async () => {
+    const { source, query, pages, watchHistoryInterval } = setup();
+    const unavailable = new Subject<MessageHistoryIntervalPage>();
+    watchHistoryInterval.mockReturnValueOnce(pages).mockReturnValue(unavailable);
+    query.mockResolvedValueOnce({
+      items: [
+        { kind: 'serverGap', left: 90, right: 110, state: 'SERVER_PENDING' },
+        { kind: 'message', message: message(111) },
+      ],
+      hasOlder: false, hasNewer: false, failed: false,
+    });
+    query.mockImplementation(() => new Promise<NativeMessageHistoryResult>(() => {}));
+    const mounted = mountKernel(source);
+    try {
+      await mounted.kernel.openWindow({ kind: 'cached' });
+      await vi.waitFor(() => expect(watchHistoryInterval).toHaveBeenCalledOnce());
+      const pending = mounted.content.querySelector<HTMLElement>('[data-kind="gap"]')!;
+      const messageElement = mounted.kernel.getMountedGeometry(111)!.el;
+      expect(pending.textContent).toBe('SERVER_PENDING');
+      const unchangedBounds: MessageHistoryIntervalPage = {
+        left: 90, right: 110,
+        items: [{ kind: 'serverGap', left: 90, right: 110, state: 'SERVER_UNAVAILABLE' }],
+      };
+      pages.next(unchangedBounds);
+      await vi.waitFor(() => expect(watchHistoryInterval).toHaveBeenCalledTimes(2));
+      const replacement = mounted.content.querySelector<HTMLElement>('[data-kind="gap"]')!;
+      expect(replacement.textContent).toBe('SERVER_UNAVAILABLE');
+      expect(replacement.dataset['cbId']).not.toBe(pending.dataset['cbId']);
+      expect(pending.isConnected).toBe(false);
+      expect(pages.observed).toBe(false);
+      expect(unavailable.observed).toBe(true);
+      expect(mounted.kernel.getMountedGeometry(111)!.el).toBe(messageElement);
+      unavailable.next(unchangedBounds);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(mounted.content.querySelector('[data-kind="gap"]')).toBe(replacement);
+      expect(watchHistoryInterval).toHaveBeenCalledTimes(2);
+    } finally {
+      mounted.destroy();
+      expect(unavailable.observed).toBe(false);
     }
   });
 
@@ -280,8 +333,8 @@ describe('HttpItemSource entry cache', () => {
     },
   );
 
-  it('reuses a gap-only projection without treating it as an empty cache', async () => {
-    const { source, query } = setup();
+  it('waits for a real page when the retained seed contains only a gap', async () => {
+    const { source, query, pages, watchHistoryInterval } = setup();
     query.mockResolvedValue({
       items: [
         { kind: 'serverGap', left: 90, right: 110, state: 'SERVER_PENDING' },
@@ -292,18 +345,23 @@ describe('HttpItemSource entry cache', () => {
     });
     try {
       await source.prepareEntry();
-      const result = await source.loadWindow({
+      const load = source.loadWindow({
         kind: 'around',
         messageId: 100,
         olderCount: 50,
         newerCount: 50,
       });
-      expect(result).toHaveLength(1);
+      await vi.waitFor(() => expect(watchHistoryInterval).toHaveBeenCalledOnce());
+      pages.next({ left: 100, right: 110, items: [{ kind: 'message', message: message(110) }] });
+      const result = await load;
+      expect(result).toHaveLength(2);
       expect(result[0].data.serverGap).toEqual({
         left: 90,
-        right: 110,
+        right: 100,
         state: 'SERVER_PENDING',
       });
+      expect(result[1].id).toBe(110);
+      expect(pages.observed).toBe(false);
       expect(query).toHaveBeenCalledTimes(1);
     } finally {
       source.destroy();
@@ -398,6 +456,92 @@ describe('HttpItemSource entry cache', () => {
   });
 });
 
+describe('HttpItemSource interval lifecycle', () => {
+  const gap = (left: number, right: number) => ({
+    kind: 'serverGap' as const, left, right, state: 'SERVER_PENDING' as const,
+  });
+
+  it('accumulates deleted scans instead of resurrecting an exhausted residual', async () => {
+    const { source, query, pages, watchHistoryInterval } = setup();
+    query.mockResolvedValue({ items: [gap(0, 100)], hasOlder: false, hasNewer: false, failed: false });
+    try {
+      const load = source.loadWindow({ kind: 'latest', count: 50 });
+      await vi.waitFor(() => expect(watchHistoryInterval).toHaveBeenCalledOnce());
+      pages.next({ left: 50, right: 100, items: [] });
+      pages.next({ left: 0, right: 50, items: [] });
+      expect(await load).toEqual([]);
+      expect(pages.observed).toBe(false);
+    } finally { source.destroy(); }
+  });
+
+  it('does not discard sibling gaps when one cold interval is exhausted', async () => {
+    const { source, query, watchHistoryInterval } = setup();
+    const older = new Subject<MessageHistoryIntervalPage>();
+    const newer = new Subject<MessageHistoryIntervalPage>();
+    watchHistoryInterval.mockReturnValueOnce(older).mockReturnValueOnce(newer);
+    query.mockResolvedValue({ items: [gap(0, 40), gap(60, 100)], hasOlder: false, hasNewer: false, failed: false });
+    try {
+      let resolved = false;
+      const load = source.loadWindow({ kind: 'latest', count: 50 }).then((items) => { resolved = true; return items; });
+      await vi.waitFor(() => expect(watchHistoryInterval).toHaveBeenCalledTimes(2));
+      older.next({ left: 0, right: 40, items: [] });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(resolved).toBe(false);
+      newer.next({ left: 90, right: 100, items: [{ kind: 'message', message: message(100) }] });
+      expect((await load).map((item) => item.displayInterval ?? item.id)).toEqual([{ left: 60, right: 90 }, 100]);
+      expect(older.observed || newer.observed).toBe(false);
+    } finally { source.destroy(); }
+  });
+
+  it.each(['error', 'abort', 'unavailable'] as const)('releases a cold interval on %s', async (reason) => {
+    const { source, query, pages, watchHistoryInterval } = setup();
+    query.mockResolvedValue({ items: [gap(0, 100)], hasOlder: false, hasNewer: false, failed: false });
+    try {
+      const load = source.loadWindow({ kind: 'latest', count: 50 });
+      const rejection = expect(load).rejects.toBeDefined();
+      await vi.waitFor(() => expect(watchHistoryInterval).toHaveBeenCalledOnce());
+      if (reason === 'abort') source.destroy();
+      else if (reason === 'error') pages.error(new Error('offline'));
+      else pages.next({ left: 0, right: 100, items: [{ ...gap(0, 100), state: 'SERVER_UNAVAILABLE' }] });
+      await rejection;
+      expect(pages.observed).toBe(false);
+    } finally { source.destroy(); }
+  });
+
+  it('does not create a transport consumer after source destruction', async () => {
+    const { source, query, watchHistoryInterval } = setup();
+    query.mockResolvedValue({ items: [gap(0, 100), { kind: 'message', message: message(101) }], hasOlder: false, hasNewer: false, failed: false });
+    const [item] = await source.loadWindow({ kind: 'latest', count: 50 });
+    const interval = source.watchInterval(item);
+    source.destroy();
+    const delivery = vi.fn();
+    const subscription = interval.subscribe(delivery);
+    expect(subscription.closed).toBe(true);
+    expect(watchHistoryInterval).not.toHaveBeenCalled();
+    expect(delivery).not.toHaveBeenCalled();
+  });
+
+  it('unsubscribing one interval preserves its sibling and suppresses queued shaping', async () => {
+    const { source, query, pages } = setup();
+    query.mockResolvedValue({ items: [gap(0, 100), { kind: 'message', message: message(101) }], hasOlder: false, hasNewer: false, failed: false });
+    try {
+      const [item] = await source.loadWindow({ kind: 'latest', count: 50 });
+      const delivery = vi.fn();
+      const siblingDelivery = vi.fn();
+      const retired = source.watchInterval(item).subscribe(delivery);
+      const sibling = source.watchInterval(item).subscribe(siblingDelivery);
+      pages.next({ left: 20, right: 80, items: [{ kind: 'message', message: message(80) }] });
+      retired.unsubscribe();
+      await vi.waitFor(() => expect(siblingDelivery).toHaveBeenCalledOnce());
+      expect(delivery).not.toHaveBeenCalled();
+      expect(siblingDelivery.mock.calls[0][0].map((entry: { displayInterval?: unknown; id: number }) => entry.displayInterval ?? entry.id)).toEqual([{ left: 0, right: 20 }, 80, { left: 80, right: 100 }]);
+      expect(pages.observed).toBe(true);
+      sibling.unsubscribe();
+      expect(pages.observed).toBe(false);
+    } finally { source.destroy(); }
+  });
+});
+
 describe('HttpItemSource request ownership', () => {
   it.each(['browser', 'native'] as const)(
     'retiring a gap aborts only its %s query consumer',
@@ -453,6 +597,27 @@ describe('HttpItemSource request ownership', () => {
       }
     },
   );
+
+  it('retiring a newer request aborts its query and lets a replacement advance', async () => {
+    const { source, query } = setup();
+    try {
+      await source.loadWindow({ kind: 'cached', count: 50 });
+      query.mockImplementationOnce(() => new Promise<NativeMessageHistoryResult>(() => {}));
+      const delivery = vi.fn();
+      const retired = source.requestNewer(100, 50).subscribe(delivery);
+      const retiredSignal = query.mock.calls[1][2] as AbortSignal;
+      retired.unsubscribe();
+      expect(retiredSignal.aborted).toBe(true);
+      query.mockResolvedValueOnce({
+        items: [{ kind: 'message', message: message(102) }],
+        hasOlder: true, hasNewer: false, failed: false,
+      });
+      const result = await firstValueFrom(source.requestNewer(101, 50));
+      expect(result.kind).toBe('items');
+      if (result.kind === 'items') expect(result.items[0].id).toBe(102);
+      expect(delivery).not.toHaveBeenCalled();
+    } finally { source.destroy(); }
+  });
 
   it('reports query errors and permits an independent retry', async () => {
     const { source, query } = setup();

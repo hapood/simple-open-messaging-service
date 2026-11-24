@@ -10,7 +10,7 @@ import type { NotificationDescriptor } from './notification-descriptor.model';
 
 /** Personal requests are projected from authoritative account markers, independently of messages. */
 export async function syncPushState(
-  storage: Pick<WebdbStorage, 'readAccountState' | 'applyStateFeedPage'> &
+  storage: Pick<WebdbStorage, 'readAccountState' | 'applyStateFeedPage' | 'advanceStateFeedTarget'> &
     Partial<Pick<WebdbStorage, 'withStateFeedLock'>>,
   target: number,
   request: Parameters<typeof synchronizeStateFeed>[2],

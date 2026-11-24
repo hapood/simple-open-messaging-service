@@ -8,6 +8,7 @@ import { GroupModule } from '../group/group.module.js';
 import { UploadModule } from '../upload/upload.module.js';
 import { DurableTaskModule } from '../durable-task/durable-task.module.js';
 import { ThreadPreviewModule } from './thread-preview.module.js';
+import { ClientStateFeedModule } from '../client-state-feed/client-state-feed.module.js';
 import { ThreadFanoutTaskHandler } from './thread-fanout-task.handler.js';
 import { ThreadFanoutProgressService } from './thread-fanout-progress.service.js';
 
@@ -16,6 +17,7 @@ import { ThreadFanoutProgressService } from './thread-fanout-progress.service.js
   imports: [
     DurableTaskModule,
     ThreadPreviewModule,
+    ClientStateFeedModule,
     GatewayModule,
     PushModule,
     AccountThreadStateModule,

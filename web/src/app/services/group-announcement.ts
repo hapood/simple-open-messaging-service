@@ -5,11 +5,7 @@ import type { ConversationItem } from './model';
 export function isGroupMetaCurrent(
   thread: ConversationItem | undefined,
 ): boolean {
-  if (
-    thread?.type !== 'GROUP' ||
-    thread.conversationState === 'READ_ONLY' ||
-    thread.meta.recoveryThrough != null
-  )
+  if (thread?.type !== 'GROUP' || thread.meta.recoveryThrough != null)
     return false;
   const target = thread.groupMetaFeedEndId;
   const cursor = thread.meta.groupMetaFeedId;

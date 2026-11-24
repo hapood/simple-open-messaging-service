@@ -7,7 +7,7 @@ import {
   output,
 } from '@angular/core';
 import { TranslocoPipe } from '@jsverse/transloco';
-import type { ChatMsgData } from '../chat-item';
+import type { ContactCardMessageItem } from '../chat-item';
 import { DateRowComponent } from '../date-row/date-row.component';
 import { QuoteBlockComponent } from '../quote-block/quote-block.component';
 import type { HistoryAnchor } from '../../../services/history-anchor';
@@ -47,7 +47,7 @@ export class ContactCardRowComponent {
   private readonly nav = inject(NavStateMachineService);
   readonly UserAvatarType = UserAvatarType;
   readonly senderView = input<AvatarView>();
-  readonly data = input.required<ChatMsgData>();
+  readonly data = input.required<ContactCardMessageItem>();
   readonly quoteJump = output<HistoryAnchor>();
   readonly isShowHead = input(false);
   readonly isGroupStart = input(false);

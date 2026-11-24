@@ -184,24 +184,32 @@ export class FederationPeerHttp {
     path: string,
     peerDomain: string,
     maxResponseBytes?: number,
+    signal?: AbortSignal,
   ): Promise<T> {
+    signal?.throwIfAborted();
     const base = await this.discovery.resolveBase(peerDomain);
+    signal?.throwIfAborted();
     const url = new URL(`${base}${path}`);
-    const release = await this.discovery.acquireRequestSlot(peerDomain);
+    const release = await this.discovery.acquireRequestSlot(peerDomain, signal);
     try {
+      signal?.throwIfAborted();
       const operationStartedAt = new Date();
       const headers = await this.signature.signOutbound({
         method: 'GET',
         url,
         body: '',
       });
+      signal?.throwIfAborted();
       let response: Response;
       try {
         response = await this.discovery.request(url, {
           method: 'GET',
           headers: { ...headers },
+          signal,
         });
       } catch (error) {
+        // Caller cancellation is local scheduling, not a failed Health observation.
+        signal?.throwIfAborted();
         await this.recognition.markTransportDegraded(
           peerDomain,
           `GET ${path} network/timeout: ${(error as Error).message}`,
@@ -220,10 +228,13 @@ export class FederationPeerHttp {
           response.status,
           response,
           operationStartedAt,
+          signal,
         );
       }
 
+      signal?.throwIfAborted();
       await this.lifecycle.markContactSuccess(peerDomain);
+      signal?.throwIfAborted();
       if (maxResponseBytes !== undefined) {
         const declared = Number(response.headers.get('content-length') ?? 0);
         if (declared > maxResponseBytes) {
@@ -231,6 +242,7 @@ export class FederationPeerHttp {
         }
       }
       const body = await this.readBody(response, path, maxResponseBytes);
+      signal?.throwIfAborted();
       const envelope = body as { code?: number; data?: unknown };
       if (
         typeof envelope?.code === 'number' &&
@@ -258,6 +270,7 @@ export class FederationPeerHttp {
     status: number,
     response: Response,
     operationStartedAt: Date,
+    signal?: AbortSignal,
   ): Promise<never> {
     let raw: unknown;
     let bodyNote = 'an absent error body';
@@ -265,8 +278,10 @@ export class FederationPeerHttp {
       raw = await response.json();
       bodyNote = `an error body without a numeric code: ${JSON.stringify(raw).slice(0, 200)}`;
     } catch (error) {
+      signal?.throwIfAborted();
       bodyNote = `an unparsable error body: ${(error as Error).message}`;
     }
+    signal?.throwIfAborted();
     const errorBody = parsePeerErrorBody(raw);
     if (errorBody.code === undefined) {
       // The protocol requires `code` on every non-2xx body; warn so a peer

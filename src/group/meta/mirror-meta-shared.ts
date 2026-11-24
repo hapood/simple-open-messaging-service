@@ -1,16 +1,19 @@
 import { and, eq, sql } from 'drizzle-orm';
 import { normalizeAccount } from '../../common/account.js';
-import type { ThreadContentLock } from '../../common/locks/thread-content-lock.js';
+import {
+  requireThreadContentLockInTx,
+  type ThreadContentLock,
+} from '../../common/locks/thread-content-lock.js';
 import { lockBusinessAccountsInTx } from '../../common/locks/account-business-lock.js';
 import type { DatabaseTransaction } from '../../database/database.service.js';
 import { GroupRole } from '../../database/enums.js';
 import { groupMeta, messageThread } from '../../database/schema.js';
 import { groupStateFields, groupStateSql } from '../shared/group-state.js';
 import { upsertCurrentGroupMetaFactsInTx } from './current-group-meta-fact.js';
+import { publishClientGroupFactInTx } from './publish-client-group-fact-in-tx.js';
 
 export interface MirrorGroupAddress {
   account: string;
-  domain: string;
   publisherNamespaceId: number;
 }
 
@@ -57,7 +60,7 @@ export interface MirrorMetaCursor {
   metaEndId: number;
   metaTargetId: number;
   metaProcessedThroughId: number;
-  metaRecoveryThroughId: number | null;
+  metaRecoveryThroughId: number;
 }
 
 export async function lockMirrorGroupInTx(
@@ -82,30 +85,35 @@ async function readMirrorMetaInTx(
   const result = await tx.execute<{
     threadId: number;
     groupAccount: string;
-    metaEndId: number | null;
-    metaTargetId: number | null;
-    metaProcessedThroughId: number | null;
-    metaRecoveryThroughId: number | null;
+    metaEndId: number;
+    clientMetaEndId: number;
+    metaTargetId: number;
+    metaProcessedThroughId: number;
+    metaRecoveryThroughId: number;
   }>(sql`
     SELECT thread.id AS "threadId",
       ${groupStateFields.account} AS "groupAccount",
-      feed."metaEndId", feed."metaTargetId",
+      feed."metaEndId", feed."clientMetaEndId", feed."metaTargetId",
       feed."metaProcessedThroughId", feed."metaRecoveryThroughId"
     FROM ${groupStateSql} group_state
     JOIN "MessageThread" thread ON thread.id = group_state.id
-    LEFT JOIN "GroupMeta" feed ON feed."threadId" = thread.id
+    JOIN "GroupMeta" feed ON feed."threadId" = thread.id
     WHERE ${groupStateFields.account} = ${normalizeAccount(group.account)}
       AND ${groupStateFields.namespaceId} = ${group.publisherNamespaceId}
     LIMIT 1
   `);
   const row = result.rows[0];
-  if (!row || row.metaEndId === null) return null;
+  if (!row) throw new Error('group-meta mirror cursor is missing');
+  if (row.metaEndId !== 0)
+    throw new Error(
+      'mirror group meta does not allocate canonical coordinates',
+    );
   return {
     threadId: row.threadId,
     groupAccount: row.groupAccount,
     metaEndId: row.metaEndId,
-    metaTargetId: row.metaTargetId!,
-    metaProcessedThroughId: row.metaProcessedThroughId!,
+    metaTargetId: row.metaTargetId,
+    metaProcessedThroughId: row.metaProcessedThroughId,
     metaRecoveryThroughId: row.metaRecoveryThroughId,
   };
 }
@@ -135,23 +143,35 @@ export async function applyMirrorMetaFactInTx(
   if (mode === 'full' && item.operation === 'MEMBER_DEPART')
     throw new Error('a full group-meta snapshot cannot contain MEMBER_DEPART');
   if (item.operation === 'GROUP_ANNOUNCEMENT') {
+    const originCreatedAt = new Date(item.originCreatedAt);
     await upsertCurrentGroupMetaFactsInTx(tx, [
       {
         threadId,
         feedId: item.feedId,
-        originCreatedAt: new Date(item.originCreatedAt),
+        originCreatedAt,
         operation: 'GROUP_ANNOUNCEMENT',
         body: { text: item.text },
       },
     ]);
+    await publishClientGroupFactInTx(
+      tx,
+      await requireThreadContentLockInTx(tx, threadId),
+      {
+        operation: 'GROUP_ANNOUNCEMENT',
+        sourceFeedId: item.feedId,
+        originCreatedAt,
+        body: { text: item.text },
+      },
+    );
     return;
   }
   if (item.operation === 'GROUP_PROFILE') {
+    const originCreatedAt = new Date(item.originCreatedAt);
     await upsertCurrentGroupMetaFactsInTx(tx, [
       {
         threadId,
         feedId: item.feedId,
-        originCreatedAt: new Date(item.originCreatedAt),
+        originCreatedAt,
         operation: 'GROUP_PROFILE',
         body: {
           account: item.account,
@@ -262,19 +282,29 @@ export async function finalizeMirrorMetaRecoveryInTx(
   },
 ): Promise<void> {
   const [feed] = await tx
-    .select({ metaEndId: groupMeta.metaEndId })
+    .select({
+      metaEndId: groupMeta.metaEndId,
+      metaProcessedThroughId: groupMeta.metaProcessedThroughId,
+      metaTargetId: groupMeta.metaTargetId,
+    })
     .from(groupMeta)
     .where(eq(groupMeta.threadId, input.threadId))
     .limit(1);
   if (!feed) throw new Error('group-meta mirror cursor disappeared');
-  if (feed.metaEndId > input.through)
-    throw new Error('group-meta mirror cursor moved beyond task target');
+  if (feed.metaEndId !== 0)
+    throw new Error(
+      'mirror group meta does not allocate canonical coordinates',
+    );
+  if (
+    feed.metaProcessedThroughId > input.through ||
+    feed.metaTargetId < input.through
+  )
+    throw new Error('group-meta mirror source cursor moved beyond task target');
   await assertMirrorRosterOwnersInTx(tx, input.threadId);
   await tx
     .update(groupMeta)
     .set({
-      metaEndId: input.through,
-      metaRecoveryThroughId: null,
+      metaRecoveryThroughId: 0,
       updatedAt: new Date(),
     })
     .where(eq(groupMeta.threadId, input.threadId));

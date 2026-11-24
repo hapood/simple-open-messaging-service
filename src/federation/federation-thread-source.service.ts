@@ -36,13 +36,12 @@ export class FederationThreadSourceService {
     `);
     if (audience.rows.length === 0)
       throw new FederationThreadSourceInactiveError(
-        `group thread ${source.threadId} no longer has an audience for ${source.peerDomain}`,
+        `group thread ${source.threadId} no longer has an audience for namespace ${source.namespaceId}`,
       );
   }
 
   async resolve(
     threadId: number,
-    peerDomain: string,
     namespaceId: number,
   ): Promise<FederationReverseThreadSource> {
     const [groupThread] = await this.database.db
@@ -93,7 +92,6 @@ export class FederationThreadSourceService {
         kind: 'GROUP',
         localGroupAuthority: groupThread.namespaceId === 0,
         threadId,
-        peerDomain,
         namespaceId,
         demand: { account: groupThread.account },
       };
@@ -101,11 +99,9 @@ export class FederationThreadSourceService {
 
     const pair = await this.database.db.execute<{
       remoteAccount: string;
-      remoteDomain: string;
       localAccount: string;
     }>(sql`
       SELECT pair."endpointBAccount" AS "remoteAccount",
-        ${peerDomain}::text AS "remoteDomain",
         pair."endpointAAccount" AS "localAccount"
       FROM "RelationshipPair" pair
       JOIN "MessageThread" thread ON thread.id = pair."threadId"
@@ -126,7 +122,6 @@ export class FederationThreadSourceService {
     return {
       kind: 'P2P',
       threadId,
-      peerDomain: p2p.remoteDomain,
       namespaceId,
       demand: {
         account: p2p.remoteAccount,

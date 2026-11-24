@@ -28,6 +28,7 @@ describe('query-denied authored membership revocation', () => {
       { pushStateFeedNamespaces } as never,
       { writeGroupRelationshipIntentInTx } as never,
       { tick: vi.fn().mockResolvedValue(undefined) } as never,
+      {} as never,
     );
 
     await expect(
@@ -73,6 +74,7 @@ describe('query-denied authored membership revocation', () => {
         pushStateFeedNamespaces: vi.fn(),
       },
       { tick: vi.fn().mockResolvedValue(undefined) } as never,
+      {} as never,
     );
 
     await expect(

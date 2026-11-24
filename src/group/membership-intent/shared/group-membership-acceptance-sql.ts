@@ -15,6 +15,8 @@ export interface GroupMembershipAcceptanceInput {
   memberAccount: string;
   profileNamespaceId: number;
   note: string;
+  /** Optional member-authored note when memberAck is true; defaults to `note`. */
+  memberNote?: string;
   acceptedAt: Date;
   /** The member's ACK authors the member direction as well: it is the only
    * writer in this business family of a member-direction ACCEPTED, and
@@ -63,7 +65,7 @@ export function groupMembershipAcceptanceIntentWrites(
         receiver: { account: input.groupAccount, namespaceId: 0 },
         threadId: input.threadId,
         status: 'ACCEPTED',
-        note: input.note,
+        note: input.memberNote ?? input.note,
         statusChangedAt: input.acceptedAt,
         expiresAt: null,
       });
@@ -111,27 +113,22 @@ function relationshipAndRoster(input: GroupMembershipAcceptanceInput): SQL {
       RETURNING id
     ), roster_plan AS MATERIALIZED (
       SELECT 'MEMBER'::text AS role,
-        EXISTS (SELECT 1 FROM pair_change) AS "memberChanged",
-        EXISTS (SELECT 1 FROM pair_change)
-          AND profile."profileRev" IS DISTINCT FROM ${input.groupProfileRev}::integer AS "profileChanged"
+        EXISTS (SELECT 1 FROM pair_change) AS "memberChanged"
       FROM join_source
-      LEFT JOIN "GroupMeta" profile ON profile."threadId" = ${input.threadId}
       WHERE EXISTS (SELECT 1 FROM accepted_intent)
     ), meta_allocation AS (
       UPDATE "GroupMeta" f SET
-        "metaEndId" = f."metaEndId" + p."memberChanged"::integer + p."profileChanged"::integer,
-        "profileRev" = CASE WHEN p."profileChanged"
-          THEN ${input.groupProfileRev}::integer ELSE f."profileRev" END,
+        "metaEndId" = f."metaEndId" + p."memberChanged"::integer,
         "updatedAt" = CURRENT_TIMESTAMP
-      FROM roster_plan p WHERE f."threadId" = ${input.threadId} AND (p."memberChanged" OR p."profileChanged")
-      RETURNING f."metaEndId"
+      FROM roster_plan p WHERE f."threadId" = ${input.threadId} AND p."memberChanged"
+      RETURNING f."metaEndId", f."clientMetaEndId"
     ), meta_head AS MATERIALIZED (
-      SELECT "metaEndId" FROM meta_allocation
-      UNION ALL SELECT "metaEndId" FROM "GroupMeta" WHERE "threadId" = ${input.threadId}
+      SELECT "metaEndId", "clientMetaEndId" FROM meta_allocation
+      UNION ALL SELECT "metaEndId", "clientMetaEndId" FROM "GroupMeta" WHERE "threadId" = ${input.threadId}
         AND NOT EXISTS (SELECT 1 FROM meta_allocation)
     ), member_fact AS (
       INSERT INTO "GroupMetaMemberFeed" ("threadId", "feedId", operation, body)
-      SELECT ${input.threadId}, h."metaEndId" - p."profileChanged"::integer,
+      SELECT ${input.threadId}, h."metaEndId",
         'MEMBER_UPSERT', jsonb_build_object(
           'account', ${input.memberAccount}::text,
           'namespaceId', ${input.profileNamespaceId}::integer,
@@ -148,30 +145,11 @@ function relationshipAndRoster(input: GroupMembershipAcceptanceInput): SQL {
         "profileSourceSeq" = NULL, "createdAt" = EXCLUDED."createdAt",
         "originCreatedAt" = NULL, "updatedAt" = CURRENT_TIMESTAMP
       RETURNING "feedId"
-    ), profile_fact AS (
-      INSERT INTO "GroupMetaMemberFeed" ("threadId", "feedId", operation, body)
-      SELECT ${input.threadId}, h."metaEndId",
-        'GROUP_PROFILE'::"GroupMetaMemberOperation",
-        jsonb_build_object('account', ${input.groupAccount}::text, 'namespaceId', 0,
-          'profileRev', ${input.groupProfileRev}::integer)
-      FROM meta_head h CROSS JOIN roster_plan p
-      CROSS JOIN meta_allocation
-      WHERE p."profileChanged"
-      ON CONFLICT ("threadId", (body ->> 'account'), (body -> 'namespaceId'))
-        WHERE operation <> 'GROUP_ANNOUNCEMENT'
-      DO UPDATE SET "feedId" = EXCLUDED."feedId",
-        operation = EXCLUDED.operation, body = EXCLUDED.body,
-        "createdAt" = EXCLUDED."createdAt", "originCreatedAt" = NULL,
-        "updatedAt" = CURRENT_TIMESTAMP
-      RETURNING "feedId"
     ), group_profile_source AS MATERIALIZED (
-      SELECT "feedId" AS "profileSourceId" FROM profile_fact
-      UNION ALL
       SELECT fact."feedId" AS "profileSourceId"
       FROM "GroupMetaMemberFeed" fact
       WHERE fact."threadId" = ${input.threadId} AND fact.operation = 'GROUP_PROFILE'
         AND fact.body -> 'profileRev' = to_jsonb(${input.groupProfileRev}::integer)
-        AND NOT EXISTS (SELECT 1 FROM profile_fact)
     ), seq_alloc AS (
       UPDATE "MessageThread" t SET
         "updatedAt" = CURRENT_TIMESTAMP,
@@ -205,23 +183,24 @@ function localMember(input: GroupMembershipAcceptanceInput): SQL {
     local_member AS MATERIALIZED (
       SELECT * FROM "Account" WHERE account = ${input.memberAccount} AND "namespaceId" = 0
     ), member_state AS (
-      INSERT INTO "AccountThreadState" ("accountId", "threadId", role, "lastReadSeq", "groupMetaFeedEndId", "threadProfileRev", "profileSourceId", "updatedAt")
+      INSERT INTO "AccountThreadState" ("accountId", "threadId", role, "lastReadSeq", "threadProfileRev", "profileSourceId", "updatedAt")
       SELECT a.id, ${input.threadId}, p.role::"GroupRole",
         CASE WHEN a.availability = 'AVAILABLE' AND NOT s."wasActive" THEN s."curSeq" ELSE 0 END,
-        h."metaEndId", ${input.groupProfileRev}, (SELECT "profileSourceId" FROM group_profile_source), CURRENT_TIMESTAMP
+        ${input.groupProfileRev}, (SELECT "profileSourceId" FROM group_profile_source), CURRENT_TIMESTAMP
       FROM local_member a CROSS JOIN roster_plan p CROSS JOIN join_source s
       CROSS JOIN accepted_intent i
       CROSS JOIN (SELECT count(*) FROM pair_change) pair_barrier
       CROSS JOIN (SELECT count(*) FROM member_fact) roster_barrier
-      CROSS JOIN meta_head h
       ON CONFLICT ("accountId", "threadId") DO UPDATE SET
-        role = EXCLUDED.role, "messageVisibleThroughSeq" = NULL, "updatedAt" = CURRENT_TIMESTAMP,
+        role = EXCLUDED.role,
+        "messageVisibleThroughSeq" = NULL,
+        "tombstoneVisibleThroughSeq" = NULL,
+        "groupMetaVisibleThroughId" = NULL,
+        "updatedAt" = CURRENT_TIMESTAMP,
         "threadProfileRev" = CASE WHEN (SELECT "wasActive" FROM join_source)
           THEN "AccountThreadState"."threadProfileRev" ELSE EXCLUDED."threadProfileRev" END,
         "profileSourceId" = CASE WHEN (SELECT "wasActive" FROM join_source)
           THEN "AccountThreadState"."profileSourceId" ELSE EXCLUDED."profileSourceId" END,
-        "groupMetaFeedEndId" = GREATEST(
-          COALESCE("AccountThreadState"."groupMetaFeedEndId", 0), EXCLUDED."groupMetaFeedEndId"),
         "lastReadSeq" = CASE WHEN (SELECT availability = 'AVAILABLE' FROM local_member) AND NOT (SELECT "wasActive" FROM join_source)
           THEN GREATEST("AccountThreadState"."lastReadSeq", EXCLUDED."lastReadSeq") ELSE "AccountThreadState"."lastReadSeq" END,
         "unreadCount" = CASE WHEN (SELECT availability = 'AVAILABLE' FROM local_member) AND NOT (SELECT "wasActive" FROM join_source)
@@ -259,16 +238,6 @@ function remoteMember(input: GroupMembershipAcceptanceInput): SQL {
       ON CONFLICT ("threadId", "namespaceId") DO UPDATE SET
         "messageTargetSeq" = GREATEST("FederationThreadSyncState"."messageTargetSeq", EXCLUDED."messageTargetSeq"),
         "deletionTargetSeq" = GREATEST("FederationThreadSyncState"."deletionTargetSeq", EXCLUDED."deletionTargetSeq"),
-        "deletionRecoveryThroughSeq" = CASE WHEN "FederationThreadSyncState"."authorizationEpoch" = EXCLUDED."authorizationEpoch"
-          THEN "FederationThreadSyncState"."deletionRecoveryThroughSeq"
-          WHEN GREATEST("FederationThreadSyncState"."deletionTargetSeq", EXCLUDED."deletionTargetSeq") > "FederationThreadSyncState"."deletionProcessedThroughSeq"
-          THEN GREATEST("FederationThreadSyncState"."deletionTargetSeq", EXCLUDED."deletionTargetSeq") ELSE NULL END,
-        "deletionRecoveryMaxMessageSeq" = CASE WHEN "FederationThreadSyncState"."authorizationEpoch" = EXCLUDED."authorizationEpoch"
-          THEN "FederationThreadSyncState"."deletionRecoveryMaxMessageSeq"
-          WHEN GREATEST("FederationThreadSyncState"."deletionTargetSeq", EXCLUDED."deletionTargetSeq") > "FederationThreadSyncState"."deletionProcessedThroughSeq"
-          THEN "FederationThreadSyncState"."messageProcessedThroughSeq" ELSE NULL END,
-        "activeGapId" = CASE WHEN "FederationThreadSyncState"."authorizationEpoch" = EXCLUDED."authorizationEpoch"
-          THEN "FederationThreadSyncState"."activeGapId" ELSE NULL END,
         "authorizationEpoch" = EXCLUDED."authorizationEpoch", "updatedAt" = CURRENT_TIMESTAMP
       RETURNING "threadId"
     ), audience_change AS (

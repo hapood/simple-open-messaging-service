@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { API_BASE } from '@/lib/constants';
 import { forceLogout } from '@/auth/force-logout';
-import { consumeSse } from '../../../shared/sse-client';
+import { consumeAdminSse } from '../lib/sse-client';
 
 export type LogStreamState = 'connecting' | 'open' | 'reconnecting' | 'closed';
 
@@ -54,7 +54,7 @@ export function useLogStream(filters?: {
           if (filters?.scope) params.set('scope', filters.scope);
           if (filters?.taskId) params.set('taskId', filters.taskId);
           const url = `${API_BASE}/admin/logs/stream${params.size ? `?${params}` : ''}`;
-          await consumeSse(url, {
+          await consumeAdminSse(url, {
             signal: lifetime.signal,
             onResponse: (response) => {
               if (response.status === 401) {

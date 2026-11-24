@@ -14,6 +14,8 @@ export default defineConfig({
       'src/playground/playground-conversation-list.mock.spec.ts',
       'src/playground/playground-social-state.spec.ts',
       'src/app/services/thread-list-order.spec.ts',
+      'src/app/services/thread-resource-scheduler.spec.ts',
+      'src/app/services/thread-resource-sync.spec.ts',
       'src/app/components/thread-list/thread-list-window.spec.ts',
     ],
   },

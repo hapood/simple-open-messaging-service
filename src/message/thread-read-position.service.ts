@@ -94,6 +94,7 @@ async function resolveReadPositionInTx(
   tx: DatabaseTransaction,
   accountId: number,
   request: MarkReadDto,
+  historyInitialization = false,
 ): Promise<number | undefined> {
   const result = await tx.execute<{
     bound: number;
@@ -128,7 +129,7 @@ async function resolveReadPositionInTx(
   const effectiveReadSeq = request.force
     ? requestedReadSeq
     : Math.max(row.lastReadSeq, requestedReadSeq);
-  if (effectiveReadSeq < row.minimumReadSeq) {
+  if (!historyInitialization && effectiveReadSeq < row.minimumReadSeq) {
     logger.debug(
       `Clamp read position for account ${accountId}, thread ${request.threadId}: ${effectiveReadSeq} -> ${row.minimumReadSeq} (recoverable history boundary)`,
     );
@@ -142,9 +143,10 @@ async function tryApplyReadPositionInTx(
   threadLock: ThreadContentLock,
   accountId: number,
   request: MarkReadDto,
+  historyInitialization = false,
 ): Promise<number | undefined> {
   await requireThreadContentLockInTx(tx, request.threadId, threadLock);
-  const localReadHwm = await resolveReadPositionInTx(tx, accountId, request);
+  const localReadHwm = await resolveReadPositionInTx(tx, accountId, request, historyInitialization);
   if (localReadHwm === undefined) return undefined;
   const state = await ThreadFeedHeadWriter.readStateInTx(
     tx,
@@ -160,7 +162,6 @@ async function tryApplyReadPositionInTx(
     {
       lastReadSeq: localReadHwm,
       messageEndSeq: state.messageEndSeq,
-      tombstoneEndSeq: state.tombstoneEndSeq,
     },
   );
   const unreadCount =
@@ -186,6 +187,24 @@ async function tryApplyReadPositionInTx(
   if (!result.rows[0])
     throw new Error('Read projection disappeared during locked update');
   return result.rows[0].lastReadSeq;
+}
+
+/** Initialize a reserved history window without treating its not-yet-stored tail
+ * as read. Unlike a viewport read, the caller supplies the exact history boundary
+ * under the content lock; the gap itself must not raise that boundary. */
+export async function initializeHistoryReadPositionInTx(
+  tx: DatabaseTransaction,
+  threadLock: ThreadContentLock,
+  accountId: number,
+  localReadHwm: number,
+): Promise<number> {
+  const result = await tryApplyReadPositionInTx(
+    tx, threadLock, accountId,
+    { threadId: threadLock.threadId, localReadHwm }, true,
+  );
+  if (result === undefined)
+    throw new Error('Expected read-position projection does not exist');
+  return result;
 }
 
 /** Internal projection writers use this only after establishing that the account owns the thread. */

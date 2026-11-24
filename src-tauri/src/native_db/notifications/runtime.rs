@@ -46,6 +46,7 @@ where
     .map_err(|e| format!("notification execution interrupted: {e}"))?
 }
 
+#[cfg(any(target_os = "android", test))]
 pub(crate) async fn deliver_command<F, E>(
     work: DatabaseWork,
     command: NotificationCommand,

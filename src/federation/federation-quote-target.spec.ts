@@ -35,14 +35,17 @@ describe('federation quote coordinate contract', () => {
       namespaceId: 19,
     });
   });
-  it('stores receiver coordinates as local references', () => {
+  it('preserves receiver coordinates without rewriting them as local seq references', () => {
     expect(storeFederationQuote({ originSeq: 42 }, 12)).toEqual({
-      seq: 42,
-      namespaceId: 0,
+      originSeq: 42,
+    });
+    expect(storeFederationQuote({ originSeq: 42 }, 19)).toEqual({
+      originSeq: 42,
     });
   });
   it('rejects zero on receipt and publication instead of inventing an absent target', () => {
     expect(() => storeFederationQuote({ seq: 0 }, 12)).toThrow();
+    expect(() => storeFederationQuote({ originSeq: 0 }, 12)).toThrow();
     for (const authority of [true, false]) {
       expect(() =>
         publishFederationQuote(

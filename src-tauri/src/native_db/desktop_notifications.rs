@@ -755,17 +755,12 @@ pub(crate) async fn desktop_badge_refresh(
     session_uuid: String,
     user_id: i64,
 ) -> Result<(), String> {
-    #[cfg(target_os = "macos")]
-    {
-        super::desktop_badge::refresh(app, session_uuid, user_id).await
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = (app, session_uuid, user_id);
-        Ok(())
-    }
+    super::notifications::platform::badge_refresh(app, session_uuid, user_id).await
 }
 
+// Shared permission states stay identical across platforms. Each OS adapter
+// constructs only the states supported by its permission API.
+#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, PartialEq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) enum DesktopNotificationPermission {
@@ -798,56 +793,20 @@ fn permission_from_macos_status(status: i32) -> DesktopNotificationPermission {
 #[tauri::command]
 pub(crate) async fn desktop_notification_permission(
 ) -> Result<DesktopNotificationPermission, String> {
-    #[cfg(target_os = "macos")]
-    {
-        macos_platform::permission().await
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        Ok(DesktopNotificationPermission::Unsupported)
-    }
+    super::notifications::platform::permission().await
 }
 
 #[tauri::command]
 pub(crate) async fn desktop_notification_request_permission(
 ) -> Result<DesktopNotificationPermission, String> {
-    #[cfg(target_os = "macos")]
-    {
-        // A denial is a permission state, not a transport failure. Re-query after the prompt.
-        let result = macos_platform::authorize().await;
-        let permission = macos_platform::permission().await?;
-        if permission == DesktopNotificationPermission::Denied {
-            return Ok(permission);
-        }
-        result?;
-        Ok(permission)
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        Ok(DesktopNotificationPermission::Unsupported)
-    }
+    super::notifications::platform::request_permission().await
 }
 
 #[tauri::command]
 pub(crate) async fn desktop_notification_open_settings(
     app: tauri::AppHandle,
 ) -> Result<(), String> {
-    #[cfg(target_os = "macos")]
-    {
-        use tauri_plugin_opener::OpenerExt;
-        // This command accepts no URL from the webview.
-        app.opener()
-            .open_url(
-                "x-apple.systempreferences:com.apple.preference.notifications",
-                None::<&str>,
-            )
-            .map_err(|error| error.to_string())
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = app;
-        Err("notification settings are not supported on this platform".into())
-    }
+    super::notifications::platform::open_settings(app)
 }
 
 #[cfg(test)]

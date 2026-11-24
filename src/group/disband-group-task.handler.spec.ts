@@ -41,7 +41,6 @@ describe('group disband task handlers', () => {
       taskType: 'REVOKE_FORBIDDEN_GROUP',
       payload: {
         threadId: 12,
-        peerDomain: 'peer.test',
         namespaceId: 5,
         expectedAuthorizationEpoch: 8,
       },
@@ -79,7 +78,6 @@ describe('group disband task handlers', () => {
           namespaceId: 5,
         },
         direction: 'GROUP',
-        peerDomain: 'peer.test',
         namespaceId: 5,
         expectedAuthorizationEpoch: 8,
         groupAccount: '!group',

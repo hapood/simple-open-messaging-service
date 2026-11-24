@@ -6,6 +6,8 @@ import {
 import { randomUUID } from 'node:crypto';
 import {
   asyncScheduler,
+  merge,
+  interval,
   map,
   Observable,
   startWith,
@@ -15,6 +17,8 @@ import {
 import { DatabaseService } from '../database/database.service.js';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
+
+import { DownloadSpeed } from './download-speed.js';
 
 const GLOBAL_LIMIT_KEY = 'federation:download:globalLimit';
 const PEER_LIMIT_KEY = 'federation:download:peerLimit';
@@ -33,6 +37,12 @@ export interface DownloadProgress {
   total: number | null;
 }
 
+export type DigestDownloadProgress = DownloadProgress &
+  (
+    | { status: 'pending'; bytesPerSecond: null }
+    | { status: 'downloading'; bytesPerSecond: number }
+  );
+
 interface QueuedDownload {
   peerDomain: string;
   digest: string;
@@ -46,6 +56,7 @@ interface QueuedDownload {
   progressListeners: Set<(progress: DownloadProgress) => void>;
   resolve: (value: unknown) => void;
   reject: (reason?: unknown) => void;
+  speed: DownloadSpeed;
   status: 'queued' | 'active';
   received: number;
   total: number | null;
@@ -121,13 +132,22 @@ export class FederationDownloadScheduler implements BeforeApplicationShutdown {
   }
 
   /** Read-only digest progress. Unsubscribing never changes download ownership. */
-  observeDigest(digest: string): Observable<DownloadProgress | null> {
-    return this.changes.pipe(
+  observeDigest(digest: string): Observable<DigestDownloadProgress | null> {
+    // Refresh stalled rates too; observation still owns no physical download.
+    return merge(this.changes, interval(1000)).pipe(
       startWith(undefined),
       throttleTime(500, asyncScheduler, { leading: true, trailing: true }),
-      map(() => {
+      map((): DigestDownloadProgress | null => {
         const entry = this.entries.get(digest);
-        return entry ? { received: entry.received, total: entry.total } : null;
+        if (!entry) return null;
+        const bytes = { received: entry.received, total: entry.total };
+        if (entry.status === 'queued')
+          return { ...bytes, status: 'pending', bytesPerSecond: null };
+        return {
+          ...bytes,
+          status: 'downloading',
+          bytesPerSecond: entry.speed.value(),
+        };
       }),
     );
   }
@@ -196,6 +216,7 @@ export class FederationDownloadScheduler implements BeforeApplicationShutdown {
         task,
         resolve: (value) => resolve(value as T),
         reject,
+        speed: new DownloadSpeed(),
         status: 'queued',
         received: 0,
         total: declaredBytes ?? null,
@@ -363,6 +384,7 @@ export class FederationDownloadScheduler implements BeforeApplicationShutdown {
           item.controller.signal.aborted
         )
           return;
+        item.speed.report(progress.received);
         item.received = progress.received;
         item.total = progress.total;
         for (const listener of item.progressListeners) listener(progress);

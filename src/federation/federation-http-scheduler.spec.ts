@@ -52,23 +52,17 @@ describe('FederationHttpScheduler', () => {
     await closing;
   });
 
-  it('cancels retry delay immediately and never starts another attempt', async () => {
-    vi.useFakeTimers();
+  it('cancels a queued slot waiter immediately when its signal aborts', async () => {
     const subject = scheduler(1, 1);
-    const operation = vi
-      .fn()
-      .mockRejectedValue(new FederationTransportError('offline'));
-    const work = expect(
-      subject.runWithRetry('peer', 'page', operation),
-    ).rejects.toThrow('federation HTTP scheduler shutting down');
-    await vi.advanceTimersByTimeAsync(0);
-    expect(operation).toHaveBeenCalledOnce();
-    expect(vi.getTimerCount()).toBe(1);
-    subject.onModuleDestroy();
-    await work;
-    expect(vi.getTimerCount()).toBe(0);
-    await vi.advanceTimersByTimeAsync(60_000);
-    expect(operation).toHaveBeenCalledOnce();
+    const release = await subject.acquire('a.example');
+    const controller = new AbortController();
+    const queued = subject.acquire('a.example', controller.signal);
+    await Promise.resolve();
+    controller.abort(new Error('caller cancelled'));
+    await expect(queued).rejects.toThrow('caller cancelled');
+    release();
+    const next = await subject.acquire('a.example');
+    next();
     await subject.beforeApplicationShutdown();
   });
 
@@ -122,25 +116,6 @@ describe('FederationHttpScheduler', () => {
     const release = await subject.acquire('peer');
     release();
     expect(findMany).toHaveBeenCalledTimes(2);
-  });
-
-  it('preserves an in-flight retry failure on shutdown without scheduling another attempt', async () => {
-    const subject = scheduler(1, 1);
-    let reject!: (error: Error) => void;
-    const failure = new FederationTransportError('request cleanup failed');
-    const operation = vi.fn(
-      () =>
-        new Promise((_resolve, fail) => {
-          reject = fail;
-        }),
-    );
-    const work = expect(
-      subject.runWithRetry('peer', 'page', operation),
-    ).rejects.toBe(failure);
-    subject.onModuleDestroy();
-    reject(failure);
-    await work;
-    expect(operation).toHaveBeenCalledOnce();
   });
 
   it('waits at the global and per-peer limits, then releases exactly one waiter', async () => {
@@ -215,62 +190,22 @@ describe('FederationHttpScheduler', () => {
     next();
   });
 
-  it('retries typed transport failures with exponential scheduling', async () => {
-    vi.useFakeTimers();
-    const operation = vi
-      .fn<() => Promise<string>>()
-      .mockRejectedValueOnce(new FederationTransportError('timeout one'))
-      .mockRejectedValueOnce(new FederationTransportError('timeout two'))
-      .mockResolvedValueOnce('ok');
-    const result = scheduler(1, 1).runWithRetry(
-      'peer.test',
-      'group-meta page',
-      operation,
-    );
-
-    await vi.waitFor(() => expect(operation).toHaveBeenCalledTimes(1));
-    await vi.advanceTimersByTimeAsync(1_000);
-    expect(operation).toHaveBeenCalledTimes(2);
-    await vi.advanceTimersByTimeAsync(2_000);
-
-    await expect(result).resolves.toBe('ok');
-    expect(operation).toHaveBeenCalledTimes(3);
-  });
-
-  it('honors retryAfter and returns permanent failures immediately', async () => {
-    vi.useFakeTimers();
-    const temporary = new S2sResponseError(
-      'busy',
-      429,
-      BusinessCode.RATE_LIMITED,
-      { retryAfter: 5 },
-    );
-    const operation = vi
-      .fn<() => Promise<string>>()
-      .mockRejectedValueOnce(temporary)
-      .mockResolvedValueOnce('ok');
-    const result = scheduler(1, 1).runWithRetry(
-      'peer.test',
-      'group-meta page',
-      operation,
-    );
-
-    await vi.waitFor(() => expect(operation).toHaveBeenCalledTimes(1));
-    await vi.advanceTimersByTimeAsync(4_999);
-    expect(operation).toHaveBeenCalledTimes(1);
-    await vi.advanceTimersByTimeAsync(1);
-    await expect(result).resolves.toBe('ok');
-
-    const permanent = new S2sResponseError(
-      'forbidden',
-      403,
-      BusinessCode.FORBIDDEN,
-    );
-    await expect(
-      scheduler(1, 1).runWithRetry('peer.test', 'group-meta page', () =>
-        Promise.reject(permanent),
+  it('classifies retryable federation network errors', () => {
+    expect(
+      isRetryableFederationNetworkError(
+        new FederationTransportError('timeout'),
       ),
-    ).rejects.toBe(permanent);
+    ).toBe(true);
+    expect(
+      isRetryableFederationNetworkError(
+        new S2sResponseError('busy', 429, BusinessCode.RATE_LIMITED),
+      ),
+    ).toBe(true);
+    expect(
+      isRetryableFederationNetworkError(
+        new S2sResponseError('forbidden', 403, BusinessCode.FORBIDDEN),
+      ),
+    ).toBe(false);
     expect(isRetryableFederationNetworkError(new SyntaxError('bad json'))).toBe(
       false,
     );

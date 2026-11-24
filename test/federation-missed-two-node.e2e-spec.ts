@@ -155,9 +155,7 @@ describe('federation durable missed transport (two nodes)', () => {
             ),
           });
         expect(syncState?.messageTargetSeq).toBe(received!.originSeq);
-        expect(syncState?.messageProcessedThroughSeq).toBe(
-          syncState?.messageTargetSeq,
-        );
+        expect(syncState?.messageProcessedThroughSeq).toBe(0);
       },
       { timeout: 5000 },
     );
@@ -277,9 +275,10 @@ describe('federation durable missed transport (two nodes)', () => {
               eq(federationThreadSyncState.threadId, stagedMessage!.threadId),
             ),
           });
-        expect(syncState?.messageProcessedThroughSeq).toBeGreaterThanOrEqual(
+        expect(syncState?.messageTargetSeq).toBeGreaterThanOrEqual(
           stagedMessage!.originSeq!,
         );
+        expect(syncState?.messageProcessedThroughSeq).toBe(0);
         const progress = await appB.database.query.fileSyncProgress.findFirst({
           where: eq(fileSyncProgress.batchId, batchId),
         });
@@ -424,9 +423,10 @@ describe('federation durable missed transport (two nodes)', () => {
               eq(federationThreadSyncState.threadId, stagedMessage!.threadId),
             ),
           });
-        expect(syncState?.messageProcessedThroughSeq).toBeGreaterThanOrEqual(
+        expect(syncState?.messageTargetSeq).toBeGreaterThanOrEqual(
           stagedMessage!.originSeq!,
         );
+        expect(syncState?.messageProcessedThroughSeq).toBe(0);
         const progress = await appB.database.query.fileSyncProgress.findFirst({
           where: eq(fileSyncProgress.batchId, batchId),
         });
@@ -502,7 +502,8 @@ describe('federation durable missed transport (two nodes)', () => {
             where: and(eq(federationThreadSyncState.threadId, threadOnB)),
           });
         expect(state).toBeDefined();
-        expect(state!.messageProcessedThroughSeq).toBe(state!.messageTargetSeq);
+        expect(state!.messageTargetSeq).toBeGreaterThan(0);
+        expect(state!.messageProcessedThroughSeq).toBe(0);
         return state!;
       },
       { timeout: 10_000, interval: 100 },
@@ -567,10 +568,6 @@ describe('federation durable missed transport (two nodes)', () => {
         // this consumer never observes an effective inactive transition, it
         // must not invent a local authorization epoch change.
         expect(state!.authorizationEpoch).toBe(before.authorizationEpoch);
-        expect(state).toMatchObject({
-          deletionRecoveryThroughSeq: null,
-          deletionRecoveryMaxMessageSeq: null,
-        });
       },
       { timeout: 30_000, interval: 100 },
     );

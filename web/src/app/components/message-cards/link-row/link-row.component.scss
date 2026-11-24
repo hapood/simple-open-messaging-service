@@ -17,10 +17,6 @@
   position: relative;
   width: 280px;
   max-width: 100%;
-  transition: opacity 0.2s ease-out;
-  &.msg-sending {
-    opacity: 0.88;
-  }
 }
 
 // The <button> is the card; reset native button chrome so the card styling wins.

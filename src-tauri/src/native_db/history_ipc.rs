@@ -1,6 +1,8 @@
 //! Per-consumer native history tasks. Cancelling one task drops its history
 //! future (and owned HTTP), never the login or another consumer's work.
-use super::messages::{NativeHistoryDemand, NativeHistoryIntent, NativeHistoryResult};
+use super::messages::{
+    HistoryIntervalEvent, NativeHistoryDemand, NativeHistoryIntent, NativeHistoryResult,
+};
 use crate::ServerSessionState;
 use serde::Serialize;
 use std::collections::HashMap;
@@ -18,6 +20,7 @@ pub(crate) enum HistoryEvent {
 struct HistoryTasks(Mutex<HashMap<String, CancellationToken>>);
 
 impl HistoryTasks {
+    #[cfg(test)]
     fn register(&self) -> (String, CancellationToken) {
         let id = uuid::Uuid::new_v4().to_string();
         let token = CancellationToken::new();
@@ -26,6 +29,15 @@ impl HistoryTasks {
             .unwrap_or_else(|e| e.into_inner())
             .insert(id.clone(), token.clone());
         (id, token)
+    }
+
+    fn register_token(&self, token: CancellationToken) -> String {
+        let id = uuid::Uuid::new_v4().to_string();
+        self.0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(id.clone(), token);
+        id
     }
 
     fn cancel(&self, id: &str) {
@@ -73,20 +85,49 @@ pub(crate) fn native_message_history_start(
     known_newest_seq: Option<i64>,
     events: tauri::ipc::Channel<HistoryEvent>,
 ) -> Result<String, String> {
-    let intent = NativeHistoryIntent::capture(Some(&app), &proxy, user_id, thread_id)?;
+    let mut intent = NativeHistoryIntent::capture(Some(&app), &proxy, user_id, thread_id)?;
     // Register before spawning: an immediate result cannot leave a stale entry,
     // and cancellation received before the task is first polled is retained.
-    let (id, token) = tasks().register();
+    let token = intent.isolate_consumer();
+    let id = tasks().register_token(token.clone());
     let registration = Registration(id.clone());
     tauri::async_runtime::spawn(async move {
         let _registration = registration;
-        if let Some(result) = run_until_cancelled(&token, intent.get_with_head(demand, known_newest_seq)).await {
+        if let Some(result) =
+            run_until_cancelled(&token, intent.get_with_head(demand, known_newest_seq)).await
+        {
             let event = match result {
                 Ok(result) => HistoryEvent::Ready { result },
                 Err(reason) => HistoryEvent::Failed { reason },
             };
             let _ = events.send(event);
         }
+    });
+    Ok(id)
+}
+
+#[tauri::command]
+pub(crate) fn native_message_history_interval_start(
+    app: tauri::AppHandle,
+    proxy: tauri::State<'_, ServerSessionState>,
+    user_id: i64,
+    thread_id: i64,
+    left: i64,
+    right: i64,
+    events: tauri::ipc::Channel<HistoryIntervalEvent>,
+) -> Result<String, String> {
+    let mut intent = NativeHistoryIntent::capture(Some(&app), &proxy, user_id, thread_id)?;
+    let token = intent.isolate_consumer();
+    let id = tasks().register_token(token.clone());
+    let registration = Registration(id.clone());
+    tauri::async_runtime::spawn(async move {
+        let _registration = registration;
+        if let Some(Err(reason)) =
+            run_until_cancelled(&token, intent.watch_interval(left, right, events.clone())).await
+        {
+            let _ = events.send(HistoryIntervalEvent::Failed { reason });
+        }
+        token.cancel();
     });
     Ok(id)
 }

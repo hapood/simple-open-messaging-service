@@ -11,6 +11,7 @@ describe('group invitation duplicate validation', () => {
       {} as never,
       {} as never,
       { tick: vi.fn().mockResolvedValue(undefined) } as never,
+      {} as never,
     );
     // Exercise the decision made after the transaction has locked and read
     // the authoritative pair and intent rows, independently of UI hints.

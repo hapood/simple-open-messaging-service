@@ -1,5 +1,6 @@
 import { Test } from '@nestjs/testing';
 import { Logger } from '@nestjs/common';
+import { tmpdir } from 'node:os';
 import type { SQL } from 'drizzle-orm';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import {
@@ -29,7 +30,7 @@ async function fixture(
     inbound?: boolean;
   } = {},
 ) {
-  const root = await mkdtemp('/tmp/opencode/batch-cancel-');
+  const root = await mkdtemp(join(tmpdir(), 'batch-cancel-'));
   onTestFinished(() => rm(root, { recursive: true, force: true }));
   const tasks = [1, 2].map((id) => ({
     id: BigInt(id),

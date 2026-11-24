@@ -12,7 +12,7 @@ pub(crate) fn on_window_event(window: &tauri::Window, event: &tauri::WindowEvent
     }
     #[cfg(target_os = "macos")]
     handle_macos_window_event(window, event);
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(any(target_os = "linux", target_os = "windows", target_os = "android", target_os = "ios"))]
     let _ = (window, event);
 }
 

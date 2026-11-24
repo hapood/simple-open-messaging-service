@@ -126,6 +126,8 @@ mod tests {
             .unwrap();
         conn.execute_batch(super::super::group_meta_store::SCHEMA)
             .unwrap();
+        conn.execute_batch(super::super::thread_resource_sync::SCHEMA)
+            .unwrap();
         super::super::thread_store::insert(
             &conn,
             41,
@@ -133,8 +135,7 @@ mod tests {
                 "type":"P2P","threadId":7,"publisherNamespaceId":1,"profileAccount":"bob",
                 "selfMentionNamespaceId":null,"role":null,
                 "threadFeedId":1,"conversationState":"ACTIVE","blocked":false,"alias":null,
-                "profileRev":0,"messageEndSeq":0,"tombstoneEndSeq":0,
-                "groupMetaFeedEndId":null,"joinRequestEndFeedId":0,"joinRequestReadFeedId":0,
+                "profileRev":0,"messageEndSeq":0,                "joinRequestEndFeedId":0,"joinRequestReadFeedId":0,
                 "groupInviteEndFeedId":0,"lastReadSeq":0,"announcementReadFeedId":0,
                 "unreadCount":0,"lastMentionSeq":null,"previews":[]
             }))
@@ -183,12 +184,13 @@ mod tests {
             .unwrap();
         conn.execute_batch(super::super::group_meta_store::SCHEMA)
             .unwrap();
+        conn.execute_batch(super::super::thread_resource_sync::SCHEMA)
+            .unwrap();
         let thread = serde_json::from_value::<super::super::attention::ThreadFeedSnapshot>(json!({
             "type":"P2P","threadId":7,"publisherNamespaceId":1,"profileAccount":"bob",
             "selfMentionNamespaceId":null,"role":null,
             "threadFeedId":1,"conversationState":"ACTIVE","blocked":false,"alias":null,
-            "profileRev":0,"messageEndSeq":0,"tombstoneEndSeq":0,
-            "groupMetaFeedEndId":null,"joinRequestEndFeedId":0,"joinRequestReadFeedId":0,
+            "profileRev":0,"messageEndSeq":0,            "joinRequestEndFeedId":0,"joinRequestReadFeedId":0,
             "groupInviteEndFeedId":0,"lastReadSeq":0,"announcementReadFeedId":0,
             "unreadCount":0,"lastMentionSeq":null,"previews":[]
         }))

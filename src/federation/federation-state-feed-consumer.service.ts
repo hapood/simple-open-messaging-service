@@ -48,9 +48,8 @@ export interface StatePageEffect {
   localSystemMessages: FederationLocalSystemMessage[];
   threadRoundWakes: Array<{
     threadId: number;
-    peerDomain: string;
     namespaceId: number;
-    direction: 'forward' | 'both' | 'meta';
+    mode: 'thread' | 'meta';
   }>;
   profileDemands: ProfilePrefetchDemand[];
 }
@@ -276,9 +275,8 @@ export class FederationStateFeedConsumerService {
           if (effect.threadId !== undefined) {
             threadRoundWakes.push({
               threadId: effect.threadId,
-              peerDomain,
               namespaceId,
-              direction: 'both',
+              mode: 'thread',
             });
           }
         } else if (
@@ -430,9 +428,8 @@ export class FederationStateFeedConsumerService {
           if (effect.threadId !== undefined) {
             threadRoundWakes.push({
               threadId: effect.threadId,
-              peerDomain,
               namespaceId,
-              direction: 'both',
+              mode: 'thread',
             });
           }
         } else if (item.eventType === 'THREAD_CONTENT_HEAD') {
@@ -463,7 +460,6 @@ export class FederationStateFeedConsumerService {
             const merged = await mergeMirrorGroupMetaTargetInTx(tx, {
               group: {
                 account: item.account,
-                domain: peerDomain,
                 publisherNamespaceId: namespaceId,
               },
               metaTargetId: Number(groupMetaFeedEndId),
@@ -471,9 +467,8 @@ export class FederationStateFeedConsumerService {
             if (merged)
               threadRoundWakes.push({
                 threadId: merged.threadId,
-                peerDomain,
                 namespaceId,
-                direction: 'meta',
+                mode: 'meta',
               });
           }
           let threadAddress: FederationThreadAddress;
@@ -526,9 +521,8 @@ export class FederationStateFeedConsumerService {
           }
           threadRoundWakes.push({
             threadId: target.threadId,
-            peerDomain,
             namespaceId,
-            direction: 'forward',
+            mode: 'thread',
           });
         } else
           throw new PermanentFederationItemError(

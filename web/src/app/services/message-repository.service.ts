@@ -1,5 +1,8 @@
 import { Injectable, inject, effect } from '@angular/core';
-import { Subject, firstValueFrom } from 'rxjs';
+import { Observable, Subject, firstValueFrom } from 'rxjs';
+import { consumeAppSse } from './sse-client';
+import { apiPrefix } from './constants';
+import { nativeHistoryInterval } from './native-history-interval';
 import {
   CancellationScope,
   firstValueFromAbortable,
@@ -73,6 +76,12 @@ export interface NativeMessageHistoryResult {
   hasOlder: boolean;
   hasNewer: boolean;
   failed: boolean;
+}
+
+export interface MessageHistoryIntervalPage {
+  left: number;
+  right: number;
+  items: MessageHistorySourceItem[];
 }
 
 type HistoryDirection = 'older' | 'newer';
@@ -183,7 +192,11 @@ export class MessageRepository {
       threadId,
       demand,
       signal,
-      demand.kind !== 'localLatest' && demand.kind !== 'localAround' && liveHead >= 0 ? liveHead : undefined,
+      demand.kind !== 'localLatest' &&
+        demand.kind !== 'localAround' &&
+        liveHead >= 0
+        ? liveHead
+        : undefined,
     );
     signal.throwIfAborted();
     if (!this.sessionLifecycle.isCurrent(scope))
@@ -218,19 +231,34 @@ export class MessageRepository {
             demand.anchor < 0 ||
             demand.anchor === Number.MAX_SAFE_INTEGER ||
             ![demand.olderCount, demand.newerCount].every(
-              (count) => Number.isSafeInteger(count) && count >= 0 && count <= 200,
+              (count) =>
+                Number.isSafeInteger(count) && count >= 0 && count <= 200,
             )
           )
             throw new Error('invalid local history window');
           // Use the ordinary range projection, stopping at the first unknown
           // interval in each direction instead of filling it from the server.
           const older = await this.walkBrowserMessageHistory(
-            threadId, 'older', demand.anchor + 1, demand.olderCount,
-            0, Number.MAX_SAFE_INTEGER, undefined, lifetime, 'cache-only',
+            threadId,
+            'older',
+            demand.anchor + 1,
+            demand.olderCount,
+            0,
+            Number.MAX_SAFE_INTEGER,
+            undefined,
+            lifetime,
+            'cache-only',
           );
           const newer = await this.walkBrowserMessageHistory(
-            threadId, 'newer', demand.anchor, demand.newerCount,
-            0, Number.MAX_SAFE_INTEGER, undefined, lifetime, 'cache-only',
+            threadId,
+            'newer',
+            demand.anchor,
+            demand.newerCount,
+            0,
+            Number.MAX_SAFE_INTEGER,
+            undefined,
+            lifetime,
+            'cache-only',
           );
           return {
             items: [...older.items.reverse(), ...newer.items],
@@ -384,6 +412,268 @@ export class MessageRepository {
     } finally {
       scope.dispose();
     }
+  }
+
+  /** Mount-scoped interval observation. Notifications carry coordinates, never bodies.
+   * This deliberately bypasses the ordinary walker: SERVER_PENDING is exactly
+   * the coverage that a committed server interval notification must refresh. */
+  watchHistoryInterval(
+    threadId: number,
+    left: number,
+    right: number,
+  ): Observable<MessageHistoryIntervalPage> {
+    return new Observable((subscriber) => {
+      if (
+        ![threadId, left, right].every(Number.isSafeInteger) ||
+        threadId <= 0 ||
+        left < 0 ||
+        right <= left ||
+        right >= Number.MAX_SAFE_INTEGER
+      ) {
+        subscriber.error(new Error('invalid history interval'));
+        return;
+      }
+      const session = this.sessionLifecycle.capture();
+      const scope = new CancellationScope(
+        session.signal,
+        this.webdb.captureMessageLifetime(),
+      );
+      const signal = scope.signal;
+      const stop = () => subscriber.complete();
+      signal.addEventListener('abort', stop, { once: true });
+      if (signal.aborted) {
+        subscriber.complete();
+        scope.dispose();
+        return;
+      }
+      if (isTauri()) {
+        const userId = this.userService.sessionUserId();
+        if (userId === null) {
+          scope.cancel();
+          return;
+        }
+        const native = nativeHistoryInterval(
+          userId,
+          threadId,
+          left,
+          right,
+        ).subscribe({
+          next: (page) => {
+            if (!signal.aborted && this.sessionLifecycle.isCurrent(session))
+              subscriber.next(page);
+          },
+          error: (error) => subscriber.error(error),
+          complete: () => subscriber.complete(),
+        });
+        return () => {
+          native.unsubscribe();
+          scope.cancel();
+        };
+      }
+      let pending: { left: number; right: number } | undefined;
+      const markDirty = (interval: { left: number; right: number }) => {
+        pending = pending
+          ? {
+              left: Math.min(interval.left, pending.left),
+              right: Math.max(interval.right, pending.right),
+            }
+          : interval;
+      };
+      let running = false;
+      let retry: ReturnType<typeof setTimeout> | undefined;
+      const pump = async () => {
+        if (running || signal.aborted) return;
+        clearTimeout(retry);
+        running = true;
+        try {
+          while (pending && !signal.aborted) {
+            const interval = pending;
+            pending = undefined;
+            try {
+              const page = await this.refreshBrowserHistoryInterval(
+                threadId,
+                interval,
+                signal,
+              );
+              signal.throwIfAborted();
+              this.sessionLifecycle.assertCurrent(session);
+              if (page) subscriber.next(page);
+            } catch (error) {
+              if (signal.aborted) return;
+              // A failed read remains dirty; the next notification or reconnect
+              // retries it, rather than recursively draining ordinary history.
+              markDirty(interval);
+              retry = setTimeout(() => {
+                void pump();
+              }, 1000);
+              return;
+            }
+          }
+        } finally {
+          running = false;
+        }
+      };
+      let evicted = false;
+      const connect = async () => {
+        try {
+          await consumeAppSse(
+            `${apiPrefix()}/message/history-interval?threadId=${threadId}&left=${left}&right=${right}`,
+            {
+              signal,
+              onResponse: (response) => {
+                if ([401, 403, 404].includes(response.status))
+                  subscriber.error(
+                    new Error('history interval authorization ended'),
+                  );
+              },
+              onFrame: (frame) => {
+                if (signal.aborted) return;
+                if (frame.event === 'MESSAGE_HISTORY_INTERVAL_EVICTED') {
+                  evicted = true;
+                  subscriber.error(
+                    new Error('history interval subscription evicted'),
+                  );
+                  return;
+                }
+                if (frame.event !== 'MESSAGE_HISTORY_INTERVAL' || !frame.data)
+                  return;
+                const data = JSON.parse(frame.data) as {
+                  threadId: number;
+                  left: number;
+                  right: number;
+                };
+                if (
+                  data.threadId !== threadId ||
+                  !Number.isSafeInteger(data.left) ||
+                  !Number.isSafeInteger(data.right)
+                )
+                  return;
+                const clipped = {
+                  left: Math.max(left, data.left),
+                  right: Math.min(right, data.right),
+                };
+                if (clipped.left >= clipped.right) return;
+                pending = pending
+                  ? {
+                      left: Math.min(pending.left, clipped.left),
+                      right: Math.max(pending.right, clipped.right),
+                    }
+                  : clipped;
+                void pump();
+              },
+            },
+          );
+        } catch {
+          // The mount, not a process-global reconnect lane, owns this stream.
+        }
+        if (!signal.aborted && !evicted)
+          streamRetry = setTimeout(() => {
+            void connect();
+          }, 1000);
+      };
+      let streamRetry: ReturnType<typeof setTimeout> | undefined;
+      if (!signal.aborted) void connect();
+      else subscriber.complete();
+      return () => {
+        clearTimeout(retry);
+        clearTimeout(streamRetry);
+        signal.removeEventListener('abort', stop);
+        scope.cancel();
+      };
+    });
+  }
+
+  private async refreshBrowserHistoryInterval(
+    threadId: number,
+    interval: { left: number; right: number },
+    signal: AbortSignal,
+  ): Promise<MessageHistoryIntervalPage | null> {
+    const response = await firstValueFromAbortable(
+      this.msg.queryMessageHistoryPage({
+        threadId,
+        before: interval.right + 1,
+        through: interval.left + 1,
+        take: 50,
+      }),
+      signal,
+    );
+    signal.throwIfAborted();
+    if (response.code === 30006) return null;
+    if (response.code !== 0 || !this.isHistoryPage(response.data))
+      throw new Error('history interval query failed');
+    const page = response.data;
+    const scan = this.historyScan(
+      'older',
+      interval.right + 1,
+      page.scannedThrough,
+    );
+    if (!scan) return null;
+    if (
+      scan.left < interval.left ||
+      scan.right > interval.right ||
+      page.messages.length > 50 ||
+      page.messages.some(
+        (message) =>
+          message.threadId !== threadId ||
+          !Number.isSafeInteger(message.seq) ||
+          message.seq <= scan.left ||
+          message.seq > scan.right,
+      )
+    )
+      throw new Error('history interval response escaped its bounds');
+    const gaps = page.gaps.map((gap) => {
+      if (
+        !Number.isSafeInteger(gap.startSeq) ||
+        !Number.isSafeInteger(gap.endSeq) ||
+        gap.startSeq < 1 ||
+        gap.endSeq < gap.startSeq ||
+        typeof gap.recoverable !== 'boolean' ||
+        gap.endSeq <= scan.left ||
+        gap.startSeq > scan.right
+      )
+        throw new Error('invalid or nonintersecting history interval gap');
+      // The server returns full intersecting gaps, not scan-clipped gaps.
+      // This mount may only change coverage inside the page actually scanned.
+      return {
+        left: Math.max(scan.left, gap.startSeq - 1),
+        right: Math.min(scan.right, gap.endSeq),
+        state: gap.recoverable
+          ? ('SERVER_PENDING' as const)
+          : ('SERVER_UNAVAILABLE' as const),
+      };
+    });
+    const committed = await this.webdb.commitBrowserMessagePage(
+      {
+        threadId,
+        scan,
+        messages: page.messages,
+        gaps,
+      },
+      signal,
+    );
+    signal.throwIfAborted();
+    this.slotsChanged.next(threadId);
+    const remainingGaps = committed.ranges
+      .filter(
+        (range) =>
+          range.state !== 'LOCAL_COVERED' &&
+          range.right > scan.left &&
+          range.left < scan.right,
+      )
+      .map((range) => ({
+        left: Math.max(scan.left, range.left),
+        right: Math.min(scan.right, range.right),
+        state: range.state as 'SERVER_PENDING' | 'SERVER_UNAVAILABLE',
+      }));
+    return {
+      ...scan,
+      items: this.projectCommittedHistoryPage(
+        'newer',
+        scan,
+        committed.messages,
+        remainingGaps,
+      ),
+    };
   }
 
   private async initialMessageBounds(
@@ -796,16 +1086,6 @@ export class MessageRepository {
     return true;
   }
 
-  /** Idempotent put by `[threadId, seq]` (the keyPath) — writing the same key twice just overwrites. */
-  private async put(m: Message): Promise<void> {
-    try {
-      await this.webdb.putCachedMessages([m]);
-      this.slotsChanged.next(m.threadId);
-    } catch {
-      /* IDB unavailable / closed — cache is best-effort */
-    }
-  }
-
   /** Resolve a navigation selector without adding it to any history scan's coverage. */
   async resolveHistoryAnchor(
     threadId: number,
@@ -882,10 +1162,9 @@ export class MessageRepository {
     seq: number,
     status: MediaStatus,
   ): Promise<boolean> {
-    const cur = await this.getOne(threadId, seq);
-    if (!cur) return false;
-    if (cur.mediaStatus === status) return false;
-    await this.put({ ...cur, mediaStatus: status });
+    if (!(await this.webdb.setMessageMediaStatus(threadId, seq, status)))
+      return false;
+    this.slotsChanged.next(threadId);
     this.mediaStatusSignal$.next({ threadId, seq, status });
     return true;
   }

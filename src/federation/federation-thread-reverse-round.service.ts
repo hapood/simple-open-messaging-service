@@ -23,20 +23,17 @@ export interface FederationReverseRoundContext {
 export interface FederationThreadReverseRoundDriver {
   fetchMessages(params: {
     threadId: number;
-    peerDomain: string;
     before: number;
     through: number;
     take: number;
   }): Promise<FederationReverseMessageResult>;
   complete(params: {
     threadId: number;
-    peerDomain: string;
     context: FederationReverseRoundContext;
     closesGap: boolean;
   }): Promise<void>;
   markUnavailable(params: {
     threadId: number;
-    peerDomain: string;
     context: FederationReverseRoundContext;
   }): Promise<void>;
 }
@@ -47,8 +44,8 @@ export interface FederationThreadReverseRoundResult {
   batchOldestSeq: number | null;
   nextBeforeSeq: number;
   fetchedMessages: boolean;
-  closesReverseHistory: boolean;
-  continuation: FederationReverseRoundContext | null;
+  committed: boolean;
+  closesGap: boolean;
 }
 
 /** Executes one scheduler quantum of an already-single-flighted reverse logical round. */
@@ -58,19 +55,21 @@ export class FederationThreadReverseRoundService {
 
   async run(
     threadId: number,
-    peerDomain: string,
     namespaceId: number,
     driver: FederationThreadReverseRoundDriver,
+    signal: AbortSignal,
     requestedTake?: number,
-    continuation?: FederationReverseRoundContext,
+    dirty = true,
   ): Promise<FederationThreadReverseRoundResult> {
+    signal.throwIfAborted();
     const take = resolveFederationThreadRoundTake(requestedTake);
-    const context = await this.resolveContext(
-      threadId,
-      peerDomain,
-      namespaceId,
-      continuation,
-    );
+    if (dirty) {
+      await this.states.prepareMessageRound(threadId, namespaceId);
+      signal.throwIfAborted();
+      await this.states.reserveReverseTail(threadId, namespaceId);
+      signal.throwIfAborted();
+    }
+    const context = await this.createContext(threadId, namespaceId);
     if (context === null) {
       return {
         beforeSeq: 0,
@@ -78,8 +77,8 @@ export class FederationThreadReverseRoundService {
         batchOldestSeq: null,
         nextBeforeSeq: 0,
         fetchedMessages: false,
-        closesReverseHistory: true,
-        continuation: null,
+        committed: false,
+        closesGap: false,
       };
     }
     this.assertContext(context);
@@ -87,29 +86,34 @@ export class FederationThreadReverseRoundService {
     const beforeSeq = context.nextBeforeSeq;
     let result: FederationReverseMessageResult;
     try {
+      signal.throwIfAborted();
       result = await driver.fetchMessages({
         threadId,
-        peerDomain,
         before: beforeSeq,
         through: context.throughSeq,
         take,
       });
     } catch (error) {
+      signal.throwIfAborted();
       throw new FederationThreadRoundRemoteError(
         error,
         context.authorizationEpoch,
       );
     }
+    signal.throwIfAborted();
     if (result.kind === 'history-boundary') {
-      await driver.markUnavailable({ threadId, peerDomain, context });
+      await driver.markUnavailable({
+        threadId,
+        context,
+      });
       return {
         beforeSeq,
         throughSeq: context.throughSeq,
         batchOldestSeq: null,
         nextBeforeSeq: beforeSeq,
         fetchedMessages: true,
-        closesReverseHistory: true,
-        continuation: null,
+        committed: false,
+        closesGap: false,
       };
     }
 
@@ -119,13 +123,11 @@ export class FederationThreadReverseRoundService {
       ...context,
       nextBeforeSeq: batchOldestSeq,
     };
-    const closesReverseHistory =
-      !result.hasMore || batchOldestSeq <= context.throughSeq;
+    const closesGap = !result.hasMore || batchOldestSeq <= context.throughSeq;
     await driver.complete({
       threadId,
-      peerDomain,
       context: nextContext,
-      closesGap: closesReverseHistory,
+      closesGap,
     });
     return {
       beforeSeq,
@@ -133,21 +135,20 @@ export class FederationThreadReverseRoundService {
       batchOldestSeq,
       nextBeforeSeq: batchOldestSeq,
       fetchedMessages: true,
-      closesReverseHistory,
-      continuation: null,
+      committed: true,
+      closesGap,
     };
   }
 
   private async createContext(
     threadId: number,
-    peerDomain: string,
     namespaceId: number,
   ): Promise<FederationReverseRoundContext | null> {
     const window = await this.states.resolveReverseWindow(
       threadId,
       namespaceId,
     );
-    if (window.gapId === null || window.throughSeq === null) return null;
+    if (window === null) return null;
     return {
       authorizationEpoch: window.authorizationEpoch,
       gapId: window.gapId,
@@ -156,25 +157,6 @@ export class FederationThreadReverseRoundService {
       throughSeq: window.throughSeq,
       messageSeqOffset: window.messageSeqOffset,
     };
-  }
-
-  private async resolveContext(
-    threadId: number,
-    peerDomain: string,
-    namespaceId: number,
-    continuation?: FederationReverseRoundContext,
-  ): Promise<FederationReverseRoundContext | null> {
-    if (continuation) {
-      const state = await this.states.require(threadId, namespaceId);
-      if (
-        state.authorizationEpoch === continuation.authorizationEpoch &&
-        state.activeGapId !== null &&
-        state.activeGapId === continuation.gapId
-      ) {
-        return continuation;
-      }
-    }
-    return this.createContext(threadId, peerDomain, namespaceId);
   }
 
   private assertContext(context: FederationReverseRoundContext): void {

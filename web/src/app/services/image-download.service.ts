@@ -92,13 +92,13 @@ export class ImageDownloadService {
       if (current.status !== 'failed') return;
     }
 
-    const expectedSize = Math.max(0, media.size ?? 0);
+    const expectedSize = media.size;
     const task: ImageDownloadTask = {
       key,
       threadId,
       msgId: media.msgId ?? 0,
       src: media.src,
-      name: media.name || this.defaultFilename(media),
+      name: media.name,
       expectedSize,
       loaded: 0,
       total: expectedSize,
@@ -156,10 +156,6 @@ export class ImageDownloadService {
 
   retry(media: AlbumMedia, threadId: number): void {
     this.start(media, threadId);
-  }
-
-  private defaultFilename(media: AlbumMedia): string {
-    return `image-${media.msgId ?? Date.now()}.jpg`;
   }
 
   private publishProgress(

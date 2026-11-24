@@ -33,6 +33,7 @@ import {
   userIntentRevocationSql,
   type UserIntentRevocationInput,
 } from './user-intent-revocation-sql.js';
+import { enqueueThreadTombFanoutInTx } from '../../../message/thread-fanout-task.js';
 import { initializeRelationshipThreadStateInTx } from '../../../federation/federation-relationship-thread-state.js';
 import { captureThreadStateUpdatesInTx } from '../../../client-state-feed/capture-thread-state-updates.js';
 import {
@@ -47,7 +48,11 @@ import {
 import { Logger } from '@nestjs/common';
 import { MeasureBusinessOperation } from '../../../diagnostics/execution-measurement.js';
 import { and, eq } from 'drizzle-orm';
-import { account, relationshipRequest } from '../../../database/schema.js';
+import {
+  account,
+  messageThread,
+  relationshipRequest,
+} from '../../../database/schema.js';
 import type {
   RequestDecision,
   RequestDecisionResult,
@@ -203,6 +208,7 @@ export class UserIntentService {
     userId: number,
     requestId: string,
     decision: RequestDecision,
+    note?: string,
   ): Promise<RequestDecisionResult> {
     const id = BigInt(requestId);
     // This read locates the pair only. Admission is revalidated under its lock.
@@ -242,6 +248,7 @@ export class UserIntentService {
               namespaceId: round.authorNamespaceId,
             },
         decision: decision === 'ACCEPT' ? 'ACCEPTED' : 'REVOKED',
+        ...(note !== undefined ? { note } : {}),
       },
       { requestDecision: { requestId: id, decision } },
     );
@@ -282,6 +289,7 @@ export class UserIntentService {
   async endEstablishedRelationship(params: {
     userId: number;
     threadId: number;
+    note?: string;
   }): Promise<UserIntentOutcome> {
     const clientUpdates: PendingClientStateFeedUpdate[] = [];
     const applied = await this.database.db.transaction(async (tx) => {
@@ -318,7 +326,12 @@ export class UserIntentService {
             };
       return this.executeInTx(
         tx,
-        { userId: params.userId, decision: 'REVOKED', target },
+        {
+          userId: params.userId,
+          decision: 'REVOKED',
+          target,
+          ...(params.note !== undefined ? { note: params.note } : {}),
+        },
         clientUpdates,
         {
           admissionInTx: (runner) =>
@@ -694,10 +707,7 @@ export class UserIntentService {
         reverseRequestId: reverse.requestId ? BigInt(reverse.requestId) : null,
         input: {
           ...feedInput(base),
-          note: (base.params.decision === 'REQUESTED'
-            ? (base.params.note ?? '')
-            : ''
-          ).slice(0, 255),
+          note: (base.params.note ?? '').slice(0, 255),
           acceptedAt: new Date(),
         },
       });
@@ -766,7 +776,7 @@ export class UserIntentService {
       reverseRequestId: reverse.requestId ? BigInt(reverse.requestId) : null,
       input: {
         ...feedInput(base),
-        note: '',
+        note: (base.params.note ?? '').slice(0, 255),
         acceptedAt: new Date(),
       },
     });
@@ -800,6 +810,7 @@ export class UserIntentService {
         targetRequestId: null,
         input: {
           ...feedInput(base),
+          note: (base.params.note ?? '').slice(0, 255),
         },
       });
     }
@@ -818,6 +829,7 @@ export class UserIntentService {
         targetRequestId: own.requestId ? BigInt(own.requestId) : null,
         input: {
           ...feedInput(base),
+          note: (base.params.note ?? '').slice(0, 255),
         },
       });
     }
@@ -845,6 +857,7 @@ export class UserIntentService {
         targetRequestId: reverse.requestId ? BigInt(reverse.requestId) : null,
         input: {
           ...feedInput(base),
+          note: (base.params.note ?? '').slice(0, 255),
         },
       });
     }
@@ -1006,6 +1019,19 @@ export class UserIntentService {
         boundarySeq: context.authorization.threadCurSeq,
       },
     );
+    if (result.rows[0]?.pairChanged === true) {
+      const [head] = await context.tx
+        .select({ tombstoneEndSeq: messageThread.tombstoneEndSeq })
+        .from(messageThread)
+        .where(eq(messageThread.id, context.threadId))
+        .limit(1);
+      if (head && head.tombstoneEndSeq > 0) {
+        await enqueueThreadTombFanoutInTx(context.tx, context.threadLock, {
+          threadId: context.threadId,
+          tombstoneEndSeq: head.tombstoneEndSeq,
+        });
+      }
+    }
     // The remote source activates from its retained authored snapshot, inside
     // this transaction and under the lock already held (gap recovery included).
     if (context.target.namespaceId !== 0)

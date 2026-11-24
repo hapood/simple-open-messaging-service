@@ -9,6 +9,7 @@ import { DatabaseService } from '../database/database.service.js';
 import * as tables from '../database/schema.js';
 import { DiscoveryService } from './discovery.service.js';
 import { FederationPeerLifecycle } from './federation-peer-lifecycle.js';
+import { FederationPeerRuntimeService } from './federation-peer-runtime.service.js';
 import { KeypairService } from './keypair.service.js';
 import { loadFederationRuntimeConfig } from './federation.config.js';
 
@@ -46,6 +47,7 @@ export class FederationHealthSchedulerService
     private readonly peerLifecycle: FederationPeerLifecycle,
     private readonly discovery: DiscoveryService,
     private readonly keypair: KeypairService,
+    private readonly runtime: FederationPeerRuntimeService,
   ) {}
 
   async onApplicationBootstrap(): Promise<void> {
@@ -176,7 +178,22 @@ export class FederationHealthSchedulerService
    *  never turn a successful Health result into a failure; they run as fire-and-forget
    *  so the Health scheduler's concurrency is not blocked by discovery I/O. */
   private async runOne(task: PeerTask): Promise<void> {
-    await this.peerLifecycle.checkHealth(task.domain);
+    const cooldown = this.runtime.getCooldown(task.namespaceId);
+    const status = await this.peerLifecycle.checkHealth(task.domain);
+    if (cooldown !== null && status === 'available') {
+      const current = await this.database.db.query.identityNamespace.findFirst({
+        where: and(
+          eq(tables.identityNamespace.id, task.namespaceId),
+          eq(tables.identityNamespace.active, true),
+        ),
+        columns: { trustLevel: true },
+      });
+      await this.runtime.completePeriodicHealth(
+        task.namespaceId,
+        cooldown,
+        current?.trustLevel === 'available',
+      );
+    }
     // Health succeeded: refresh the SRV route so DNS edits propagate at the
     // Health cadence, and conditionally refresh the cached certificate set.
     void this.discovery.refreshRoute(task.domain);

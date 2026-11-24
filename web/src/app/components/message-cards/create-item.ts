@@ -1,5 +1,6 @@
 import {
   ApplicationRef,
+  ComponentRef,
   createComponent,
   EnvironmentInjector,
   InputSignal,
@@ -31,18 +32,125 @@ import type { AvatarView } from '../user-avatar/avatar-view';
 import { MessageSenderService } from './message-sender.service';
 
 /**
- * Common shape of the message-row components: they all bind the same 4 signal inputs. Used to type
- * the dynamically-selected component so createComponent infers one C — the components differ in extra members (invite
- * state, album logic, the text row's retry output), which otherwise breaks union inference at the createComponent call.
+ * Read-only shape shared by dynamically selected rows. Each row may accept a narrower
+ * message input; consumers here only read it, while Angular owns input binding.
  */
 interface RowComponent {
-  data: InputSignal<ChatMsgData>;
+  data: () => ChatMsgData;
   isShowHead: InputSignal<boolean>;
   isGroupStart: InputSignal<boolean>;
   showDate: InputSignal<boolean>;
   quoteJump?: import('@angular/core').OutputEmitterRef<
     import('../../services/history-anchor').HistoryAnchor
   >;
+}
+
+interface BoundRow {
+  ref: ComponentRef<RowComponent>;
+  bindData(message: ChatMsgData): void;
+}
+
+/** Keep Angular's string-keyed input write behind a checked, typed boundary. */
+function createBoundRow<D extends ChatMsgData>(
+  component: Type<RowComponent & { data: InputSignal<D> }>,
+  decode: (message: ChatMsgData) => NoInfer<D>,
+  initial: ChatMsgData,
+  environmentInjector: EnvironmentInjector,
+): BoundRow {
+  const value = decode(initial);
+  const ref = createComponent(component, { environmentInjector });
+  const bindData = (message: ChatMsgData) =>
+    ref.setInput('data', decode(message));
+  ref.setInput('data', value);
+  return { ref, bindData };
+}
+
+function createMessageRow(
+  data: ChatMsgData,
+  injector: EnvironmentInjector,
+): BoundRow {
+  switch (data.contentType) {
+    case 'IMAGE':
+    case 'VIDEO':
+    case 'AUDIO':
+    case 'GALLERY':
+      return createBoundRow(
+        MediaRowComponent,
+        (message) => {
+          if (message.images === null)
+            throw new Error('Media row requires media content');
+          return message;
+        },
+        data,
+        injector,
+      );
+    case 'FILE':
+      return createBoundRow(
+        FileRowComponent,
+        (message) => {
+          if (message.contentType !== 'FILE')
+            throw new Error('File row requires FILE content');
+          return message;
+        },
+        data,
+        injector,
+      );
+    case 'PURE_TEXT':
+      return createBoundRow(
+        TextRowComponent,
+        (message) => {
+          if (message.contentType !== 'PURE_TEXT')
+            throw new Error('Message row content type changed');
+          return message;
+        },
+        data,
+        injector,
+      );
+    case 'LINK':
+      return createBoundRow(
+        LinkRowComponent,
+        (message) => {
+          if (message.contentType !== 'LINK')
+            throw new Error('Link row requires LINK content');
+          return message;
+        },
+        data,
+        injector,
+      );
+    case 'CONTACT_CARD':
+      return createBoundRow(
+        ContactCardRowComponent,
+        (message) => {
+          if (message.contentType !== 'CONTACT_CARD')
+            throw new Error('Contact row requires CONTACT_CARD content');
+          return message;
+        },
+        data,
+        injector,
+      );
+    case 'FORWARD':
+      return createBoundRow(
+        ForwardRowComponent,
+        (message) => {
+          if (message.contentType !== 'FORWARD')
+            throw new Error('Forward row requires FORWARD content');
+          return message;
+        },
+        data,
+        injector,
+      );
+    case 'SYSTEM':
+      return createBoundRow(
+        SystemRowComponent,
+        (message) => {
+          if (message.contentType !== 'SYSTEM')
+            throw new Error('System row requires SYSTEM content');
+          return message;
+        },
+        data,
+        injector,
+      );
+  }
 }
 
 const DATE_SEPARATOR_HEIGHT_PX = 47;
@@ -176,10 +284,8 @@ export function createMsgCbElement(
   isGroupStart: boolean,
   showDate: boolean,
   envInjector: EnvironmentInjector,
-  onRetry?: (clientMessageId: string) => void,
   onOpenImage?: (images: AlbumMedia[], index: number) => void,
   onOpenFile?: (data: ChatMsgData) => void,
-  onCancel?: (clientMessageId: string) => void,
   unreadDividerLabel?: string,
   onInteraction?: (
     intent: 'select' | 'open-menu',
@@ -198,40 +304,17 @@ export function createMsgCbElement(
     anchor: DOMRect,
   ) => void,
 ): CbElement<ChatItemData> {
-  const data = item.data as ChatMsgData; // date is derived at the render layer
-
-  const comp: Type<RowComponent> =
-    data.type === 'system'
-      ? SystemRowComponent
-      : data.contentType === 'IMAGE' ||
-          data.contentType === 'VIDEO' ||
-          data.contentType === 'AUDIO' ||
-          data.contentType === 'GALLERY'
-        ? MediaRowComponent
-        : data.contentType === 'LINK'
-          ? LinkRowComponent
-          : data.contentType === 'CONTACT_CARD'
-            ? ContactCardRowComponent
-            : data.contentType === 'FILE'
-              ? FileRowComponent
-              : data.contentType === 'FORWARD'
-                ? ForwardRowComponent
-                : TextRowComponent;
-
-  const ref = createComponent(comp, { environmentInjector: envInjector });
+  const data = item.data;
+  const { ref, bindData } = createMessageRow(data, envInjector);
   // createComponent() only constructs the view; it does not enroll it in Angular's application view
   // tree. Message rows contain async, signal-driven children (including sender presentation, whose profile
   // bytes resolve after the first render), so leaving the host view detached freezes those children at
   // their initial fallback until some unrelated scroller update happens to call detectChanges().
   const appRef = envInjector.get(ApplicationRef);
   appRef.attachView(ref.hostView);
-  ref.setInput('data', data);
   ref.setInput('isShowHead', isShowHead);
   ref.setInput('isGroupStart', isGroupStart);
   ref.setInput('showDate', showDate);
-  if (comp === MediaRowComponent) {
-    ref.setInput('clientMessageId', item.clientMessageId ?? '');
-  }
   ref.changeDetectorRef.detectChanges(); // zoneless: drive the first render manually (triggers ngOnInit)
   applyGroupPosition(
     ref.location.nativeElement,
@@ -268,8 +351,8 @@ export function createMsgCbElement(
 
   // In-place re-render (CbElement.update): recompute grouping + date from the (possibly new) prev and re-apply all four
   // signal inputs on the SAME component instance + DOM node, then drive change detection synchronously so the kernel's
-  // immediate offsetHeight read reflects the new content. Used by reconcilePending to morph a pending send's status
-  // (sending→failed) and to re-group after a reorder — without remounting (which would break a FLIP move animation).
+  // immediate offsetHeight read reflects the new content. Regroup after a reorder without remounting,
+  // which would break an active FLIP move animation.
   let selectionHost: HTMLElement | undefined;
   let interactionItem = item;
   let interactionIsShowHead = isShowHead;
@@ -319,13 +402,10 @@ export function createMsgCbElement(
     nextPrev: CbItem<ChatItemData> | null,
   ): void => {
     const flags = computeRowFlags(nextItem, nextPrev, interactionNext);
-    ref.setInput('data', nextItem.data as ChatMsgData);
+    bindData(nextItem.data);
     ref.setInput('isShowHead', flags.isShowHead);
     ref.setInput('isGroupStart', flags.isGroupStart);
     ref.setInput('showDate', flags.showDate);
-    if (comp === MediaRowComponent) {
-      ref.setInput('clientMessageId', nextItem.clientMessageId ?? '');
-    }
     senderMessages.next(nextItem.data as ChatMsgData);
     ref.changeDetectorRef.detectChanges();
     applyGroupPosition(ref.location.nativeElement, flags.groupPosition);
@@ -537,7 +617,7 @@ export function createMsgCbElement(
       baseDestroy();
     };
   }
-  // Wire optional row outputs (failed-send retry on TextRow; open-image on MediaRow). Each subscription is released on
+  // Wire row navigation outputs. Each subscription is released on
   // destroy so re-rendering the row (rebuildEntry) or unmounting it does not leak a handler. Several outputs may compose
   // on one entry — wrapDestroy chains them LIFO into a single destroy().
   const wrapDestroy = (extra: () => void): void => {
@@ -550,34 +630,6 @@ export function createMsgCbElement(
   if (ref.instance.quoteJump && onQuoteJump) {
     const sub = ref.instance.quoteJump.subscribe(onQuoteJump);
     wrapDestroy(() => sub.unsubscribe());
-  }
-  if (onRetry) {
-    // The row's retry output is a click SIGNAL only (its emitted value is the numeric msgId, which for a failed
-    // optimistic bubble is a placeholder — not the correlation key). The kernel reconciles retries by the stable
-    // clientMessageId on the CbItem (retryPending matches on it), so map the click to item.clientMessageId, which
-    // is stable across the failed→sending in-place morph.
-    const inst = ref.instance as {
-      retry?: {
-        subscribe: (fn: (id: number) => void) => { unsubscribe(): void };
-      };
-    };
-    const cid = item.clientMessageId;
-    const sub = inst.retry?.subscribe(() => {
-      if (cid !== undefined) onRetry(cid);
-    });
-    if (sub) wrapDestroy(() => sub.unsubscribe());
-  }
-  if (onCancel) {
-    const inst = ref.instance as {
-      cancel?: {
-        subscribe: (fn: (id: number) => void) => { unsubscribe(): void };
-      };
-    };
-    const cid = item.clientMessageId;
-    const sub = inst.cancel?.subscribe(() => {
-      if (cid !== undefined) onCancel(cid);
-    });
-    if (sub) wrapDestroy(() => sub.unsubscribe());
   }
   if (onOpenImage) {
     const inst = ref.instance as {

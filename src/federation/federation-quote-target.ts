@@ -18,18 +18,20 @@ export function isFederationQuoteTarget(
   );
 }
 
-/** Translate the coordinate kind, not the number; no target lookup is needed on receipt. */
+/** Retain the wire coordinate kind and number; receipt never looks up the target. */
 export function storeFederationQuote(
   target: FederationQuoteTarget,
   namespaceId: number,
-): { seq: number; namespaceId: number } {
+):
+  | { seq: number; namespaceId: number; originSeq?: never }
+  | { originSeq: number; seq?: never; namespaceId?: never } {
   if (!isFederationQuoteTarget(target)) {
     throw new Error('invalid federated reply target');
   }
 
   return target.seq !== undefined
     ? { seq: target.seq, namespaceId }
-    : { seq: target.originSeq, namespaceId: 0 };
+    : { originSeq: target.originSeq };
 }
 
 /** Publication changes coordinate spaces only when the required mapping is known. */

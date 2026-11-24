@@ -11,7 +11,6 @@ import {
   mediaAsset,
   messageAsset,
   message,
-  deletedMessage,
   messageThread,
   pendingMedia,
   uploadSession,
@@ -49,7 +48,6 @@ import {
 import {
   ContentType,
   MessageThreadType,
-  type MessageDeleteType,
 } from '../database/enums.js';
 
 import { rawDate } from '../database/raw-result.js';
@@ -124,12 +122,6 @@ export interface MessageQueryParams {
   cursor?: { threadId_seq: { threadId: number; seq: number } };
   truncateSeq?: number;
 }
-
-/** Query-only immutable slot; deleted bodies and media metadata never leave the server. */
-type ClientMessageTomb = Pick<
-  PublicMessage,
-  'threadId' | 'seq' | 'creator' | 'profileRev' | 'createdAt' | 'updatedAt'
-> & { contentType: 'TOMB'; isDeleted: true; deletionType: MessageDeleteType };
 
 export interface ClientMessagePageQuery {
   threadId: number;
@@ -464,8 +456,14 @@ export class MessageService {
               'invalid system message content',
             );
           }
-          const resolvedQuoteSeq =
-            quoteTargetSeq ?? parseMessageContentQuote(content)?.seq;
+          const contentQuote = parseMessageContentQuote(content);
+          if (contentQuote?.originSeq !== undefined) {
+            throw new BusinessException(
+              BusinessCode.VALIDATION_FAILED,
+              'local quote target must use a thread sequence',
+            );
+          }
+          const resolvedQuoteSeq = quoteTargetSeq ?? contentQuote?.seq;
           if (
             resolvedQuoteSeq !== undefined &&
             (!Number.isSafeInteger(resolvedQuoteSeq) ||
@@ -630,13 +628,12 @@ export class MessageService {
       options?.threadLock,
     );
     const content = stringifySystemMessageContent(event);
-    const [{ curSeq: seq, tombstoneEndSeq }] = await tx
+    const [{ curSeq: seq }] = await tx
       .update(messageThread)
       .set({ curSeq: sql`${messageThread.curSeq} + 1` })
       .where(eq(messageThread.id, threadId))
       .returning({
         curSeq: messageThread.curSeq,
-        tombstoneEndSeq: messageThread.tombstoneEndSeq,
       });
     const [stored] = await tx
       .insert(message)
@@ -662,7 +659,6 @@ export class MessageService {
     await enqueueThreadFanoutInTx(tx, threadLock, {
       threadId,
       messageEndSeq: seq,
-      tombstoneEndSeq: tombstoneEndSeq,
     });
     if (
       event.type === SystemMessageType.FRIEND_REMOVED ||
@@ -674,7 +670,6 @@ export class MessageService {
         {
           threadId,
           messageEndSeq: seq,
-          tombstoneEndSeq: tombstoneEndSeq,
         },
         event.type === SystemMessageType.FRIEND_REMOVED ? 'P2P' : 'GROUP',
         event.type === SystemMessageType.GROUP_LEFT
@@ -1317,7 +1312,6 @@ export class MessageService {
           if (!target) {
             return {
               messages: [] as Message[],
-              tombs: new Map<number, ClientMessageTomb>(),
               gaps: [] as ClientMessageHistoryGap[],
               scannedThrough: lower,
               hasMore: false,
@@ -1406,45 +1400,8 @@ export class MessageService {
               `message ${query.threadId}:${selected.seq} overlaps a history gap`,
             );
         }
-        const deletedSeqs = messages
-          .filter((row) => row.isDeleted)
-          .map((row) => row.seq);
-        const deletionFacts =
-          deletedSeqs.length === 0
-            ? []
-            : await tx.query.deletedMessage.findMany({
-                where: and(
-                  eq(deletedMessage.threadId, query.threadId),
-                  inArray(deletedMessage.messageSeq, deletedSeqs),
-                ),
-                columns: { messageSeq: true, type: true },
-              });
-        const types = new Map(
-          deletionFacts.map((fact) => [fact.messageSeq, fact.type]),
-        );
-        const tombs = new Map<number, ClientMessageTomb>();
-        for (const row of messages) {
-          if (!row.isDeleted) continue;
-          const deletionType = types.get(row.seq);
-          if (!deletionType)
-            throw new Error(
-              `Deleted message ${query.threadId}:${row.seq} has no deletion fact`,
-            );
-          tombs.set(row.seq, {
-            threadId: row.threadId,
-            seq: row.seq,
-            profileRev: row.profileRev,
-            creator: stripMessageId(row).creator,
-            createdAt: row.createdAt,
-            updatedAt: row.updatedAt,
-            contentType: 'TOMB',
-            isDeleted: true,
-            deletionType,
-          });
-        }
         return {
           messages,
-          tombs,
           gaps,
           scannedThrough,
           hasMore,
@@ -1457,10 +1414,9 @@ export class MessageService {
     const live = await this.attachMediaStatus(
       page.messages.filter((row) => !row.isDeleted),
     );
-    const bySeq = new Map(live.map((row) => [row.seq, row]));
-    const messages = page.messages.map((row) =>
-      row.isDeleted ? page.tombs.get(row.seq)! : bySeq.get(row.seq)!,
-    );
+    // Deleted slots still participate in scan coordinates, but deletion facts
+    // travel only through the independent tombstone feed, never as message rows.
+    const messages = live;
     return {
       messages,
       gaps: page.gaps,
@@ -1657,6 +1613,7 @@ export class MessageService {
           quote &&
           (m.publisherNamespaceId > 0 ||
             quote.namespaceId !== undefined ||
+            quote.originSeq !== undefined ||
             quote.sourceSeq !== undefined)
         );
       })
@@ -1672,7 +1629,7 @@ export class MessageService {
     const refs = new Map<number, Set<number>>();
     for (const message of msgs) {
       const quote = parseMessageContentQuote(message.content);
-      if (!quote) continue;
+      if (quote?.seq === undefined) continue;
       const seqs = refs.get(message.threadId) ?? new Set<number>();
       seqs.add(quote.seq);
       refs.set(message.threadId, seqs);
@@ -1791,7 +1748,7 @@ export class MessageService {
     const byKey = new Map(previews);
     return msgs.map((message) => {
       const quote = parseMessageContentQuote(message.content);
-      if (!quote) return message;
+      if (quote?.seq === undefined) return message;
       const preview = byKey.get(`${message.threadId}:${quote.seq}`);
       const viewerFilters =
         filters instanceof Map ? filters.get(message.threadId) : filters;
@@ -2021,7 +1978,8 @@ export class MessageService {
                     (COALESCE((m.content::jsonb -> 'quote' ->> 'namespaceId')::integer,
                         CASE WHEN m.content::jsonb -> 'quote' ? 'sourceSeq'
                           THEN m."publisherNamespaceId" ELSE 0 END) = 0
-                      AND source.seq = COALESCE((m.content::jsonb -> 'quote' ->> 'sourceSeq')::integer,
+                      AND source.seq = COALESCE((m.content::jsonb -> 'quote' ->> 'originSeq')::integer,
+                        (m.content::jsonb -> 'quote' ->> 'sourceSeq')::integer,
                         (m.content::jsonb -> 'quote' ->> 'seq')::integer))
                     OR (
                       COALESCE((m.content::jsonb -> 'quote' ->> 'namespaceId')::integer,

@@ -149,6 +149,7 @@ export async function resetUserIntentThreadStateInTx(
       AND i."receiverAccount" = v."viewerAccount" AND i."receiverNamespaceId" = 0
     ON CONFLICT ("accountId", "threadId") DO UPDATE SET
       "messageVisibleThroughSeq" = NULL,
+      "tombstoneVisibleThroughSeq" = NULL,
       "threadProfileRev" = CASE WHEN ${options.activate} THEN EXCLUDED."threadProfileRev"
         ELSE "AccountThreadState"."threadProfileRev" END,
       "lastReadSeq" = CASE WHEN ${options.activate}

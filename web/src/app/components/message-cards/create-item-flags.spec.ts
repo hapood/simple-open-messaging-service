@@ -1,6 +1,7 @@
 import type { CbItem } from '../../lib/chat-box/chat-box-scroller';
 import type { ChatItemData, ChatMsgData } from './chat-item';
 import { computeRowFlags } from './create-item';
+import { projectMessageContent } from './media-content';
 
 function message(
   msgId: number,
@@ -33,9 +34,20 @@ function message(
       name: 'Alice',
       text: 'hello',
       time: '12:00',
-      contentType,
-      images: null,
-      file: null,
+      ...projectMessageContent(
+        contentType,
+        JSON.stringify({
+          url: '/uploads/test',
+          name: 'test',
+          size: 1,
+          mimeType: 'application/octet-stream',
+          w: 100,
+          h: 100,
+          duration: 1,
+          items: [],
+        }),
+        { msgId, senderName: 'Alice', sentAt: 1700000000000 + msgId },
+      ),
       createdAtMs: 1700000000000 + msgId,
     },
   };
@@ -78,6 +90,8 @@ describe('computeRowFlags', () => {
           ...message(2, 2, 'SYSTEM').data,
           type: 'system',
           contentType: 'SYSTEM',
+          images: null,
+          file: null,
           text: '',
           time: '',
           createdAtMs: before.data.createdAtMs,

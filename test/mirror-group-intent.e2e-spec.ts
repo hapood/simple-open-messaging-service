@@ -880,9 +880,9 @@ describe('mirror group intent application', () => {
         hasMore: false,
       }),
     );
-    expect(
-      head.threadRoundWakes.some((wake) => wake.direction === 'forward'),
-    ).toBe(false);
+    expect(head.threadRoundWakes.some((wake) => wake.mode === 'thread')).toBe(
+      false,
+    );
     expect((await findPair(bob.account)).pair?.active).toBe(false);
     const accepted = acceptanceBody({ messageEndSeq: 7 });
     const result = await database.db.transaction((tx) =>
@@ -906,9 +906,8 @@ describe('mirror group intent application', () => {
     expect((await findPair(bob.account)).pair?.active).toBe(true);
     expect(result.threadRoundWakes).toContainEqual({
       threadId,
-      peerDomain: group.domain,
       namespaceId: group.namespaceId,
-      direction: 'both',
+      mode: 'thread',
     });
     const state = await database.db.query.federationThreadSyncState.findFirst({
       where: and(

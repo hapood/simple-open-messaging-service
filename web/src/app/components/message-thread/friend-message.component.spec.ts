@@ -158,7 +158,6 @@ describe('MessageThreadComponent binding lifecycle', () => {
         getMessageDeletions: vi.fn().mockResolvedValue([]),
       },
       galleryViewer: { closeIfDeleted: vi.fn() },
-      fileDetail: { closeIfDeleted: vi.fn() },
       messageInteraction: { removeMessage: vi.fn() },
       openMessageWindow: vi.fn(),
       reload: vi.fn(),
@@ -203,10 +202,6 @@ describe('MessageThreadComponent binding lifecycle', () => {
     expect(
       component.galleryViewer.closeIfDeleted,
     ).toHaveBeenCalledExactlyOnceWith(6, 11);
-    expect(component.fileDetail.closeIfDeleted).toHaveBeenCalledExactlyOnceWith(
-      6,
-      11,
-    );
     expect(
       component.messageInteraction.removeMessage,
     ).toHaveBeenCalledExactlyOnceWith(11);
@@ -230,7 +225,6 @@ describe('MessageThreadComponent binding lifecycle', () => {
     mounted = [];
     component.scroller.mutateItem.mockClear();
     component.galleryViewer.closeIfDeleted.mockClear();
-    component.fileDetail.closeIfDeleted.mockClear();
     component.messageInteraction.removeMessage.mockClear();
     // An open gallery/file/menu can still own an unmounted message.
     deletedLive$.next({
@@ -243,10 +237,6 @@ describe('MessageThreadComponent binding lifecycle', () => {
     expect(
       component.galleryViewer.closeIfDeleted,
     ).toHaveBeenCalledExactlyOnceWith(6, 12);
-    expect(component.fileDetail.closeIfDeleted).toHaveBeenCalledExactlyOnceWith(
-      6,
-      12,
-    );
     expect(
       component.messageInteraction.removeMessage,
     ).toHaveBeenCalledExactlyOnceWith(12);
@@ -305,7 +295,6 @@ describe('MessageThreadComponent binding lifecycle', () => {
     Object.assign(component, {
       threadAdapter: { deletedLive$, getMessageDeletions },
       galleryViewer: { closeIfDeleted: vi.fn() },
-      fileDetail: { closeIfDeleted: vi.fn() },
       messageInteraction: { removeMessage: vi.fn() },
     });
     const scroller = new ChatBoxScroller<ChatItemData>({
@@ -339,7 +328,6 @@ describe('MessageThreadComponent binding lifecycle', () => {
       requestOlder: () => of({ kind: 'boundary' as const }),
       requestNewer: () => NEVER,
       requestMessagesForEmptyWindow: () => NEVER,
-      getPending: () => [],
       pushLive: () => {},
       destroy: () => {},
     });
@@ -539,7 +527,6 @@ describe('MessageThreadComponent binding lifecycle', () => {
           hasCachedMessages: false,
           hasCachedHead: false,
         }),
-        getPending: () => [],
         finishLocalInit: vi.fn(),
       };
       const deleted = new Subject();
@@ -938,7 +925,6 @@ describe('MessageThreadComponent binding lifecycle', () => {
             hasCachedMessages: false,
             hasCachedHead: false,
           }),
-          getPending: () => [],
           destroy: vi.fn(),
         }),
       },

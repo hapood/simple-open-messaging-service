@@ -153,7 +153,7 @@ extern "C" fn status_completed(context: *mut c_void, status: i32) {
     let _ = sender.send(status);
 }
 
-pub(super) async fn permission() -> Result<super::DesktopNotificationPermission, String> {
+pub(crate) async fn permission() -> Result<super::DesktopNotificationPermission, String> {
     tauri::async_runtime::spawn_blocking(|| {
         let (sender, receiver) = mpsc::channel::<i32>();
         unsafe {
@@ -170,7 +170,7 @@ pub(super) async fn permission() -> Result<super::DesktopNotificationPermission,
 }
 
 /// Permission prompts must never hold the account lifetime read guard.
-pub(super) async fn authorize() -> Result<(), String> {
+pub(crate) async fn authorize() -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(|| {
         wait_for_completion(|context, completion| unsafe {
             soms_macos_notifications_authorize(context, completion);

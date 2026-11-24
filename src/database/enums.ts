@@ -45,6 +45,14 @@ export const MessageDeleteType = {
 export type MessageDeleteType =
   (typeof MessageDeleteType)[keyof typeof MessageDeleteType];
 
+export const ClientStateFeedType = {
+  REQUEST_HEAD: 'REQUEST_HEAD',
+  THREAD_TOMB_HEAD: 'THREAD_TOMB_HEAD',
+  THREAD_META_HEAD: 'THREAD_META_HEAD',
+} as const;
+export type ClientStateFeedType =
+  (typeof ClientStateFeedType)[keyof typeof ClientStateFeedType];
+
 const FileSyncDirection = {
   OUTBOUND: 'OUTBOUND',
   INBOUND: 'INBOUND',

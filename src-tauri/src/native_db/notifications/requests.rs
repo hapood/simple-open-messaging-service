@@ -352,8 +352,7 @@ mod tests {
         let snapshot: super::super::super::attention::ThreadFeedSnapshot = serde_json::from_value(serde_json::json!({
             "type":"GROUP","publisherNamespaceId":0,"selfMentionNamespaceId":null,"conversationState":"ACTIVE",
             "blocked":false,"role":"ADMIN","profileAccount":"!group","threadId":7,"threadFeedId":1,"alias":"Group alias",
-            "messageEndSeq":0,"profileRev":0,"tombstoneEndSeq":0,"groupMetaFeedEndId":null,
-            "joinRequestEndFeedId":5,"joinRequestReadFeedId":0,"groupInviteEndFeedId":0,"lastReadSeq":0,
+            "messageEndSeq":0,"profileRev":0,            "joinRequestEndFeedId":5,"joinRequestReadFeedId":0,"groupInviteEndFeedId":0,"lastReadSeq":0,
             "announcementReadFeedId":0,"unreadCount":0,"lastMentionSeq":null,"previews":[]
         })).unwrap();
         super::super::super::thread_store::insert(&conn, 1, &snapshot, 0).unwrap();

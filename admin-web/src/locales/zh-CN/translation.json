@@ -600,6 +600,7 @@
     "namespaceFilterPlaceholder": "命名空间 ID",
     "status": {
       "all": "全部",
+      "cooldown": "冷却暂停",
       "available": "可用",
       "establishing": "正在建立",
       "pending": "待审核",
@@ -650,6 +651,7 @@
       "none": "无",
       "trustedAt": "当前信任周期建立时间",
       "lastSuccessAt": "最近成功联系",
+      "cooldownUntil": "暂停截止时间",
       "degradedAt": "降级时间",
       "degradationCount": "降级次数",
       "addedBy": "操作者",
@@ -694,6 +696,7 @@
       "remoteServiceReachable": "对端当前可达",
       "yes": "是",
       "no": "否",
+      "cooldownHint": "所有业务同步已暂停。截止时间后须由周期健康检查确认可用才恢复；刷新页面或手动探测不会解除暂停。",
       "healthHint": "这里展示本地关系状态，不是最近一次 Health 响应。最近成功通信是粗粒度活性记录（最多约 60 秒），不代表健康检测时间。",
       "manualHealth": "最近一次 Health 检测",
       "probe": "立即检测",

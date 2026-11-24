@@ -17,8 +17,6 @@ const DEFAULT_GLOBAL_LIMIT = 16;
 const DEFAULT_PEER_LIMIT = 8;
 const MAX_LIMIT = 100;
 const CONFIG_TTL_MS = 5_000;
-const RETRY_BASE_MS = 1_000;
-const RETRY_MAX_MS = 60_000;
 
 const RETRYABLE_CODES = new Set<number>([
   BusinessCode.RATE_LIMITED,
@@ -83,49 +81,55 @@ export class FederationHttpScheduler
 
   constructor(private readonly database: DatabaseService) {}
 
-  async acquire(peerDomain: string): Promise<() => void> {
+  async acquire(peerDomain: string, signal?: AbortSignal): Promise<() => void> {
     this.shutdown.signal.throwIfAborted();
+    signal?.throwIfAborted();
     await this.refreshLimitsIfStale();
     this.shutdown.signal.throwIfAborted();
+    signal?.throwIfAborted();
     return new Promise<() => void>((resolve, reject) => {
+      let settled = false;
+      const onAbort = () => {
+        if (settled) return;
+        settled = true;
+        const queue = this.queues.get(peerDomain);
+        if (queue) {
+          const index = queue.indexOf(waiter);
+          if (index >= 0) queue.splice(index, 1);
+          if (queue.length === 0) {
+            this.queues.delete(peerDomain);
+            const orderIndex = this.peerOrder.indexOf(peerDomain);
+            if (orderIndex >= 0) this.peerOrder.splice(orderIndex, 1);
+          }
+        }
+        reject(signal!.reason);
+      };
+      const waiter: Waiter = {
+        resolve: (release) => {
+          if (settled) {
+            release();
+            return;
+          }
+          settled = true;
+          signal?.removeEventListener('abort', onAbort);
+          resolve(release);
+        },
+        reject: (error) => {
+          if (settled) return;
+          settled = true;
+          signal?.removeEventListener('abort', onAbort);
+          reject(error);
+        },
+      };
       const queue = this.queues.get(peerDomain);
-      if (queue) queue.push({ resolve, reject });
+      if (queue) queue.push(waiter);
       else {
-        this.queues.set(peerDomain, [{ resolve, reject }]);
+        this.queues.set(peerDomain, [waiter]);
         this.peerOrder.push(peerDomain);
       }
+      signal?.addEventListener('abort', onAbort, { once: true });
       this.pump();
     });
-  }
-
-  /** Retry one logical network operation after temporary failures. Each attempt
-   * must acquire its own ordinary HTTP slot through the transport path. */
-  async runWithRetry<T>(
-    peerDomain: string,
-    operationName: string,
-    operation: () => Promise<T>,
-  ): Promise<T> {
-    let attempt = 0;
-    for (;;) {
-      this.shutdown.signal.throwIfAborted();
-      try {
-        const result = await operation();
-        this.shutdown.signal.throwIfAborted();
-        return result;
-      } catch (error) {
-        if (
-          this.shutdown.signal.aborted ||
-          !isRetryableFederationNetworkError(error)
-        )
-          throw error;
-        attempt += 1;
-        const delayMs = retryDelay(attempt, retryAfterMs(error));
-        this.logger.warn(
-          `${operationName} for ${peerDomain} failed temporarily; retrying in ${delayMs}ms`,
-        );
-        await wait(delayMs, this.shutdown.signal);
-      }
-    }
   }
 
   invalidateLimits(): void {
@@ -230,43 +234,6 @@ export function isRetryableFederationNetworkError(error: unknown): boolean {
     error.status === 429 ||
     (error.code !== undefined && RETRYABLE_CODES.has(error.code))
   );
-}
-
-function retryAfterMs(error: unknown): number {
-  if (!(error instanceof S2sResponseError)) return 0;
-  if (
-    typeof error.data !== 'object' ||
-    error.data === null ||
-    Array.isArray(error.data)
-  )
-    return 0;
-  const retryAfter = (error.data as Record<string, unknown>)['retryAfter'];
-  if (!Number.isSafeInteger(retryAfter) || Number(retryAfter) < 0) return 0;
-  return Math.min(2_147_483_647, Number(retryAfter) * 1_000);
-}
-
-function retryDelay(attempt: number, minimumDelayMs: number): number {
-  const exponential = Math.min(
-    RETRY_MAX_MS,
-    RETRY_BASE_MS * 2 ** (attempt - 1),
-  );
-  return Math.min(2_147_483_647, Math.max(exponential, minimumDelayMs));
-}
-
-function wait(delayMs: number, signal: AbortSignal): Promise<void> {
-  signal.throwIfAborted();
-  return new Promise((resolve, reject) => {
-    const abort = () => {
-      clearTimeout(timer);
-      reject(signal.reason);
-    };
-    const timer = setTimeout(() => {
-      signal.removeEventListener('abort', abort);
-      resolve();
-    }, delayMs);
-    timer.unref?.();
-    signal.addEventListener('abort', abort, { once: true });
-  });
 }
 
 export const federationHttpSettingKeys = {

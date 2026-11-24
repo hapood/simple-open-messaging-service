@@ -3,6 +3,9 @@ use crate::native_db::notifications::NotificationTarget;
 use super::{alert::{AlertPolicy, AlertState}, content::NotificationCommand};
 use std::time::Instant;
 
+// Keep the shared delivery model independent of the build host. Only the
+// active OS adapter constructs its handle variant; shared tests exercise all.
+#[allow(dead_code)]
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum PlatformHandle {
     Android { tag: String, id: i32 },
@@ -27,6 +30,7 @@ pub(crate) struct ObservedCard {
 
 /// Stable selection is independent of OS enumeration order. Rebuilding supplies
 /// current content, so selection does not infer recency from opaque instance IDs.
+#[cfg(any(test, target_os = "android", target_os = "macos", target_os = "windows"))]
 pub(crate) fn select_restored_cards(mut cards: Vec<ObservedCard>) -> (Vec<ObservedCard>, Vec<ObservedCard>) {
     cards.sort_by(|a, b| (&a.target, &a.notification_id, &a.handle).cmp(&(&b.target, &b.notification_id, &b.handle)));
     let mut retained = Vec::new();
@@ -48,7 +52,6 @@ struct PublishedCard {
     // Imported OS cards have no known receipt/content from this process.
     operation_id: Option<String>,
     handle: PlatformHandle,
-    content: Option<super::content::NotificationContent>,
 }
 
 pub(crate) struct PreparedDelivery {
@@ -98,7 +101,6 @@ impl DeliveryState {
                 notification_id: card.notification_id,
                 operation_id: None,
                 handle: card.handle,
-                content: None,
             });
         }
         Ok(())
@@ -194,7 +196,7 @@ impl DeliveryState {
                     self.published.insert(content.target, PublishedCard {
                         notification_id: pending.notification_id.clone().unwrap(),
                         operation_id: Some(pending.operation_id.clone()),
-                        handle: handle.unwrap(), content: Some(content.clone()),
+                        handle: handle.unwrap(),
                     });
                 }
                 NotificationCommand::Remove { target } => { self.published.remove(target); }
@@ -444,14 +446,14 @@ mod tests {
         let candidates = vec![(7.into(), id.clone())];
         assert!(reconstruct(owner.capture_database_work().unwrap(), candidates.clone(), vec![show()], policy(),
             || Ok(Default::default()), |_| async { Ok(DeliveryResult::Rejected) }).await.is_err());
-        assert!(owner.notification_delivery.lock().unwrap().published[&NotificationTarget::from(7)].content.is_none());
+        assert!(owner.notification_delivery.lock().unwrap().published[&NotificationTarget::from(7)].operation_id.is_none());
         reconstruct(owner.capture_database_work().unwrap(), candidates, vec![show()], policy(),
             || Ok(Default::default()), |prepared| async move {
                 Ok(DeliveryResult::Accepted { handle: prepared.previous_handle })
             }).await.unwrap();
         let state = owner.notification_delivery.lock().unwrap();
         assert_eq!(state.published[&NotificationTarget::from(7)].notification_id, id);
-        assert!(state.published[&NotificationTarget::from(7)].content.is_some());
+        assert!(state.published[&NotificationTarget::from(7)].operation_id.is_some());
     }
 
     #[tokio::test]
@@ -647,7 +649,6 @@ mod tests {
         let id = card.notification_id.clone();
         let handle = card.handle.clone();
         state.import_cards(vec![card]).unwrap();
-        assert!(state.published[&NotificationTarget::from(7)].content.is_none());
         assert!(state.published[&NotificationTarget::from(7)].operation_id.is_none());
         let prepared = state.prepare_reconstruction(7.into(), &id, Some(show()), policy(), Instant::now()).unwrap().unwrap();
         assert_eq!(prepared.notification_id.as_deref(), Some(id.as_str()));
@@ -759,22 +760,24 @@ mod tests {
         let failed = state.prepare(changed.clone(), policy(), false, now).unwrap();
         state.complete(&failed.operation_id, DeliveryResult::Rejected, now).unwrap();
         let current = state.published.get(&NotificationTarget::from(7)).unwrap();
-        assert_eq!(current.content.as_ref().unwrap().body, "Message");
-        assert_eq!(current.content.as_ref().unwrap().latest_seq, Some(42));
+        assert_eq!(current.handle, PlatformHandle::Macos { identifier: "os-card".into() });
+        assert!(matches!(&first.command, NotificationCommand::Show(content)
+            if content.body == "Message" && content.latest_seq == Some(42)));
         assert_eq!(current.operation_id.as_deref(), Some(first.operation_id.as_str()));
         let replacement = state.prepare(changed, policy(), false, now).unwrap();
         assert_eq!(replacement.notification_id, first.notification_id);
+        assert!(matches!(&replacement.command, NotificationCommand::Show(content)
+            if content.body == "Edited message" && content.count == 2 && content.latest_seq == Some(99)));
         assert!(state.complete(&failed.operation_id, accepted(), now).is_err());
         let handle = PlatformHandle::Macos { identifier: "accepted-handle".into() };
         state.complete(&replacement.operation_id, DeliveryResult::Accepted { handle: Some(handle.clone()) }, now).unwrap();
         let current = state.published.get(&NotificationTarget::from(7)).unwrap();
-        assert_eq!(current.content.as_ref().unwrap().body, "Edited message");
-        assert_eq!(current.content.as_ref().unwrap().count, 2);
-        assert_eq!(current.content.as_ref().unwrap().latest_seq, Some(99));
         assert_eq!(current.handle, handle);
         assert_eq!(current.operation_id.as_deref(), Some(replacement.operation_id.as_str()));
         assert!(state.complete(&first.operation_id, accepted(), now).is_err());
-        assert_eq!(state.published.get(&NotificationTarget::from(7)).unwrap().content.as_ref().unwrap().body, "Edited message");
+        let current = state.published.get(&NotificationTarget::from(7)).unwrap();
+        assert_eq!(current.handle, handle);
+        assert_eq!(current.operation_id.as_deref(), Some(replacement.operation_id.as_str()));
     }
 
     #[test]
@@ -877,7 +880,7 @@ mod tests {
         state.complete(&retry.operation_id, accepted(), now).unwrap();
         let card = state.published.get(&NotificationTarget::from(7)).unwrap();
         assert_eq!(card.operation_id.as_deref(), Some(retry.operation_id.as_str()));
-        assert_eq!(card.content.as_ref().unwrap().body, "Message");
+        assert!(matches!(&retry.command, NotificationCommand::Show(content) if content.body == "Message"));
         let update = state.prepare(show(), policy(), true, now).unwrap();
         assert_eq!(update.previous_handle, Some(PlatformHandle::Macos { identifier: "os-card".into() }));
         state.complete(&update.operation_id, DeliveryResult::Uncertain, now).unwrap();

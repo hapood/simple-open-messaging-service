@@ -18,7 +18,6 @@ import type {
 } from '../../lib/chat-box/cb-source';
 import type {
   AlbumMedia,
-  AuthoredContentType,
   ChatItemData,
   ChatMsgData,
 } from '../../components/message-cards/chat-item';
@@ -148,11 +147,6 @@ const MAX_PAGE = 50;
 export class MockItemSource implements CbSource<ChatItemData> {
   private readonly full: CbItem<ChatItemData>[];
   private readonly live: CbItem<ChatItemData>[] = [];
-  /** In-flight optimistic (pending-post) messages, held separately from the reloadable sequence. Not part of
-   *  sequence() -> getOlder/getNewer never see them. On confirm (a real whose clientMessageId matches the pending's)
-   *  the entry is removed from here — the real (with its fresh server msgId) is cached into `live` and reconciled
-   *  onto the optimistic bubble by the kernel via the shared clientMessageId. */
-  private readonly pending: CbItem<ChatItemData>[] = [];
   /** Next server-assigned msgId (autoincrement, mirroring production `Message.seq`). Seeded to `total + 1` so the first
    *  send continues past buildItems history (`1..total`) without collision.
    *  {@link allocateMsgId} is the mock "server write" that mints the real seq for a confirmed optimistic send. */
@@ -284,7 +278,6 @@ export class MockItemSource implements CbSource<ChatItemData> {
           boundary: 'newest',
         };
     }
-    this.reconcilePending(items);
     return items;
   }
 
@@ -326,9 +319,6 @@ export class MockItemSource implements CbSource<ChatItemData> {
     const rawReal = seq.slice(start, end);
     const reachedEnd = end === seq.length;
 
-    // Reconcile pending: a returned real confirms its in-flight optimistic counterpart (matched by clientMessageId,
-    // since the real carries a fresh server id ≠ the optimistic's id) → drop it from source.pending.
-    this.reconcilePending(rawReal);
 
     const items: CbItem<ChatItemData>[] = [];
     if (rawReal.length > 0) {
@@ -352,13 +342,6 @@ export class MockItemSource implements CbSource<ChatItemData> {
       const items = await this.getOlder(cursorId, count);
       return items.length > 0 ? { kind: 'items', items } : { kind: 'boundary' };
     });
-  }
-
-  requestEntrySuffix(count: number): CbDemand<ChatItemData> {
-    return mockDemand(async () => ({
-      kind: 'items',
-      items: await this.getNewer(this.entryReadSeq, count),
-    }));
   }
 
   requestMessagesForEmptyWindow(count: number): CbDemand<ChatItemData> {
@@ -401,12 +384,6 @@ export class MockItemSource implements CbSource<ChatItemData> {
     }
   }
 
-  /** Return the in-flight optimistic sends (the `pending` array) — the backing store the kernel (re)mounts at the
-   *  global newest edge. A defensive copy so the kernel can iterate freely. Empty when none are in flight. */
-  getPending(): CbItem<ChatItemData>[] {
-    return this.pending.slice();
-  }
-
   /** Cache a live (WS-pushed) real message into `live`. Cache-only — no merge, no shape, no return; the kernel
    *  pulls it back via getNewer on the next signal (where pending reconcile + shape happen). id = the caller-given
    *  msgId (playground makeMockItem / the confirmed optimistic id). */
@@ -416,81 +393,11 @@ export class MockItemSource implements CbSource<ChatItemData> {
     for (const waiter of this.newerWaiters) void this.pumpNewerWaiter(waiter);
   }
 
-  /** Store an in-flight optimistic message (separate from the reloadable sequence). */
-  addPending(item: CbItem<ChatItemData>): void {
-    this.pending.push(item);
-  }
-
-  /** Retain a failed simulated send for explicit retry using the same client identity. */
-  failPending(clientMessageId: string): boolean {
-    const i = this.pending.findIndex(
-      (p) => p.clientMessageId === clientMessageId,
-    );
-    if (i < 0) return false;
-    const entry = this.pending.splice(i, 1)[0];
-    const failed: CbItem<ChatItemData> = {
-      ...entry,
-      data: { ...entry.data, status: 'failed' },
-    };
-    this.pending.push(failed); // sink to the end of the pending queue
-    return true;
-  }
-
-  /** Retry a simulated send without allocating a new client identity. */
-  retryPending(clientMessageId: string): CbItem<ChatItemData> | undefined {
-    const i = this.pending.findIndex(
-      (p) => p.clientMessageId === clientMessageId,
-    );
-    if (i < 0) return undefined;
-    const retrying: CbItem<ChatItemData> = {
-      ...this.pending[i],
-      data: { ...this.pending[i].data, status: 'sending' },
-    };
-    this.pending[i] = retrying; // stay at the current position (the end)
-    return retrying;
-  }
-
-  pendingByClientMessageId(
-    clientMessageId: string,
-  ): CbItem<ChatItemData> | undefined {
-    return this.pending.find(
-      (item) => item.clientMessageId === clientMessageId,
-    );
-  }
-
-  discardPending(clientMessageId: string): boolean {
-    const index = this.pending.findIndex(
-      (item) => item.clientMessageId === clientMessageId,
-    );
-    if (index < 0) return false;
-    this.pending.splice(index, 1);
-    return true;
-  }
-
-  markPendingAccepted(clientMessageId: string): boolean {
-    const index = this.pending.findIndex(
-      (item) => item.clientMessageId === clientMessageId,
-    );
-    if (index < 0) return false;
-    const item = this.pending[index];
-    this.pending[index] = {
-      ...item,
-      data: { ...item.data, status: 'accepted' },
-    };
-    return true;
-  }
-
   /** Allocate the next server msgId for a confirmed optimistic send (mock autoincrement, mirroring production
    *  `Message.seq`). The playground's confirmPending calls this to mint the real seq that replaces the optimistic's
    *  synthetic negative placeholder id. */
   allocateMsgId(): number {
     return this.nextMsgId++;
-  }
-
-  /** Whether any optimistic message is still awaiting confirmation (used to gate simulated replies so the demo's
-   *  chronological order stays clean while an insert is in flight). */
-  hasPending(): boolean {
-    return this.pending.length > 0;
   }
 
   destroy(): void {
@@ -556,21 +463,6 @@ export class MockItemSource implements CbSource<ChatItemData> {
     return it.clientMessageId !== undefined
       ? { id: it.id, data, clientMessageId: it.clientMessageId }
       : { id: it.id, data };
-  }
-
-  /** Drop any in-flight optimistic (pending) entry whose clientMessageId matches a returned real — the confirm arrived.
-   *  Mirrors the reconcile the kernel does on MOUNTED entries; keeps source.pending in sync so elevatePending doesn't
-   *  re-mount an already-confirmed send as a stale optimistic bubble. Must run in EVERY method that returns reals — init
-   *  AND getNewer: the kernel routes an empty-thread confirm through init(-1) (loadNewer's no-real-cursor fallback), and
-   *  without this the confirmed pending survives in source.pending and re-appears below the next incoming message. */
-  private reconcilePending(reals: CbItem<ChatItemData>[]): void {
-    for (const r of reals) {
-      if (r.clientMessageId === undefined) continue;
-      const pi = this.pending.findIndex(
-        (p) => p.clientMessageId === r.clientMessageId,
-      );
-      if (pi >= 0) this.pending.splice(pi, 1);
-    }
   }
 
   private wait(): Promise<void> {
@@ -721,6 +613,7 @@ function buildItems(
             w: rw * 100,
             h: rh * 100,
             size: 200_000 + Math.floor(rand() * 2_800_000),
+            name: `photo-${id}.svg`, mimeType: 'image/svg+xml', senderName: null, sentAt: date.getTime(),
             msgId: id,
           },
         ];
@@ -750,10 +643,9 @@ function buildItems(
 function makeSeedMsg(
   creator: number,
   text: string,
-  contentType: AuthoredContentType,
-  images: AlbumMedia[] | null,
-  date: Date,
-  id: number,
+  ...[contentType, images, date, id]:
+    | ['IMAGE', AlbumMedia[], Date, number]
+    | ['PURE_TEXT', null, Date, number]
 ): ChatMsgData {
   // Raw msg: carries no name/isSelf (placeholder); MockItemSource.shape fills them from `profiles` by creator — mirrors production toMsgData.
   return {
@@ -764,9 +656,9 @@ function makeSeedMsg(
     name: '',
     text,
     time: formatTime(date),
-    contentType,
-    images,
-    file: null,
+    ...(contentType === 'IMAGE'
+      ? { contentType, images, file: null }
+      : { contentType, images: null, file: null }),
     createdAtMs: date.getTime(),
   };
 }

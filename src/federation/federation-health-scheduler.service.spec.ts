@@ -1,5 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
 import { FederationHealthSchedulerService } from './federation-health-scheduler.service.js';
+import { FederationPeerRuntimeService } from './federation-peer-runtime.service.js';
+import { EventEmitter2 } from '@nestjs/event-emitter';
+
+function runtime() {
+  return new FederationPeerRuntimeService(new EventEmitter2());
+}
 
 process.env.SOMS_DOMAIN = 'local.example';
 
@@ -19,6 +25,38 @@ function discoveryMock() {
 }
 
 describe('FederationHealthSchedulerService', () => {
+  it.each(['available', 'degraded', 'unavailable'])(
+    'only releases expired cooldown after available periodic Health (%s)',
+    async (status) => {
+      const pause = runtime();
+      await pause.enterCooldown(7, 'limited', 0);
+      const checkHealth = vi.fn().mockResolvedValue(status);
+      const scheduler = new FederationHealthSchedulerService(
+        {
+          db: {
+            query: {
+              identityNamespace: {
+                findFirst: vi
+                  .fn()
+                  .mockResolvedValue({ trustLevel: 'available' }),
+              },
+            },
+          },
+        } as never,
+        { checkHealth } as never,
+        discoveryMock(),
+        {} as never,
+        pause,
+      );
+      await (
+        scheduler as unknown as {
+          runOne(task: { domain: string; namespaceId: number }): Promise<void>;
+        }
+      ).runOne({ domain: 'peer.example', namespaceId: 7 });
+      expect(pause.getCooldown(7) === null).toBe(status === 'available');
+    },
+  );
+
   it('does not start Health work until local identity initialization completes', async () => {
     let release!: () => void;
     const identityReady = new Promise<void>((resolve) => {
@@ -38,6 +76,7 @@ describe('FederationHealthSchedulerService', () => {
       { checkHealth: vi.fn() } as never,
       discoveryMock(),
       { waitUntilInitialized } as never,
+      runtime(),
     );
     const startup = scheduler.onApplicationBootstrap();
     await Promise.resolve();
@@ -63,6 +102,7 @@ describe('FederationHealthSchedulerService', () => {
         initialize: vi.fn().mockResolvedValue(undefined),
         waitUntilInitialized: vi.fn().mockResolvedValue(undefined),
       } as never,
+      runtime(),
     );
 
     await scheduler.onApplicationBootstrap();
@@ -99,6 +139,7 @@ describe('FederationHealthSchedulerService', () => {
         initialize: vi.fn().mockResolvedValue(undefined),
         waitUntilInitialized: vi.fn().mockResolvedValue(undefined),
       } as never,
+      runtime(),
     );
 
     scheduler.startRound();
@@ -128,6 +169,7 @@ describe('FederationHealthSchedulerService', () => {
         initialize: vi.fn().mockResolvedValue(undefined),
         waitUntilInitialized: vi.fn().mockResolvedValue(undefined),
       } as never,
+      runtime(),
     );
 
     scheduler.startRound();

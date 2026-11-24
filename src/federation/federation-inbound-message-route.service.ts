@@ -39,20 +39,14 @@ interface ResolvedInboundAuthor {
 export class FederationInboundMessageRouteService {
   messageAuthor(
     item: FederationMessageFeedMessage,
-    sourceDomain: string,
     peerAssignedLocalNamespaceId: number,
   ): { account: string; namespaceId: number } {
-    const author = this.resolveAuthor(
-      item,
-      sourceDomain,
-      peerAssignedLocalNamespaceId,
-    );
+    const author = this.resolveAuthor(item, peerAssignedLocalNamespaceId);
     return { account: author.account, namespaceId: author.namespaceId };
   }
 
   private resolveAuthor(
     item: FederationMessageFeedMessage,
-    sourceDomain: string,
     peerAssignedLocalNamespaceId: number,
   ): ResolvedInboundAuthor {
     if ('ref' in item.author) {
@@ -121,15 +115,10 @@ export class FederationInboundMessageRouteService {
   async resolveMessage(
     tx: DatabaseTransaction,
     item: FederationMessageFeedMessage,
-    sourceDomain: string,
     namespaceId: number,
     peerAssignedLocalNamespaceId: number,
   ): Promise<FederationInboundMessageRoute> {
-    const author = this.resolveAuthor(
-      item,
-      sourceDomain,
-      peerAssignedLocalNamespaceId,
-    );
+    const author = this.resolveAuthor(item, peerAssignedLocalNamespaceId);
     let authority: FederationInboundMessageRoute['authority'] | undefined;
     let threadRows: Array<{
       threadId: number;
@@ -148,7 +137,6 @@ export class FederationInboundMessageRouteService {
           AND group_user.account = ${normalizeAccount(item.thread.account)}
           AND group_user."namespaceId" = ${namespaceId}
         LIMIT 1
-        FOR SHARE OF thread
       `);
       threadRows = result.rows;
       if (threadRows.length > 0) {
@@ -191,7 +179,6 @@ export class FederationInboundMessageRouteService {
               AND pair."endpointBNamespaceId" = ${namespaceId}
             )
           LIMIT 1
-          FOR SHARE OF pair, thread
         `);
         threadRows = memberResult.rows;
         if (threadRows.length > 0) authority = 'PEER';
@@ -236,7 +223,6 @@ export class FederationInboundMessageRouteService {
             AND pair."endpointBNamespaceId" = ${namespaceId}
           )
         LIMIT 1
-        FOR SHARE OF pair, thread, local_participant
       `);
       threadRows = result.rows;
     }
@@ -255,13 +241,11 @@ export class FederationInboundMessageRouteService {
             SELECT participant."accountId" AS "userId"
             FROM "AccountThreadState" participant
             WHERE participant."threadId" = ${route.threadId}
-            FOR SHARE OF participant
           `)
         : await tx.execute<{ userId: number }>(sql`
             SELECT participant."accountId" AS "userId"
             FROM "AccountThreadState" participant
             WHERE participant."threadId" = ${route.threadId}
-            FOR SHARE OF participant
           `);
     const recipients = recipientRows.rows.map((row) => row.userId);
     if (!('peerAccount' in item.thread)) {
@@ -292,7 +276,6 @@ export class FederationInboundMessageRouteService {
   async resolveTombstone(
     tx: DatabaseTransaction,
     thread: FederationThreadAddress,
-    sourceDomain: string,
     namespaceId: number,
     peerAssignedLocalNamespaceId: number,
     messageSeq?: number,
@@ -304,7 +287,6 @@ export class FederationInboundMessageRouteService {
           thread,
           author: { ref: 'THREAD_ACCOUNT', namespaceId: 0 },
         } as FederationMessageFeedMessage,
-        sourceDomain,
         namespaceId,
         peerAssignedLocalNamespaceId,
       );
@@ -334,19 +316,9 @@ export class FederationInboundMessageRouteService {
         JOIN ${groupStateSql} g ON g.id = t.id
         WHERE g.account = ${normalizeAccount(thread.account)}
           AND g."namespaceId" = 0
-          AND (
-            (
-              m."publisherNamespaceId" = ${namespaceId}
-              AND m."originSeq" = ${messageSeq}
-              AND m."profileNamespaceId" IN (0, ${namespaceId})
-            )
-            OR (
-              m."publisherNamespaceId" = 0
-              AND m."profileNamespaceId" = 0
-              AND m."originSeq" = ${messageSeq}
-              AND m."originServerTime" IS NOT NULL
-            )
-          )
+          AND m."publisherNamespaceId" = ${namespaceId}
+          AND m."originSeq" = ${messageSeq}
+          AND m."profileNamespaceId" IN (0, ${namespaceId})
           AND m."contentType" <> 'SYSTEM'
         LIMIT 1
       `);
@@ -358,13 +330,47 @@ export class FederationInboundMessageRouteService {
             thread,
             author: { account: target.account, namespaceId: 0 },
           } as FederationMessageFeedMessage,
-          sourceDomain,
           namespaceId,
           peerAssignedLocalNamespaceId,
         );
         return {
           ...memberRoute,
           authority: 'GROUP_MEMBER',
+        };
+      }
+      // Deletions can arrive before a submission. Author identity will be
+      // validated when its message arrives; only an active member home can
+      // leave a pending fact in this source's publisher coordinate space.
+      const pendingRoute = await tx.execute<{ threadId: number }>(sql`
+        SELECT t.id AS "threadId"
+        FROM "MessageThread" t
+        JOIN ${groupStateSql} g ON g.id = t.id
+        WHERE t.type = 'GROUP'
+          AND g.account = ${normalizeAccount(thread.account)}
+          AND g."namespaceId" = 0
+          AND NOT EXISTS (
+            SELECT 1 FROM "Message" m
+            WHERE m."threadId" = t.id
+              AND m."publisherNamespaceId" = ${namespaceId}
+              AND m."originSeq" = ${messageSeq}
+          )
+          AND EXISTS (
+            SELECT 1 FROM "RelationshipPair" pair
+            WHERE pair."threadId" = t.id
+              AND pair.kind = 'GROUP_MEMBER' AND pair.active = true
+              AND pair."endpointAType" = 'GROUP'
+              AND pair."endpointAAccount" = g.account
+              AND pair."endpointANamespaceId" = 0
+              AND pair."endpointBType" = 'USER'
+              AND pair."endpointBNamespaceId" = ${namespaceId}
+          )
+        LIMIT 1
+      `);
+      if (pendingRoute.rows[0]) {
+        return {
+          threadId: pendingRoute.rows[0].threadId,
+          authority: 'GROUP_MEMBER',
+          recipients: [],
         };
       }
     }

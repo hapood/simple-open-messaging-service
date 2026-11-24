@@ -5,7 +5,6 @@ export type LogoutOutcome =
   | { status: 'transportFailure' }
   | { status: 'timedOut' }
   | { status: 'taskFailure' }
-  | { status: 'unknownTicket' }
   | { status: 'superseded' };
 
 export function classifyLogoutFailure(error: unknown): LogoutOutcome {

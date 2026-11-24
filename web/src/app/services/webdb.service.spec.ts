@@ -3,7 +3,6 @@ import { SessionLifecycleService } from './session-lifecycle.service';
 import { provideZonelessChangeDetection } from '@angular/core';
 import { openDB } from 'idb';
 import {
-  createMessageDeletionMarker,
   messageTomb,
 } from '../../../../shared/message-tomb';
 import {
@@ -673,7 +672,7 @@ describe('WebdbService', () => {
     });
 
     it.each(['USER_RETRACTION', 'MODERATION_REMOVAL'] as const)(
-      'merges deletion and message arrival orders without retaining bodies: %s',
+      'merges deletion and message arrival orders without reviving bodies: %s',
       async (type) => {
         await webdb.openForUser('1');
         const message: Message = {
@@ -716,10 +715,10 @@ describe('WebdbService', () => {
         await webdb.putCachedMessages([message, later]);
         const db = await webdb.db();
         expect(await db.get('messages', [42, 4])).toEqual(
-          createMessageDeletionMarker(42, 4, type),
+          { ...message, isDeleted: true },
         );
         expect(await db.get('messages', [42, 5])).toEqual(
-          createMessageDeletionMarker(42, 5, type),
+          { ...later, isDeleted: true },
         );
         expect(await webdb.getMessage(42, 4)).toBeUndefined();
         expect(await webdb.getMessage(42, 5)).toBeUndefined();
@@ -786,7 +785,7 @@ describe('WebdbService', () => {
       ]);
     });
 
-    it('normalizes history tombs to invisible coordinate-only markers', async () => {
+    it('normalizes history tombs to independent deletion facts', async () => {
       await webdb.openForUser('1');
       const message: Message = {
         profileNamespaceId: 1,
@@ -840,11 +839,9 @@ describe('WebdbService', () => {
       );
       const db = await webdb.db();
       expect(await db.get('messages', [42, 4])).toEqual(
-        createMessageDeletionMarker(42, 4, 'USER_RETRACTION'),
+        { ...message, isDeleted: true },
       );
-      expect(await db.get('messages', [42, 5])).toEqual(
-        createMessageDeletionMarker(42, 5, 'MODERATION_REMOVAL'),
-      );
+      expect(await db.get('messages', [42, 5])).toBeUndefined();
       expect(await webdb.getMessageDeletions(42, [4, 5, 6])).toEqual([
         { seq: 4, type: 'USER_RETRACTION' },
         { seq: 5, type: 'MODERATION_REMOVAL' },
@@ -1043,6 +1040,7 @@ describe('WebdbService', () => {
         'accountState',
         'groupMeta',
         'members',
+        'messageDeletions',
         'messageRanges',
         'messages',
         'profileAvatarBlobs',

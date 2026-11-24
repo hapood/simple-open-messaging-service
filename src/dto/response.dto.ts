@@ -1,8 +1,6 @@
 import {
   ApiProperty,
-  ApiExtraModels,
   PickType,
-  getSchemaPath,
 } from '@nestjs/swagger';
 import { ContentType, MessageDeleteType } from '../database/enums.js';
 import { MEDIA_STATUS, MediaStatus } from '../common/media-status.js';
@@ -304,36 +302,9 @@ export class MessageResponseDto {
   mediaStatus?: MediaStatus;
 }
 
-export class MessageTombResponseDto extends PickType(MessageResponseDto, [
-  'threadId',
-  'seq',
-  'creator',
-  'profileRev',
-  'createdAt',
-  'updatedAt',
-] as const) {
-  @ApiProperty({ enum: ['TOMB'] })
-  contentType!: 'TOMB';
-
-  @ApiProperty({ type: Boolean, enum: [true] })
-  isDeleted!: true;
-
-  @ApiProperty({ enum: MessageDeleteType })
-  deletionType!: MessageDeleteType;
-}
-
-@ApiExtraModels(MessageResponseDto, MessageTombResponseDto)
 export class MessageQueryPageDto {
-  @ApiProperty({
-    type: 'array',
-    items: {
-      oneOf: [
-        { $ref: getSchemaPath(MessageResponseDto) },
-        { $ref: getSchemaPath(MessageTombResponseDto) },
-      ],
-    },
-  })
-  messages!: Array<MessageResponseDto | MessageTombResponseDto>;
+  @ApiProperty({ type: () => [MessageResponseDto] })
+  messages!: MessageResponseDto[];
 
   @ApiProperty({ type: Number, nullable: true })
   resolvedAnchorSeq!: number | null;

@@ -28,7 +28,9 @@ import { RouteService } from '../../../services/route.service';
  */
 
 function buildMsg(
-  overrides: Partial<AuthoredMessageItem>,
+  overrides: Partial<
+    Extract<AuthoredMessageItem, { images: null; file: null }>
+  >,
 ): AuthoredMessageItem {
   return {
     type: 'msg',

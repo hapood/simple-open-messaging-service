@@ -38,22 +38,6 @@
         [style.left.px]="menu.x"
         [style.top.px]="menu.y"
       >
-        @if (canCancelSend(menu.targetItem.data)) {
-          <button
-            type="button"
-            role="menuitem"
-            class="msg-context-menu__item--icon"
-            (click)="cancelContextSend()"
-            [attr.title]="'transfer.cancel' | transloco"
-          >
-            <svg viewBox="0 -960 960 960" aria-hidden="true">
-              <path
-                d="M280-120q-33 0-56.5-23.5T200-200v-520h-40v-80h200v-40h240v40h200v80h-40v520q0 33-23.5 56.5T680-120H280Zm400-600H280v520h400v-520ZM360-280h80v-360h-80v360Zm160 0h80v-360h-80v360Z"
-              />
-            </svg>
-            <span>{{ 'transfer.cancel' | transloco }}</span>
-          </button>
-        }
         @if (canCopyMessage(menu.targetItem.data)) {
           <button
             type="button"
@@ -362,18 +346,21 @@
         {{ 'chat.quotaPausedBanner' | transloco }}
       </div>
     }
+    @if (composerPlaceholderVisible()) {
+      <div class="msg-composer-placeholder" aria-hidden="true">
+        <div class="msg-composer-placeholder-controls">
+          <div class="msg-composer-placeholder-input"></div>
+          <div class="msg-composer-placeholder-send"></div>
+        </div>
+      </div>
+    }
     @if (!nativeComposer.supported) {
       <app-chat-input
         [class.msg-composer--unbound]="!composerBinding()"
         [class.msg-composer--selection-hidden]="selectionMode()"
-        [class.msg-composer--dialog-hidden]="
-          dialogOpen() || nativeComposerOccluded()
-        "
+        [class.msg-composer--dialog-hidden]="composerAvoided()"
         [attr.aria-hidden]="
-          !composerBinding() ||
-          selectionMode() ||
-          dialogOpen() ||
-          nativeComposerOccluded()
+          !composerBinding() || selectionMode() || composerAvoided()
         "
         [mentionsEnabled]="userMsgTrd()?.type === 'GROUP'"
         [memberSearch]="searchMentionMembers"

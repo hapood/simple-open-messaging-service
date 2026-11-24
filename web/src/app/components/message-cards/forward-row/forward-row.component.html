@@ -30,7 +30,6 @@
     <button
       type="button"
       class="msg-bubble msg-card msg-{{ side() }} msg-{{ pos() }} forward-card"
-      [class.msg-sending]="isSending()"
       [disabled]="!card()"
     >
       @if (card(); as forward) {
@@ -69,12 +68,6 @@
         <div class="forward-meta msg-card-meta msg-{{ side() }}">
           <span></span><span>{{ data().time }}</span>
         </div>
-      }
-      @if (statusTick() && !isFailed()) {
-        <span
-          class="msg-status msg-status--{{ data().status }}"
-          aria-hidden="true"
-        ></span>
       }
     </button>
   </div>

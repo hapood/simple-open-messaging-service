@@ -1,5 +1,3 @@
-#[cfg(not(desktop))]
-use crate::validate_origin;
 use crate::{
     pick_origin_race, OriginMode, ServerSessionState, DEFAULT_API_ORIGIN,
 };
@@ -151,16 +149,7 @@ pub(crate) async fn clear_session_token(session_uuid: String) -> Result<(), Stri
     .map_err(|e| format!("join native local end: {e}"))?
 }
 
-#[cfg(not(desktop))]
-#[derive(serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct LogoutAdmission {
-    ticket: Option<String>,
-    local_clear_failed: bool,
-}
-
-/// Stop desktop business work while the Rust coordinator retains revocation credentials.
-#[cfg(desktop)]
+/// Stop native business work while the Rust coordinator retains revocation credentials.
 #[tauri::command]
 pub(crate) async fn begin_logout(
     state: tauri::State<'_, ServerSessionState>,
@@ -168,68 +157,15 @@ pub(crate) async fn begin_logout(
     state.logout.begin_login_logout(&state).await
 }
 
-/// Legacy mobile adapter admission captures revocation credentials before OS storage cleanup.
-#[cfg(not(desktop))]
-#[tauri::command]
-pub(crate) async fn begin_logout(
-    origin: String,
-    session_uuid: Option<String>,
-    state: tauri::State<'_, ServerSessionState>,
-) -> Result<LogoutAdmission, String> {
-    let transition = state.auth_lifecycle.enter(crate::auth_lifecycle::Phase::Logout)?;
-    // The renderer captures the active UUID at the logout click; a delayed dispatch of a superseded
-    // logout must never end a successor login.
-    let expected = session_uuid
-        .as_deref()
-        .map(|uuid| crate::login_session_store::LoginSessionId::try_from(uuid.to_string()))
-        .transpose()?;
-    let owner = crate::native_db::current_login()?;
-    if owner.as_ref().map(|owner| owner.id()) != expected.as_ref() {
-        return Err("native login superseded".into());
-    }
-    // Capture the ended owner's credential before cancellation. Cleanup can never read or
-    // clear a successor credential, even when SQL or OS storage finishes after a new login.
-    let token = owner.as_ref().and_then(|owner| owner.credential().ok());
-    if let Some(id) = expected.as_ref() {
-        let owner = crate::native_db::end_login_connection(id)?;
-        let preferences = crate::native_db::preferences_connection()?;
-        let id_for_store = id.clone();
-        tauri::async_runtime::spawn_blocking(move || {
-            let durable = preferences.with_database(|conn| {
-                crate::login_session_store::SessionStore::end(conn, Some(&id_for_store))?;
-                crate::login_session_store::SessionStore::finish_ending(conn, Some(&id_for_store))
-            });
-            let released = crate::native_db::release_login_connection(&owner);
-            durable.and(released)
-        })
-        .await
-        .map_err(|e| format!("join native logout end: {e}"))??;
-    }
-    let local_clear_failed = false;
-
-    let ticket = token.and_then(|token| {
-        let origin = validate_origin(&origin)?;
-        Some(state.logout_tasks.start_in_transition(
-            state.api_client(&origin), origin, token, transition,
-        ))
-    });
-
-    Ok(LogoutAdmission {
-        ticket,
-        local_clear_failed,
-    })
-}
-
-/// Complete desktop logout after confirmed revocation or an explicit local-only decision.
+/// Complete native logout after confirmed revocation or an explicit local-only decision.
 /// Rust owns the descriptor and OS cleanup; the renderer never supplies deletion identity.
-#[cfg(desktop)]
 #[tauri::command]
 pub(crate) async fn finish_logout(
     app: tauri::AppHandle,
     local_only: bool,
     state: tauri::State<'_, ServerSessionState>,
 ) -> Result<(), String> {
-    state.logout.finish_desktop(app, local_only).await
+    state.logout.finish_native(app, local_only).await
 }
 
 /// Read the Rust-owned operation projection. No credential is exposed to the renderer.
@@ -249,12 +185,3 @@ pub(crate) async fn try_logout(
     state.logout.revoke().await
 }
 
-/// Waiting has no credential/cache side effects and cannot mutate a successor session.
-#[cfg(not(desktop))]
-#[tauri::command]
-pub(crate) async fn wait_for_logout(
-    ticket: String,
-    state: tauri::State<'_, ServerSessionState>,
-) -> Result<crate::native_logout::LogoutOutcome, String> {
-    Ok(state.logout_tasks.wait(&ticket).await)
-}

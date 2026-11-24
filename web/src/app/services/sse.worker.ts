@@ -20,6 +20,7 @@
  * global `self` / `addEventListener` ambiguous.
  */
 import { consumeSse } from '../../../../shared/sse-client';
+import { consumeHttpStream } from '../../../../shared/http-stream';
 import { SseReceiptCoalescer } from './sse-receipt-coalescer';
 import {
   SSE_EVENT_FORCE_LOGOUT,
@@ -110,6 +111,7 @@ async function reconnectAfter(): Promise<void> {
 async function openOnce(): Promise<void> {
   aborter = new AbortController();
   await consumeSse(url, {
+    transport: consumeHttpStream,
     signal: aborter.signal,
     onResponse: (response) => {
       if (response.status === 401) throw new AuthNeededError();

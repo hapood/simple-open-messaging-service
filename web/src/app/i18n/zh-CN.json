@@ -767,16 +767,6 @@
     "mediaRailAria": "媒体缩略图",
     "openMediaAria": "打开第 {{index}} 个媒体"
   },
-  "fileDetail": {
-    "title": "文件",
-    "closeAria": "关闭",
-    "download": "下载",
-    "size": "大小",
-    "type": "类型",
-    "sender": "发送者",
-    "time": "时间",
-    "notAvailable": "暂不可用"
-  },
   "threadList": {
     "draftPreview": "草稿：{{text}}",
     "couldNotLoad": "无法加载聊天",

@@ -62,6 +62,30 @@ function harness(pulledThrough: bigint | null = 0n) {
 }
 
 describe('PeerStateFeedPullService atomic item application', () => {
+  it('keeps an old cancelled drain from clearing a restored drain', async () => {
+    const { service } = harness();
+    const oldSignal = new AbortController();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const oldDrain = service.run(12, oldSignal.signal, {
+      fetch: () => gate.then(() => page('1')),
+      apply: vi.fn(),
+    });
+    await vi.waitFor(() => expect(service['running'].size).toBe(1));
+    oldSignal.abort();
+    release();
+    await expect(oldDrain).rejects.toMatchObject({ name: 'AbortError' });
+    const restored = new AbortController();
+    await service.run(12, restored.signal, {
+      fetch: async () => page('1'),
+      apply: vi.fn(),
+    });
+    expect(restored.signal.aborted).toBe(false);
+    expect(service['running'].size).toBe(0);
+  });
+
   it('finishes the admitted page before the next-page quota gate pauses, then resumes at its cursor', async () => {
     const { service, epoch } = harness();
     let exhausted = false;
@@ -91,20 +115,20 @@ describe('PeerStateFeedPullService atomic item application', () => {
         exhausted = true;
       },
     };
-    await expect(service.run('peer.test', 12, callbacks)).rejects.toThrow(
-      'quota paused',
-    );
+    await expect(
+      service.run(12, new AbortController().signal, callbacks),
+    ).rejects.toThrow('quota paused');
     expect(applied).toEqual(['1', '2']);
     expect(epoch.stateFeedPulledThrough).toBe(2n);
     exhausted = false;
-    await service.run('peer.test', 12, callbacks);
+    await service.run(12, new AbortController().signal, callbacks);
     expect(applied).toEqual(['1', '2', '3']);
     expect(epoch.stateFeedPulledThrough).toBe(3n);
   });
 
   it('publishes each item only after its state and cursor commit', async () => {
     const { service, order } = harness();
-    await service.run('peer.test', 12, {
+    await service.run(12, new AbortController().signal, {
       fetch: async () => ({
         ...page('1'),
         items: [
@@ -130,7 +154,7 @@ describe('PeerStateFeedPullService atomic item application', () => {
   it('rolls the page back without publishing when one state item is invalid', async () => {
     const { service, order, whereUpdate } = harness();
     await expect(
-      service.run('peer.test', 12, {
+      service.run(12, new AbortController().signal, {
         fetch: async () => ({
           ...page('1'),
           items: [
@@ -158,7 +182,7 @@ describe('PeerStateFeedPullService atomic item application', () => {
     const { service, order, whereUpdate } = harness();
     const afterCommit = vi.fn();
 
-    await service.run('peer.test', 12, {
+    await service.run(12, new AbortController().signal, {
       fetch: async () => ({
         ...page('1'),
         items: [
@@ -194,7 +218,7 @@ describe('PeerStateFeedPullService atomic item application', () => {
       if (feedId === '2') throw new Error('second item failed');
     });
     await expect(
-      service.run('peer.test', 12, {
+      service.run(12, new AbortController().signal, {
         fetch: async () => ({
           items: [
             {
@@ -235,7 +259,7 @@ describe('PeerStateFeedPullService atomic item application', () => {
       },
     );
     await expect(
-      service.run('peer.test', 12, {
+      service.run(12, new AbortController().signal, {
         fetch: async () => ({
           items: [
             {
@@ -287,7 +311,7 @@ describe('PeerStateFeedPullService atomic item application', () => {
       profileNamespaceFeedEndId: '0',
       hasMore: false,
     }));
-    await resumed.run('peer.test', 12, {
+    await resumed.run(12, new AbortController().signal, {
       fetch: resumedFetch,
       apply: async (_tx, itemPage) =>
         void order.push(`state-${itemPage.items[0]!.feedId}`),
@@ -314,7 +338,7 @@ describe('PeerStateFeedPullService atomic item application', () => {
     const { service } = harness(2n);
     const apply = vi.fn();
     await expect(
-      service.run('peer.test', 12, {
+      service.run(12, new AbortController().signal, {
         fetch: async () => ({
           items: [
             {
@@ -344,14 +368,14 @@ describe('PeerStateFeedPullService atomic item application', () => {
       .fn()
       .mockRejectedValueOnce(new RemoteFeedCursorUnavailableError(0n, 4n))
       .mockResolvedValueOnce(page('3'));
-    await service.run('peer.test', 12, {
+    await service.run(12, new AbortController().signal, {
       fetch,
       apply: async () => void order.push('state'),
     });
     expect(epoch.stateFeedPulledThrough).toBe(3n);
     expect(logger.warn).not.toHaveBeenCalled();
     expect(logger.log).toHaveBeenCalledWith(
-      'initialized state-feed cursor for peer peer.test (namespace 12) at 0',
+      'initialized state-feed cursor for namespace 12 at 0',
     );
     expect(fetch).toHaveBeenNthCalledWith(1, undefined, undefined);
     expect(fetch).toHaveBeenNthCalledWith(2, 0n, undefined);
@@ -369,9 +393,9 @@ describe('PeerStateFeedPullService atomic item application', () => {
         );
       const apply = vi.fn();
       await expect(
-        service.run('peer.test', 12, { fetch, apply }),
+        service.run(12, new AbortController().signal, { fetch, apply }),
       ).rejects.toThrow(
-        'initialized state-feed cursor rejected by peer peer.test (namespace 12, committedThrough=2',
+        'initialized state-feed cursor rejected for namespace 12 (committedThrough=2',
       );
       expect(epoch.stateFeedPulledThrough).toBe(2n);
       expect(database.db.transaction).not.toHaveBeenCalled();
@@ -390,7 +414,7 @@ describe('PeerStateFeedPullService atomic item application', () => {
       .fn()
       .mockRejectedValue(new RemoteFeedCursorUnavailableError(after, before));
     await expect(
-      service.run('peer.test', 12, { fetch, apply: vi.fn() }),
+      service.run(12, new AbortController().signal, { fetch, apply: vi.fn() }),
     ).rejects.toThrow('invalid state-feed bootstrap cursor');
     expect(epoch.stateFeedPulledThrough).toBeNull();
     expect(database.db.transaction).not.toHaveBeenCalled();

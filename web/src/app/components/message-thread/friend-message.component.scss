@@ -145,6 +145,59 @@ app-chat-input {
   inset-inline: 0;
   bottom: 0;
   z-index: 4;
+  // Slide-down fade when the composer steps aside, revealing the static .msg-composer-placeholder below.
+  transition:
+    opacity var(--im-composer-fade-duration) var(--app-ease-standard),
+    transform var(--im-composer-fade-duration) var(--app-ease-standard);
+}
+
+// Static gray composer silhouette that always sits beneath the real composer (browser or Android native)
+// and has no show/hide animation: the composer slides out to reveal it and slides back over it. It is
+// absolutely positioned and never measured, so it cannot affect the composer height contract or the
+// virtual-scroll tail. Its height is the real composer height plus the safe area: the browser composer keeps
+// its measured value while hidden, and native hides keep the last measurement.
+.msg-composer-placeholder {
+  position: absolute;
+  inset-inline: 0;
+  bottom: 0;
+  z-index: 3;
+  height: calc(var(--soms-composer-height) + var(--soms-safe-bottom, 0px));
+  box-sizing: border-box;
+  padding: 8px 12px calc(8px + var(--soms-safe-bottom, 0px));
+  background: var(--im-composer-bar-bg);
+  border-top: 1px solid var(--app-border);
+  pointer-events: none;
+  user-select: none;
+  // Ride the same keyboard lift as .ci-input-bar so it occupies the exact composer rectangle.
+  transform: translateY(
+    calc(-1 * var(--kbd-compositor-lift, var(--kbd-lift-effective, 0px)))
+  );
+  transition: transform var(--kbd-duration, 60ms) ease-out;
+}
+
+.msg-composer-placeholder-controls {
+  width: min(100%, 800px);
+  height: 100%;
+  margin-inline: auto;
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.msg-composer-placeholder-input {
+  flex: 1 1 auto;
+  align-self: stretch;
+  min-height: 48px;
+  border-radius: 12px;
+  background: var(--im-composer-placeholder-fill);
+}
+
+.msg-composer-placeholder-send {
+  flex: 0 0 auto;
+  width: 48px;
+  height: 48px;
+  border-radius: var(--app-radius-pill);
+  background: var(--im-composer-placeholder-fill);
 }
 
 // An unbound editor retains its instance but contributes no layout or interaction.
@@ -157,6 +210,7 @@ app-chat-input.msg-composer--unbound {
 // height and move the virtual-scroll tail while the dialog opens.
 app-chat-input.msg-composer--dialog-hidden {
   opacity: 0;
+  transform: translateY(var(--im-composer-slide-offset));
   pointer-events: none;
   user-select: none;
 }

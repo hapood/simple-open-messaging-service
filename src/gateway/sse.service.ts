@@ -46,22 +46,14 @@ export interface MediaProgressFileRef {
   name: string;
 }
 
-export interface MediaMessageDownloadProgressEvent {
-  threadId: number;
-  seq: number;
-  status: 'downloading' | 'ready' | 'failed';
-  completedFiles: number;
-  totalFiles: number;
-  activeFile: MediaProgressFileRef | null;
-}
-
 export interface MediaFileDownloadProgressEvent {
   threadId: number;
   seq: number;
   file: MediaProgressFileRef;
-  status: 'downloading' | 'ready' | 'failed';
+  status: 'ready' | 'failed';
   loaded: number;
   total: number | null;
+  bytesPerSecond: null;
 }
 
 /**
@@ -81,10 +73,6 @@ export class SseService implements OnModuleDestroy {
   private readonly clients: Record<number, SseClient[]> = {};
   private readonly clientsBySession = new Map<number, SseClient>();
   private readonly notificationHeads = new Map<number, number>();
-  private readonly mediaMessageProgressClients = new Map<
-    string,
-    Set<TemporarySseClient>
-  >();
   private readonly mediaFileProgressClients = new Map<
     string,
     Set<TemporarySseClient>
@@ -337,24 +325,6 @@ export class SseService implements OnModuleDestroy {
     };
   }
 
-  registerMediaMessageProgress(
-    userId: number,
-    threadId: number,
-    seq: number,
-  ): Observable<MessageEvent> {
-    return new Observable<MessageEvent>((sink) => {
-      const key = this.mediaMessageProgressKey(threadId, seq);
-      const entry: TemporarySseClient = { sink, userId };
-      this.addTemporaryClient(this.mediaMessageProgressClients, key, entry);
-      return () =>
-        this.removeTemporaryClient(
-          this.mediaMessageProgressClients,
-          key,
-          entry,
-        );
-    });
-  }
-
   registerMediaFileProgress(
     userId: number,
     threadId: number,
@@ -370,12 +340,6 @@ export class SseService implements OnModuleDestroy {
     });
   }
 
-  hasMediaMessageProgressSubscriber(threadId: number, seq: number): boolean {
-    return this.mediaMessageProgressClients.has(
-      this.mediaMessageProgressKey(threadId, seq),
-    );
-  }
-
   hasMediaFileProgressSubscriber(
     threadId: number,
     seq: number,
@@ -383,40 +347,6 @@ export class SseService implements OnModuleDestroy {
   ): boolean {
     return this.mediaFileProgressClients.has(
       this.mediaFileProgressKey(threadId, seq, digest),
-    );
-  }
-
-  onMediaMessageDownloadProgress(
-    data: MediaMessageDownloadProgressEvent,
-  ): void {
-    this.pushTemporary(
-      this.mediaMessageProgressClients,
-      this.mediaMessageProgressKey(data.threadId, data.seq),
-      'MEDIA_MESSAGE_DOWNLOAD_PROGRESS',
-      data,
-      false,
-    );
-  }
-
-  completeMediaMessageDownloadProgress(
-    data: MediaMessageDownloadProgressEvent,
-  ): void {
-    this.pushTemporary(
-      this.mediaMessageProgressClients,
-      this.mediaMessageProgressKey(data.threadId, data.seq),
-      'MEDIA_MESSAGE_DOWNLOAD_PROGRESS',
-      data,
-      true,
-    );
-  }
-
-  onMediaFileDownloadProgress(data: MediaFileDownloadProgressEvent): void {
-    this.pushTemporary(
-      this.mediaFileProgressClients,
-      this.mediaFileProgressKey(data.threadId, data.seq, data.file.digest),
-      'MEDIA_FILE_DOWNLOAD_PROGRESS',
-      data,
-      false,
     );
   }
 
@@ -470,10 +400,6 @@ export class SseService implements OnModuleDestroy {
       this.emit(client.sink, eventName, data);
       if (terminal) client.sink.complete();
     }
-  }
-
-  private mediaMessageProgressKey(threadId: number, seq: number): string {
-    return `${threadId}:${seq}`;
   }
 
   private mediaFileProgressKey(
@@ -617,5 +543,9 @@ export class SseService implements OnModuleDestroy {
     for (const list of Object.values(this.clients)) {
       for (const { sink } of [...list]) sink.complete();
     }
+    for (const clients of this.mediaFileProgressClients.values()) {
+      for (const { sink } of [...clients]) sink.complete();
+    }
+    this.mediaFileProgressClients.clear();
   }
 }

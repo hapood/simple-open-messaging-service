@@ -3,7 +3,7 @@ import {
   Logger,
   type BeforeApplicationShutdown,
 } from '@nestjs/common';
-import { and, eq, sql } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import { DatabaseService } from '../database/database.service.js';
@@ -238,7 +238,6 @@ export class FederationInboundFileSync implements BeforeApplicationShutdown {
   private readonly progressTargets = new Map<
     string,
     {
-      batchId: string;
       threadId: number;
       seq: number;
       file: MediaProgressFileRef;
@@ -263,7 +262,6 @@ export class FederationInboundFileSync implements BeforeApplicationShutdown {
     ) => AsyncIterable<Buffer>,
     promote: (batchId: string) => Promise<void>,
     fail: (batchId: string) => Promise<void>,
-    start?: (batchId: string) => Promise<void>,
   ): Promise<void> {
     // Synchronous admission: duplicate executions reject instead of waiting for a turn.
     const execution = this.admit(batchId, 'running');
@@ -297,8 +295,6 @@ export class FederationInboundFileSync implements BeforeApplicationShutdown {
           );
         return;
       }
-      controller.signal.throwIfAborted();
-      if (rows.length > 0) await start?.(batchId);
       controller.signal.throwIfAborted();
       const results = await Promise.allSettled(
         rows.map((row) =>
@@ -405,9 +401,6 @@ export class FederationInboundFileSync implements BeforeApplicationShutdown {
       if (!row.originDomain) throw new Error('missing media source peer');
       await this.claim(progressId, declaredBytes);
       signal.throwIfAborted();
-      await this.publishProgress(progressId, 0, signal);
-      await this.publishMessageProgress(progressId, true, signal);
-      signal.throwIfAborted();
       let lastWrite = 0;
       let latestReceived: number | undefined;
       const peerDomain = row.originDomain;
@@ -507,7 +500,6 @@ export class FederationInboundFileSync implements BeforeApplicationShutdown {
         );
       }
       await this.publishFileTerminal(progressId, 'ready');
-      await this.publishMessageProgress(progressId, false, signal);
       return { kind: 'completed' };
     } catch (error) {
       if (error instanceof FederationDownloadTerminatedError)
@@ -548,7 +540,7 @@ export class FederationInboundFileSync implements BeforeApplicationShutdown {
     signal: AbortSignal,
   ): Promise<void> {
     if (signal.aborted) return;
-    const updated = await this.database.db
+    await this.database.db
       .update(tables.fileSyncProgress)
       .set({ bytesReceived: BigInt(received), updatedAt: new Date() })
       .where(
@@ -556,66 +548,7 @@ export class FederationInboundFileSync implements BeforeApplicationShutdown {
           eq(tables.fileSyncProgress.id, progressId),
           eq(tables.fileSyncProgress.status, 'PENDING'),
         ),
-      )
-      .returning({ id: tables.fileSyncProgress.id });
-    if (updated.length > 0)
-      await this.publishProgress(progressId, received, signal);
-  }
-
-  private async publishProgress(
-    progressId: bigint,
-    received: number,
-    signal: AbortSignal,
-  ): Promise<void> {
-    if (signal.aborted) return;
-    const target = await this.progressTarget(progressId);
-    if (!target || signal.aborted) return;
-    if (
-      !this.sse.hasMediaFileProgressSubscriber(
-        target.threadId,
-        target.seq,
-        target.file.digest,
-      )
-    )
-      return;
-    this.sse.onMediaFileDownloadProgress({
-      threadId: target.threadId,
-      seq: target.seq,
-      status: 'downloading',
-      file: target.file,
-      loaded: received,
-      total: target.total,
-    });
-  }
-
-  private async publishMessageProgress(
-    progressId: bigint,
-    includeActiveFile: boolean,
-    signal: AbortSignal,
-  ): Promise<void> {
-    if (signal.aborted) return;
-    const target = await this.progressTarget(progressId);
-    if (!target || signal.aborted) return;
-    if (
-      !this.sse.hasMediaMessageProgressSubscriber(target.threadId, target.seq)
-    )
-      return;
-    const [counts] = await this.database.db
-      .select({
-        totalFiles: sql<number>`COUNT(*)::int`,
-        completedFiles: sql<number>`COUNT(*) FILTER (WHERE ${tables.fileSyncProgress.status} = 'COMPLETED')::int`,
-      })
-      .from(tables.fileSyncProgress)
-      .where(eq(tables.fileSyncProgress.batchId, target.batchId));
-    if (signal.aborted) return;
-    this.sse.onMediaMessageDownloadProgress({
-      threadId: target.threadId,
-      seq: target.seq,
-      status: 'downloading',
-      completedFiles: counts?.completedFiles ?? 0,
-      totalFiles: counts?.totalFiles ?? 0,
-      activeFile: includeActiveFile ? target.file : null,
-    });
+      );
   }
 
   private async publishFileTerminal(
@@ -647,6 +580,7 @@ export class FederationInboundFileSync implements BeforeApplicationShutdown {
           : (row?.bytesReceived ?? 0n),
       ),
       total: row && row.bytesTotal > 0n ? Number(row.bytesTotal) : target.total,
+      bytesPerSecond: null,
     });
   }
 
@@ -654,7 +588,6 @@ export class FederationInboundFileSync implements BeforeApplicationShutdown {
     threadId: number;
     seq: number;
     file: MediaProgressFileRef;
-    batchId: string;
     total: number | null;
   } | null> {
     const key = progressId.toString();
@@ -663,13 +596,12 @@ export class FederationInboundFileSync implements BeforeApplicationShutdown {
     const row = await this.database.db.query.fileSyncProgress.findFirst({
       where: eq(tables.fileSyncProgress.id, progressId),
       columns: {
-        batchId: true,
         messageId: true,
         digest: true,
         bytesTotal: true,
       },
     });
-    if (!row?.batchId) return null;
+    if (!row) return null;
     // Task ownership survives removal of temporary inbound coordination. Never infer
     // an owner from another message using the same digest or from a staging row.
     const message = await this.database.db.query.message.findFirst({
@@ -682,7 +614,6 @@ export class FederationInboundFileSync implements BeforeApplicationShutdown {
     );
     if (!file) return null;
     const target = {
-      batchId: row.batchId,
       threadId: message.threadId,
       seq: message.seq,
       file,

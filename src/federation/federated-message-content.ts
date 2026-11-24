@@ -1,3 +1,4 @@
+import { readMessageContentQuote } from '../../shared/message-content-quote.js';
 import { parseFederationFileMeta } from './federation-file-meta.js';
 import { ContentType } from '../database/enums.js';
 import { canonicalJson, payloadDigest } from './canonical-json.js';
@@ -131,10 +132,12 @@ function parseQuote(value: JsonObject, strict = false): JsonObject | undefined {
   const quote = value['quote'] as JsonObject;
   assertKeys(
     quote,
-    strict ? ['seq', 'digest'] : ['seq'],
+    strict ? ['seq', 'digest'] : [],
     strict
       ? []
       : [
+          'seq',
+          'originSeq',
           'digest',
           'namespaceId',
           'sourceSeq',
@@ -149,13 +152,7 @@ function parseQuote(value: JsonObject, strict = false): JsonObject | undefined {
           'imageShape',
         ],
   );
-  if (
-    !Number.isSafeInteger(quote['seq']) ||
-    Number(quote['seq']) < 0 ||
-    (quote['digest'] !== undefined &&
-      (typeof quote['digest'] !== 'string' ||
-        !/^[a-f0-9]{64}$/.test(quote['digest'])))
-  ) {
+  if (!readMessageContentQuote(JSON.stringify({ quote }))) {
     throw new Error('invalid quote');
   }
   if (strict) return { seq: quote['seq'], digest: quote['digest'] };

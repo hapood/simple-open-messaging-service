@@ -22,6 +22,7 @@ impl NotificationTarget {
             Self::FriendRequests {} => true,
         }
     }
+    #[cfg(any(target_os = "windows", target_os = "linux", test))]
     pub(crate) fn key(self) -> String {
         match self {
             Self::Thread { thread_id } => format!("thread/{thread_id}"),
@@ -29,6 +30,7 @@ impl NotificationTarget {
             Self::GroupJoinRequests { thread_id } => format!("group-join-requests/{thread_id}"),
         }
     }
+    #[cfg(any(target_os = "windows", test))]
     pub(crate) fn from_key(value: &str) -> Option<Self> {
         let target = if value == "friend-requests" {
             Self::FriendRequests {}

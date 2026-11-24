@@ -7,14 +7,12 @@ import type { FederationMessagePageEffect } from './federation-inbound-message-p
 function setup() {
   const batches = { runFileSyncBatch: vi.fn().mockResolvedValue(undefined) };
   const localization = {
-    resolveForwardAssetAuth: vi
-      .fn()
-      .mockResolvedValue({
-        fromAccount: 'alice',
-        fromDomain: 'peer.test',
-        toAccount: 'bob',
-        sourceSeq: 7,
-      }),
+    resolveForwardAssetAuth: vi.fn().mockResolvedValue({
+      fromAccount: 'alice',
+      fromDomain: 'peer.test',
+      toAccount: 'bob',
+      sourceSeq: 7,
+    }),
     localizeForwardAssets: vi.fn().mockResolvedValue(true),
   };
   const forward = {

@@ -1,4 +1,5 @@
-import { sql } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
+import { messageThread } from '../../../database/schema.js';
 import { Logger } from '@nestjs/common';
 import type {
   DatabaseService,
@@ -12,6 +13,7 @@ import type { FederationStateFeedPusher } from '../../../federation/federation-s
 import type { RequestTransactionCapability } from '../../../relationship/request/request-transaction.contract.js';
 import type { PeerStateFeedService } from '../../../federation/peer-state-feed.service.js';
 import { openFederatedAudienceInTx } from '../../../federation/federation-audience.js';
+import { enqueueThreadTombFanoutInTx } from '../../../message/thread-fanout-task.js';
 import { initializeRelationshipThreadStateInTx } from '../../../federation/federation-relationship-thread-state.js';
 import { captureThreadStateUpdatesInTx } from '../../../client-state-feed/capture-thread-state-updates.js';
 import { normalizeAccount } from '../../../common/account.js';
@@ -493,6 +495,19 @@ export class ReceivedUserIntentService {
         ]);
       for (const namespaceId of confirmations.keys())
         context.peers.add(namespaceId);
+    }
+    if (result.rows[0]?.pairChanged === true) {
+      const [head] = await tx
+        .select({ tombstoneEndSeq: messageThread.tombstoneEndSeq })
+        .from(messageThread)
+        .where(eq(messageThread.id, threadId))
+        .limit(1);
+      if (head && head.tombstoneEndSeq > 0) {
+        await enqueueThreadTombFanoutInTx(tx, context.threadLock, {
+          threadId,
+          tombstoneEndSeq: head.tombstoneEndSeq,
+        });
+      }
     }
     await openFederatedAudienceInTx(tx, context.peer.namespaceId, threadId);
     await initializeRelationshipThreadStateInTx(

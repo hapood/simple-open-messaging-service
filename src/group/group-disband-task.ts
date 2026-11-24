@@ -101,14 +101,11 @@ export function readQueryDeniedGroupMembershipRevocationTask(
 
 export function readForbiddenGroupTask(task: DurableTask): {
   threadId: number;
-  peerDomain: string;
   namespaceId: number;
   expectedAuthorizationEpoch: number;
 } {
   assertGroupTask(task);
-  const { peerDomain, expectedAuthorizationEpoch } = task.payload;
-  if (typeof peerDomain !== 'string' || !peerDomain)
-    throw new Error('invalid denied peer domain');
+  const { expectedAuthorizationEpoch } = task.payload;
   if (
     !Number.isSafeInteger(expectedAuthorizationEpoch) ||
     (expectedAuthorizationEpoch as number) < 0
@@ -116,7 +113,6 @@ export function readForbiddenGroupTask(task: DurableTask): {
     throw new Error('invalid denied authorization epoch');
   return {
     threadId: readPositiveInteger(task.payload.threadId, 'thread ID'),
-    peerDomain,
     namespaceId: readPositiveInteger(task.payload.namespaceId, 'namespace ID'),
     expectedAuthorizationEpoch: expectedAuthorizationEpoch as number,
   };

@@ -1,7 +1,8 @@
 import { Injectable } from '@angular/core';
 import { TransientOverlayService } from '../../services/transient-overlay.service';
 import { GalleryViewerComponent } from './gallery-viewer.component';
-import type { AlbumMedia } from '../message-cards/chat-item';
+import type { AlbumMedia, ChatMsgData } from '../message-cards/chat-item';
+import { fileMedia } from '../message-cards/file-media';
 
 /**
  * Opens the fullscreen image gallery as a transient overlay (CDK Overlay, decoupled from any host template to
@@ -30,6 +31,11 @@ export class GalleryViewerService extends TransientOverlayService<{
     if (images.length === 0) return;
     this.opened = { images, threadId };
     this.pushEntry({ images, startIndex, threadId });
+  }
+
+  openFile(data: ChatMsgData, threadId: number): void {
+    const media = fileMedia(data);
+    this.open([media], 0, threadId);
   }
 
   closeIfDeleted(threadId: number, seq: number): void {

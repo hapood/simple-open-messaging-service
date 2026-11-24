@@ -1058,7 +1058,7 @@ describe('group join decision', () => {
       });
       expect(task.checkpoint).toEqual({});
     }
-    // The new member's row publishes the canonical Meta coordinate immediately.
+    // The new member's row publishes the client projection head, not the S2S allocator.
     const participant = await database.db.query.accountThreadState.findFirst({
       where: and(
         eq(tables.accountThreadState.threadId, f.group.threadId),
@@ -1067,11 +1067,11 @@ describe('group join decision', () => {
     });
     const [meta] = (
       await database.pool.query(
-        'SELECT "metaEndId"::text FROM "GroupMeta" WHERE "threadId" = $1',
+        'SELECT "clientMetaEndId"::text FROM "GroupMeta" WHERE "threadId" = $1',
         [f.group.threadId],
       )
     ).rows;
-    expect(participant?.groupMetaFeedEndId).toBe(Number(meta.metaEndId));
+    expect(participant?.groupMetaFeedEndId).toBe(Number(meta.clientMetaEndId));
     const [profileFact] = (
       await database.pool.query(
         `SELECT "feedId", body -> 'profileRev' AS rev

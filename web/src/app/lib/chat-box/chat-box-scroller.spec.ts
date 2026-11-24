@@ -64,9 +64,7 @@ function createKernel<T>(
   return kernel;
 }
 
-import type { CbDemand, CbDemandResult, CbSource as KernelSource } from './cb-source';
-// Legacy fixture metadata is not consumed by the kernel source contract.
-type CbSource<T> = KernelSource<T> & { getPending?: () => CbItem<T>[] };
+import type { CbDemand, CbDemandResult, CbSource } from './cb-source';
 import { NEVER, Observable, of, Subject, type Subscriber } from 'rxjs';
 
 function testDemand<T>(
@@ -204,7 +202,7 @@ function recordingHooks(itemHeight = 100): {
   };
 }
 
-/** Hooks that record createItem vs update so reconcilePending tests can assert in-place morph (update, NOT recreate).
+/** Hooks that record createItem vs update so status-morph tests assert in-place update, not recreation.
  *  Tracks the latest data applied per id through EITHER path (create or update). Fixed height (no morph delta). */
 function trackingHooks(itemHeight = 100): {
   hooks: {
@@ -249,14 +247,6 @@ function trackingHooks(itemHeight = 100): {
     updateCount: () => updates,
     dataOf: (id) => dataMap.get(String(id)) ?? -1,
   };
-}
-
-/** fakeSource with a mutable pending array the test mutates to simulate MockItemSource.failPending/retryPending. */
-function pendingSource(
-  total: number,
-  pending: CbItem<number>[],
-): CbSource<number> {
-  return { ...fakeSource(total), getPending: () => pending.slice() };
 }
 
 /** Live-caching source (mirrors MockItemSource's live path), unlike fakeSource whose pushLive is cache-only and
@@ -340,7 +330,6 @@ function liveSource(N: number): CbSource<number> & {
       for (const it of items) live.push(it);
       pumpNewer();
     },
-    getPending: () => [],
     destroy: () => {},
   };
   return Object.assign(src, { live });
@@ -475,7 +464,6 @@ function fakeSource(N: number): CbSource<number> & {
     pushLive: (_items) => {
       /* cache-only: direct-mount path mounts the raw items; the signal path uses getNewer */
     },
-    getPending: () => [],
     destroy: () => {},
   };
   return Object.assign(src, { gets: () => gets, newers: () => newers });
@@ -525,7 +513,6 @@ function controllableInitSource(N: number): CbSource<number> & {
     pushLive: (_items) => {
       /* cache-only: direct-mount path mounts the raw items; the signal path uses getNewer */
     },
-    getPending: () => [],
     destroy: () => {},
   };
   return Object.assign(src, {
@@ -605,7 +592,6 @@ function controllableSource(N: number): CbSource<number> & {
     pushLive: (_items) => {
       /* cache-only: direct-mount path mounts the raw items; the signal path uses getNewer */
     },
-    getPending: () => [],
     destroy: () => {},
   };
   return Object.assign(src, {
@@ -966,392 +952,135 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
     },
   );
 
-  it('entry owns bottom demand and replaces the skipped prefix on gap success', async () => {
+  it('subscribes mounted gaps and splices only their interval without replacing outside renderers', async () => {
     const { hooks } = controllableHooks(100);
-    const source = fakeSource(200);
-    source.loadWindow = async () =>
-      [1, 50].map((id) => ({ id, data: id, boundary: 'oldest' as const }));
-    const entry = new Subject<CbDemandResult<number>>();
-    const older = new Subject<CbDemandResult<number>>();
-    source.requestOlder = vi.fn(() => older);
-    source.requestNewer = vi.fn(() => NEVER);
-    scroller = createKernel({ viewport, content, hooks, source });
-    await scroller.openWindow({
-      kind: 'entry',
-      readSeq: 100,
-      request: () => entry,
-    });
-    expect(source.requestNewer).not.toHaveBeenCalled();
-    entry.next({
-      kind: 'items',
-      items: [101, 120].map((id) => ({ id, data: id })),
-    });
-    const suffix = scroller.getMountedGeometry(101)!.el;
-    const gap = content.querySelector<HTMLElement>(
-      '[aria-label="Load skipped messages"]',
-    )!;
-    expect(gap).not.toBeNull();
-    gap.click();
-    expect(source.requestOlder).toHaveBeenCalledWith(101, 50);
-    older.next({
-      kind: 'items',
-      items: [81, 100].map((id) => ({
-        id,
-        data: id,
-        boundary: 'oldest' as const,
-      })),
-    });
-    expect(scroller.getMountedGeometry(1)).toBeNull();
-    expect(scroller.getMountedGeometry(50)).toBeNull();
-    expect(scroller.getMountedGeometry(81)).not.toBeNull();
-    expect(scroller.getMountedGeometry(101)!.el).toBe(suffix);
-    expect(
-      content.querySelector('[aria-label="Load skipped messages"]'),
-    ).toBeNull();
-  });
-
-  it.each(['empty', 'server-gap', 'error'] as const)(
-    'gap replacement handles %s without losing retained suffix instances',
-    async (outcome) => {
-      const { hooks } = controllableHooks(100);
-      const source = fakeSource(200);
-      source.loadWindow = async () =>
-        [1, 50].map((id) => ({ id, data: id, boundary: 'oldest' as const }));
-      const entry = new Subject<CbDemandResult<number>>();
-      const older = new Subject<CbDemandResult<number>>();
-      source.requestOlder = vi.fn(() => older);
-      source.requestNewer = () => NEVER;
-      scroller = createKernel({ viewport, content, hooks, source });
-      await scroller.openWindow({
-        kind: 'entry',
-        readSeq: 100,
-        request: () => entry,
-      });
-      entry.next({
-        kind: 'items',
-        items: [101, 120].map((id) => ({ id, data: id })),
-      });
-      const suffix = scroller.getMountedGeometry(101)!.el;
-      const gap = content.querySelector<HTMLElement>(
-        '[aria-label="Load skipped messages"]',
-      )!;
-      gap.click();
-      gap.click();
-      expect(source.requestOlder).toHaveBeenCalledTimes(1);
-      if (outcome === 'error') {
-        older.next({ kind: 'error', error: new Error('offline') });
-        expect(scroller.getMountedGeometry(1)).not.toBeNull();
-        expect(gap.classList.contains('cb-edge-failed')).toBe(true);
-        gap.click();
-        expect(source.requestOlder).toHaveBeenCalledTimes(2);
-      }
-      older.next(
-        outcome === 'server-gap'
-          ? {
-              kind: 'items',
-              items: [{ id: 9000, data: 9000, boundary: 'oldest' }],
-            }
-          : { kind: 'boundary' },
-      );
-      expect(scroller.getMountedGeometry(1)).toBeNull();
-      expect(scroller.getMountedGeometry(50)).toBeNull();
-      expect(scroller.getMountedGeometry(101)!.el).toBe(suffix);
-      expect(gap.isConnected).toBe(false);
-      expect(scroller.getInfo().noOlder).toBe(true);
-      if (outcome === 'server-gap')
-        expect(scroller.getMountedGeometry(9000)).not.toBeNull();
-    },
-  );
-
-  it('entry retry stays single-flight and teardown cancels late suffix delivery', async () => {
-    const { hooks } = controllableHooks();
-    const source = fakeSource(200);
-    source.loadWindow = async () => [{ id: 50, data: 50, boundary: 'oldest' }];
-    source.requestNewer = vi.fn(() => NEVER);
-    const response = new Subject<CbDemandResult<number>>();
-    const request = vi.fn(() => response);
-    scroller = createKernel({ viewport, content, hooks, source });
-    await scroller.openWindow({ kind: 'entry', readSeq: 100, request });
-    response.next({ kind: 'error', error: new Error('offline') });
-    viewport.dispatchEvent(new Event('scroll'));
-    expect(request).toHaveBeenCalledTimes(1);
-    expect(source.requestNewer).not.toHaveBeenCalled();
-    scroller.retryNewer();
-    scroller.retryNewer();
-    expect(request).toHaveBeenCalledTimes(2);
-    scroller.unbind();
-    expect(response.observed).toBe(false);
-    response.next({ kind: 'items', items: [{ id: 101, data: 101 }] });
-    expect(scroller.getInfo().mounted).toBe(0);
-    expect(
-      content.querySelector('[aria-label="Load skipped messages"]'),
-    ).toBeNull();
-  });
-
-  it('a measured gap preserves suffix position during replacement', async () => {
-    const style = document.createElement('style');
-    style.textContent =
-      '[aria-label="Load skipped messages"] { height: 64px; min-height: 64px; flex-shrink: 0; }';
-    document.head.appendChild(style);
-    try {
-      const { hooks } = controllableHooks(100);
-      const source = fakeSource(200);
-      source.loadWindow = async () =>
-        Array.from({ length: 10 }, (_, i) => ({
-          id: i + 1,
-          data: i + 1,
-          boundary: 'oldest' as const,
-        }));
-      const entry = new Subject<CbDemandResult<number>>();
-      const older = new Subject<CbDemandResult<number>>();
-      source.requestOlder = () => older;
-      source.requestNewer = () => NEVER;
-      scroller = createKernel({
-        viewport,
-        content,
-        hooks,
-        source,
-        config: { edge: 2000 },
-      });
-      await scroller.openWindow({
-        kind: 'entry',
-        readSeq: 100,
-        request: () => entry,
-      });
-      entry.next({
-        kind: 'items',
-        items: Array.from({ length: 10 }, (_, i) => ({
-          id: 101 + i,
-          data: 101 + i,
-        })),
-      });
-      const gap = content.querySelector<HTMLElement>(
-        '[aria-label="Load skipped messages"]',
-      )!;
-      expect(gap.offsetHeight).toBe(64);
-      viewport.scrollTop = 900;
-      const before = scroller.getMountedGeometry(101)!;
-      expect(before.top).toBe(164);
-      gap.click();
-      older.next({
-        kind: 'items',
-        items: Array.from({ length: 10 }, (_, i) => ({
-          id: 91 + i,
-          data: 91 + i,
-          boundary: 'oldest' as const,
-        })),
-      });
-      expect(scroller.getMountedGeometry(101)!.top).toBe(before.top);
-      expect(scroller.getMountedGeometry(101)!.el).toBe(before.el);
-      expect(gap.isConnected).toBe(false);
-    } finally {
-      style.remove();
-    }
-  });
-
-  it('leaving entry ownership region retires the retry and returning uses the current tail', async () => {
-    const { hooks } = controllableHooks(100);
-    const source = fakeSource(200);
-    source.loadWindow = async () =>
-      Array.from({ length: 30 }, (_, i) => ({
-        id: i + 1,
-        data: i + 1,
-        boundary: 'oldest' as const,
-      }));
-    source.requestNewer = vi.fn(() => NEVER);
-    const response = new Subject<CbDemandResult<number>>();
-    const request = vi.fn(() => response);
-    scroller = createKernel({ viewport, content, hooks, source });
-    await scroller.openWindow({ kind: 'entry', readSeq: 100, request });
-    response.next({ kind: 'error', error: new Error('offline') });
-    viewport.scrollTop = 0;
-    viewport.dispatchEvent(new Event('scroll'));
-    viewport.scrollTop = content.scrollHeight;
-    viewport.dispatchEvent(new Event('scroll'));
-    scroller.retryNewer();
-    expect(request).toHaveBeenCalledTimes(1);
-    expect(source.requestNewer).toHaveBeenCalledWith(30, 50);
-  });
-
-  it('rebuilding the suffix preserves gap ownership and grouping until teardown', async () => {
-    const { hooks } = controllableHooks();
-    const source = fakeSource(200);
-    source.loadWindow = async () => [{ id: 50, data: 50, boundary: 'oldest' }];
+    const source = fakeSource(100);
+    const gap: CbItem<number> = { id: -1, data: -1, displayInterval: { left: 10, right: 50 } };
+    source.loadWindow = async () => [
+      { id: 10, data: 10, boundary: 'oldest' }, gap,
+      ...Array.from({ length: 10 }, (_, i) => ({ id: 51 + i, data: 51 + i,
+        ...(i === 9 ? { boundary: 'newest' as const } : {}) })),
+    ];
     source.requestNewer = () => NEVER;
-    const entry = new Subject<CbDemandResult<number>>();
-    const older = new Subject<CbDemandResult<number>>();
-    source.requestOlder = vi.fn(() => older);
+    const changes = new Subject<CbItem<number>[]>();
+    source.watchInterval = vi.fn(() => changes);
     scroller = createKernel({ viewport, content, hooks, source });
-    await scroller.openWindow({
-      kind: 'entry',
-      readSeq: 100,
-      request: () => entry,
-    });
-    entry.next({
-      kind: 'items',
-      items: [
-        { id: 101, data: 101 },
-        { id: 102, data: 102 },
-      ],
-    });
-    const gap = content.querySelector<HTMLElement>(
-      '[aria-label="Load skipped messages"]',
-    )!;
-    gap.click();
-    expect(older.observed).toBe(true);
-    scroller.mutateItem(101, () => ({ id: 101, data: 999 }));
-    expect(scroller.getMountedGeometry(101)!.item.groupingBreakBefore).toBe(
-      true,
-    );
-    expect(gap.isConnected).toBe(true);
-    expect(older.observed).toBe(true);
-    gap.click();
-    expect(source.requestOlder).toHaveBeenCalledTimes(1);
-    scroller.unbind();
-    expect(older.observed).toBe(false);
-    older.next({ kind: 'items', items: [{ id: 100, data: 100 }] });
-    expect(scroller.getInfo().mounted).toBe(0);
-    expect(gap.isConnected).toBe(false);
+    await scroller.openWindow({ kind: 'cached' });
+    await flush();
+    expect(source.watchInterval).toHaveBeenCalledWith(gap);
+    const prefix = scroller.getMountedGeometry(10)!.el;
+    const suffix = scroller.getMountedGeometry(51)!.el;
+    viewport.scrollTop = 100; // Gap at the fold: it must not become the stable anchor.
+    const suffixTop = scroller.getMountedGeometry(51)!.top;
+    changes.next(Array.from({ length: 4 }, (_, i) => ({ id: 47 + i, data: 47 + i })));
+    expect(changes.observed).toBe(false);
+    expect(scroller.getMountedGeometry(10)!.el).toBe(prefix);
+    expect(scroller.getMountedGeometry(51)!.el).toBe(suffix);
+    expect(scroller.getMountedGeometry(51)!.top).toBe(suffixTop);
+    expect(scroller.getMountedGeometry(-1)).toBeNull();
+    expect(scroller.getMountedGeometry(47)).not.toBeNull();
   });
 
-  it('trimming across a measured gap cancels only its request and retains suffix instances', async () => {
-    const style = document.createElement('style');
-    style.textContent =
-      '[data-entry-gap] { height: 64px; min-height: 64px; flex-shrink: 0; }';
-    document.head.appendChild(style);
-    try {
-      const { hooks } = controllableHooks(100);
-      const source = fakeSource(500);
-      source.loadWindow = async () =>
-        Array.from({ length: 20 }, (_, i) => ({
-          id: i + 1,
-          data: i + 1,
-          ...(i === 0 ? { boundary: 'oldest' as const } : {}),
-        }));
-      const entry = new Subject<CbDemandResult<number>>();
-      const gapPage = new Subject<CbDemandResult<number>>();
-      const newer = new Subject<CbDemandResult<number>>();
-      source.requestOlder = (cursor) => (cursor === 101 ? gapPage : NEVER);
-      source.requestNewer = () => newer;
-      scroller = createKernel({
-        viewport,
-        content,
-        hooks,
-        source,
-        config: { edge: 1000, thresholdFloor: 1000, vhExtra: 0 },
-      });
-      await scroller.openWindow({
-        kind: 'entry',
-        readSeq: 100,
-        request: () => entry,
-      });
-      entry.next({
-        kind: 'items',
-        items: Array.from({ length: 30 }, (_, i) => ({
-          id: 101 + i,
-          data: 101 + i,
-        })),
-      });
-      const gap = content.querySelector<HTMLElement>('[data-entry-gap]')!;
-      expect(gap.offsetHeight).toBe(64);
-      gap.click();
-      expect(gapPage.observed).toBe(true);
-      viewport.scrollTop = content.scrollHeight;
-      viewport.dispatchEvent(new Event('scroll'));
-      const retained = scroller.getMountedGeometry(128)!;
-      newer.next({
-        kind: 'items',
-        items: [{ id: 131, data: 131, boundary: 'newest' }],
-      });
-      expect(gap.isConnected).toBe(false);
-      expect(gapPage.observed).toBe(false);
-      expect(scroller.getMountedGeometry(128)!.el).toBe(retained.el);
-      const beforeLate = scroller.getInfo().mounted;
-      gapPage.next({ kind: 'items', items: [{ id: 100, data: 100 }] });
-      expect(scroller.getInfo().mounted).toBe(beforeLate);
-      expect(scroller.getMountedGeometry(100)).toBeNull();
-    } finally {
-      style.remove();
-    }
-  });
-
-  it('ordinary album absorption preserves the window grouping break after an entry gap', async () => {
-    const { hooks } = controllableHooks();
-    const albumHooks: CbHooks<number> = {
-      ...hooks,
-      absorbTail: (target, incoming) => ({
-        ...target,
-        ids: [...(target.ids ?? [target.id]), incoming.id],
-      }),
-    };
-    const source = fakeSource(200);
-    source.loadWindow = async () => [{ id: 50, data: 50, boundary: 'oldest' }];
-    const entry = new Subject<CbDemandResult<number>>();
-    const newer = new Subject<CbDemandResult<number>>();
-    source.requestNewer = () => newer;
-    scroller = createKernel({ viewport, content, hooks: albumHooks, source });
-    await scroller.openWindow({
-      kind: 'entry',
-      readSeq: 100,
-      request: () => entry,
-    });
-    entry.next({ kind: 'items', items: [{ id: 101, data: 101 }] });
-    const suffix = scroller.getMountedGeometry(101)!.el;
-    newer.next({
-      kind: 'items',
-      items: [{ id: 102, data: 102, boundary: 'newest' }],
-    });
-    expect(scroller.getMountedGeometry(101)!.item.ids).toEqual([101, 102]);
-    expect(scroller.getMountedGeometry(101)!.item.groupingBreakBefore).toBe(
-      true,
-    );
-    expect(suffix.classList.contains('cb-ghost')).toBe(true);
-    expect(scroller.getMountedGeometry(101)!.el.classList.contains('cb-ghost')).toBe(false);
-    expect(content.querySelectorAll('[data-cb-id="101"]')).toHaveLength(1);
-    expect(content.querySelector('[data-entry-gap]')).not.toBeNull();
-  });
-
-  it.each([1, 3, 8])(
-    'latest history geometry is independent of %s outbox records',
-    async (count) => {
-      const { hooks } = controllableHooks(100);
-      const pending = Array.from({ length: count }, (_, index) => ({
-        id: -index - 1,
-        data: -index - 1,
-        clientMessageId: `pending-${index}`,
-      }));
-      const source = { ...fakeSource(500), getPending: () => pending };
-      scroller = createKernel({ viewport, content, hooks, source });
-      await scroller.openWindow({ kind: 'latest' });
-      expect(viewport.scrollTop).toBe(9400);
-      expect(scroller.getMountedGeometry(499)!.bottom).toBe(600);
-      for (const item of pending)
-        expect(
-          content.querySelectorAll(`[data-cb-id="${item.id}"]`),
-        ).toHaveLength(0);
-    },
-  );
-
-  it('short history stays bottom aligned without mounting outbox records', async () => {
+  it('unmounting an interval cancels its consumer and ignores late pages', async () => {
     const { hooks } = controllableHooks(100);
-    const source = {
-      ...fakeSource(1),
-      getPending: () => [{ id: -1, data: -1, clientMessageId: 'pending' }],
+    const source = fakeSource(100);
+    source.loadWindow = async () => [
+      { id: -1, data: -1, displayInterval: { left: 0, right: 49 }, boundary: 'oldest' },
+      { id: 50, data: 50, boundary: 'newest' },
+    ];
+    source.requestNewer = () => NEVER;
+    const changes = new Subject<CbItem<number>[]>();
+    source.watchInterval = () => changes;
+    scroller = createKernel({ viewport, content, hooks, source });
+    await scroller.openWindow({ kind: 'cached' });
+    await flush();
+    expect(changes.observed).toBe(true);
+    scroller.unbind();
+    expect(changes.observed).toBe(false);
+    changes.next([{ id: 49, data: 49 }]);
+    expect(scroller.getInfo().mounted).toBe(0);
+  });
+
+  it('an interval transport error retains history and remount creates a fresh consumer', async () => {
+    const { hooks } = controllableHooks(100);
+    const source = fakeSource(100);
+    const gap: CbItem<number> = {
+      id: -1, data: -1, displayInterval: { left: 0, right: 49 }, boundary: 'oldest',
     };
+    source.loadWindow = async () => [gap, { id: 50, data: 50, boundary: 'newest' }];
+    source.requestNewer = () => NEVER;
+    const failed = new Subject<CbItem<number>[]>();
+    const retry = new Subject<CbItem<number>[]>();
+    source.watchInterval = vi.fn().mockReturnValueOnce(failed).mockReturnValue(retry);
+    scroller = createKernel({ viewport, content, hooks, source });
+    await scroller.openWindow({ kind: 'cached' });
+    await flush();
+    failed.error(new Error('offline'));
+    expect(scroller.getMountedGeometry(-1)).not.toBeNull();
+    expect(scroller.getMountedGeometry(50)).not.toBeNull();
+    await scroller.openWindow({ kind: 'cached' });
+    await flush();
+    expect(source.watchInterval).toHaveBeenCalledTimes(2);
+    retry.next([]);
+    expect(scroller.getMountedGeometry(-1)).toBeNull();
+    expect(scroller.getMountedGeometry(50)).not.toBeNull();
+    expect(retry.observed).toBe(false);
+  });
+
+  it('arrival loads when the previous latest is mounted even far from the viewport edge', async () => {
+    const { hooks } = controllableHooks(100);
+    const source = fakeSource(100);
+    const changes = new Subject<CbDemandResult<number>>();
+    source.requestNewer = vi.fn(() => changes);
+    scroller = createKernel({ viewport, content, hooks, source, config: { edge: 1 } });
+    await scroller.openWindow({ kind: 'latest' });
+    viewport.scrollTop = 500;
+    viewport.dispatchEvent(new Event('scroll'));
+    scroller.notifyNewerAvailable(99);
+    expect(changes.observed).toBe(true);
+    changes.next({ kind: 'items', items: [{ id: 100, data: 100, boundary: 'newest' }] });
+    expect(scroller.getMountedGeometry(100)).not.toBeNull();
+  });
+
+  it('arrival does not request newer when the previous latest is not mounted', async () => {
+    const { hooks } = controllableHooks(100);
+    const source = fakeSource(100);
+    source.loadWindow = async () => [{ id: 1, data: 1, boundary: 'both' }];
+    source.requestNewer = vi.fn(() => NEVER);
+    scroller = createKernel({ viewport, content, hooks, source });
+    await scroller.openWindow({ kind: 'cached' });
+    vi.mocked(source.requestNewer).mockClear();
+    scroller.notifyNewerAvailable(99);
+    expect(source.requestNewer).not.toHaveBeenCalled();
+  });
+
+  it('arrival recognizes the previous latest inside a mounted album', async () => {
+    const { hooks } = controllableHooks(100);
+    const source = fakeSource(100);
+    source.loadWindow = async () => [{ id: 97, ids: [97, 98, 99], data: 97, boundary: 'both' }];
+    const changes = new Subject<CbDemandResult<number>>();
+    source.requestNewer = vi.fn(() => changes);
+    scroller = createKernel({ viewport, content, hooks, source });
+    await scroller.openWindow({ kind: 'cached' });
+    scroller.notifyNewerAvailable(99);
+    expect(source.requestNewer).toHaveBeenCalledExactlyOnceWith(99, expect.any(Number));
+    changes.next({ kind: 'items', items: [{ id: 100, data: 100, boundary: 'newest' }] });
+    expect(scroller.getMountedGeometry(100)).not.toBeNull();
+  });
+
+  it('short history stays bottom aligned', async () => {
+    const { hooks } = controllableHooks(100);
+    const source = fakeSource(1);
     scroller = createKernel({ viewport, content, hooks, source });
     await scroller.openWindow({ kind: 'latest' });
     expect(viewport.scrollTop).toBe(0);
-    expect(scroller.getMountedGeometry(-1)).toBeNull();
     expect(scroller.getMountedGeometry(0)!.bottom).toBe(600);
   });
 
-  it('goToLatest positions mounted history without replacing its window or rendering outbox records', async () => {
+  it('goToLatest positions mounted history without replacing its window', async () => {
     const { hooks } = controllableHooks();
     const navigate = vi.fn(async () => true);
-    const source = {
-      ...fakeSource(500),
-      getPending: () => [{ id: -1, data: -1, clientMessageId: 'pending' }],
-    };
+    const source = fakeSource(500);
     scroller = createKernel({
       viewport,
       content,
@@ -1364,7 +1093,6 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
     viewport.scrollTop = 0;
     expect(await scroller.goToLatest()).toBe(true);
     expect(navigate).not.toHaveBeenCalled();
-    expect(scroller.getMountedGeometry(-1)).toBeNull();
     expect(scroller.getMountedGeometry(499)!.el).toBe(tail);
     expect(scroller.getMountedGeometry(499)!.top).toBe(500);
   });
@@ -1431,6 +1159,9 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
       expect(scroller.getInfo().mounted).toBe(1001);
       expect(scroller.lifecycleState).toBe('steady');
     },
+    // This stress case measures and lays out a thousand one-row pages. Give
+    // parallel browser workers headroom without weakening the drain assertions.
+    60000,
   );
 
   it.each([
@@ -1699,7 +1430,6 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
           return slice(c + 1, c + 1 + k);
         }),
       pushLive: () => {},
-      getPending: () => [],
       destroy: () => {},
     };
     const { hooks } = controllableHooks();
@@ -2020,7 +1750,6 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
           return slice(c + 1, c + 1 + k);
         }),
       pushLive: () => {},
-      getPending: () => [],
       destroy: () => {},
     };
     const { hooks } = controllableHooks();
@@ -2364,7 +2093,6 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
       requestOlder: () => testDemand(async () => [], true),
       requestNewer: () => testDemand(async () => []),
       pushLive: () => {},
-      getPending: () => [],
       destroy: () => {},
     };
     const { hooks } = skeletonHooks();
@@ -2731,7 +2459,6 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
           return [];
         }),
       pushLive: () => {},
-      getPending: () => [],
       destroy: () => {},
     };
     const mergeItems = (items: CbItem<number>[]): CbItem<number>[] =>
@@ -3091,7 +2818,6 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
       requestOlder: () => testDemand(async () => [], true),
       requestNewer: () => testDemand(async () => []),
       pushLive: () => {},
-      getPending: () => [],
       destroy: () => {},
     };
     scroller = createKernel<number>({
@@ -3583,11 +3309,9 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
     ).toBe(0);
   });
 
-  it('partial newer pages retain the same optimistic instances through catch-up', async () => {
+  it('partial newer pages retain explicitly inserted optimistic instances through catch-up', async () => {
     const { hooks } = controllableHooks();
-    // Backlog source: getNewer drains a queue (page 1 = 50 reals WITHOUT 'newest', page 2 = reals WITH 'newest');
-    // getPending returns the in-flight optimistic sends the kernel (re)mounts at the newest edge.
-    const pending: CbItem<number>[] = [];
+    // Backlog source: newer demand drains a queue (page 1 = 50 reals WITHOUT 'newest', page 2 = reals WITH 'newest').
     const batches: CbItem<number>[][] = [
       Array.from({ length: 50 }, (_, i) => ({ id: 600 + i, data: i })),
       Array.from({ length: 10 }, (_, i) => ({
@@ -3596,10 +3320,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
         boundary: 'newest' as const,
       })),
     ];
-    const src = pushedSource({
-      ...fakeSource(500),
-      getPending: () => pending.slice(),
-    });
+    const src = pushedSource(fakeSource(500));
     scroller = createKernel<number>({
       viewport,
       content,
@@ -3609,7 +3330,6 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
     await scroller.openWindow({ kind: 'latest' }); // m-400..m-499, noNewer=true
     const optA: CbItem<number> = { id: -1, clientMessageId: 'cid-a', data: -1 };
     const optB: CbItem<number> = { id: -2, clientMessageId: 'cid-b', data: -1 };
-    pending.push(optA, optB); // playground addPending (the backing store)
     scroller.insertAfter(499, optA, { optimistic: true }); // mount for immediate display
     scroller.insertAfter(-1, optB, { optimistic: true });
     animEnd('-1');
@@ -3619,7 +3339,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
 
     const a = content.querySelector('[data-cb-id="-1"]');
     const b = content.querySelector('[data-cb-id="-2"]');
-    // An incomplete history page leaves the independent pending region mounted.
+    // An incomplete history page leaves the explicitly mounted optimistic instances.
     src.pushLive(batches.shift()!);
     await flush();
     await flush();
@@ -3639,9 +3359,8 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
     expect(scroller.getInfo().newestId).toBe(-2); // optimistic block is the tail again
   });
 
-  it('a newest-reaching demand keeps optimistic items mounted', async () => {
+  it('a newest-reaching demand keeps an explicitly inserted optimistic item mounted', async () => {
     const { hooks } = controllableHooks();
-    const pending: CbItem<number>[] = [];
     const base = fakeSource(500);
     const src: CbSource<number> = {
       ...base,
@@ -3650,7 +3369,6 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
           { id: 600, data: 0, boundary: 'newest' as const },
         ]),
       pushLive: () => {},
-      getPending: () => pending.slice(),
     };
     scroller = createKernel<number>({
       viewport,
@@ -3660,7 +3378,6 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
     });
     await scroller.openWindow({ kind: 'latest' }); // noNewer=true
     const optA: CbItem<number> = { id: -1, clientMessageId: 'cid-a', data: -1 };
-    pending.push(optA);
     scroller.insertAfter(499, optA, { optimistic: true });
     animEnd('-1');
     await flush();
@@ -4278,7 +3995,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
     expect(content.querySelector('.cb-edge-failed')).toBeNull();
   });
 
-  it('cancels the persistent newer demand after leaving the lower load-more region', async () => {
+  it('retains the live demand while its latest message stays mounted, regardless of viewport proximity', async () => {
     const { hooks } = controllableHooks();
     let cancelled = 0;
     const source = fakeSource(100);
@@ -4301,6 +4018,8 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
     viewport.scrollTop = 3000;
     viewport.dispatchEvent(new Event('scroll'));
     await flush();
+    expect(cancelled).toBe(0);
+    scroller.unbind();
     expect(cancelled).toBe(1);
   });
 
@@ -4347,10 +4066,9 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
     await flush();
     expect(resolvers.length).toBe(1);
 
-    viewport.scrollTop = 3000;
-    viewport.dispatchEvent(new Event('scroll')); // cancels demand #1
-    viewport.scrollTop = content.scrollHeight - viewport.clientHeight;
-    viewport.dispatchEvent(new Event('scroll')); // starts demand #2 immediately
+    scroller.unbind(); // cancels demand #1 with the old mounted window
+    scroller.bind(source);
+    await scroller.openWindow({ kind: 'latest' }); // demand #2 belongs to the replacement binding
     await flush();
     expect(resolvers.length).toBe(2);
     const replacement = edgeState(scroller, 'newer').active;
@@ -4983,7 +4701,6 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
       requestOlder: () => testDemand(async () => [], true),
       requestNewer: () => testDemand(async () => []),
       pushLive: () => {},
-      getPending: () => [],
       destroy: () => {},
     };
     const src = pushedSource(base);
@@ -5035,7 +4752,6 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
           return [];
         }),
       pushLive: () => {},
-      getPending: () => [],
       destroy: () => {},
     };
     const { hooks } = controllableHooks();
@@ -5097,7 +4813,6 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
       requestOlder: () => testDemand(async () => [], true),
       requestNewer: () => testDemand(async () => []),
       pushLive: () => {},
-      getPending: () => [],
       destroy: () => {},
     };
     const s = createKernel<D>({ viewport, content, hooks, source: src });
@@ -5162,7 +4877,6 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
       requestOlder: () => testDemand(async () => [], true),
       requestNewer: () => testDemand(async () => []),
       pushLive: () => {},
-      getPending: () => [],
       destroy: () => {},
     };
     const s = createKernel<D>({ viewport, content, hooks, source: src });

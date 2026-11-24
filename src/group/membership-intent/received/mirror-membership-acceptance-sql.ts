@@ -116,9 +116,9 @@ export function mirrorMembershipActivationSql(
         ) latest WHERE operation = 'MEMBER_UPSERT'), 'MEMBER') AS role
     ), member_state AS (
       INSERT INTO "AccountThreadState" ("accountId", "threadId", role, "lastReadSeq",
-        "groupMetaFeedEndId", "threadProfileRev", "profileSourceId", "updatedAt")
+        "threadProfileRev", "profileSourceId", "updatedAt")
       SELECT a.id, ${input.threadId}, r.role::"GroupRole",
-        CASE WHEN a.availability = 'AVAILABLE' THEN j."curSeq" ELSE 0 END, 0,
+        CASE WHEN a.availability = 'AVAILABLE' THEN j."curSeq" ELSE 0 END,
         v."profileRev", NULL, CURRENT_TIMESTAMP
       FROM "Account" a
       CROSS JOIN roster_role r
@@ -127,11 +127,13 @@ export function mirrorMembershipActivationSql(
       CROSS JOIN pair_change
       WHERE a.id = ${input.localMemberId}
       ON CONFLICT ("accountId", "threadId") DO UPDATE SET
-        role = EXCLUDED.role, "messageVisibleThroughSeq" = NULL, "updatedAt" = CURRENT_TIMESTAMP,
+        role = EXCLUDED.role,
+        "messageVisibleThroughSeq" = NULL,
+        "tombstoneVisibleThroughSeq" = NULL,
+        "groupMetaVisibleThroughId" = NULL,
+        "updatedAt" = CURRENT_TIMESTAMP,
         "threadProfileRev" = EXCLUDED."threadProfileRev",
         "profileSourceId" = EXCLUDED."profileSourceId",
-        "groupMetaFeedEndId" = GREATEST(
-          COALESCE("AccountThreadState"."groupMetaFeedEndId", 0), EXCLUDED."groupMetaFeedEndId"),
         "lastReadSeq" = CASE WHEN (SELECT availability = 'AVAILABLE' FROM "Account" WHERE id = ${input.localMemberId})
           THEN GREATEST("AccountThreadState"."lastReadSeq", EXCLUDED."lastReadSeq")
           ELSE "AccountThreadState"."lastReadSeq" END,

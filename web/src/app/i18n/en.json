@@ -767,16 +767,6 @@
     "mediaRailAria": "Media thumbnails",
     "openMediaAria": "Open media {{index}}"
   },
-  "fileDetail": {
-    "title": "File",
-    "closeAria": "Close",
-    "download": "Download",
-    "size": "Size",
-    "type": "Type",
-    "sender": "Sender",
-    "time": "Time",
-    "notAvailable": "Not available yet"
-  },
   "threadList": {
     "draftPreview": "Draft: {{text}}",
     "couldNotLoad": "Couldn't load chats",

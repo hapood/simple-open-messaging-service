@@ -29,7 +29,6 @@ mod client_compat;
 mod credential_storage;
 mod diagnostics;
 mod send_outbox;
-mod send_attachment_files;
 mod send_outbox_commands;
 mod download_history;
 mod download_history_commands;
@@ -39,8 +38,10 @@ mod login_connection;
 mod login_request;
 mod login_session_store;
 mod media_cache;
+mod http_stream;
 mod native_db;
 mod native_logout;
+mod logout_platform;
 mod native_video;
 mod navigation;
 mod origin_commands;
@@ -77,7 +78,7 @@ use std::time::Duration;
 use log::{error, warn};
 use tauri::http::{Response, StatusCode};
 use tauri::{Emitter, Manager, UriSchemeResponder};
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+#[cfg(any(target_os = "linux", target_os = "android", target_os = "ios"))]
 use tauri::{WebviewUrl, WebviewWindowBuilder};
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio::sync::Notify;
@@ -176,19 +177,17 @@ pub(crate) struct ServerSessionState {
     /// keepalive across requests) instead of `http_client_for` building a fresh client (fresh pool, no
     /// reuse) on every single request. `(origin, client)`; the origin tag detects a swap. The SSE
     /// supervisor and bootstrap probes still build per-call clients (infrequent).
-    api_http: Arc<Mutex<(String, reqwest::Client)>>,
+    api_http: Arc<Mutex<std::collections::HashMap<String, reqwest::Client>>>,
     /// Shell streaming uploads keyed by clientMessageId. A cancel action resolves the token, which drops
     /// the in-flight reqwest future and closes the request body stream/file descriptor.
     upload_cancels: Arc<Mutex<upload_cancellation::UploadCancellations>>,
     /// In-flight HTTP requests dispatched from the WebView keyed by reqId.
     pub(crate) http_cancels: Arc<Mutex<std::collections::HashMap<String, CancellationToken>>>,
-    #[cfg(not(desktop))]
+    #[cfg(any(target_os = "android", target_os = "ios"))]
     native_voice_pending: Arc<Mutex<std::collections::HashMap<String, upload::NativeVoicePending>>>,
     /// App-scoped media downloads keyed by the renderer-generated task id. The shared image-download
     /// adapter cancels through this map; dropping the reqwest stream leaves only a disposable .part file.
     media_download_cancels: Arc<Mutex<std::collections::HashMap<String, CancellationToken>>>,
-    #[cfg(not(desktop))]
-    logout_tasks: native_logout::LogoutTasks,
     logout: Arc<native_logout::LogoutCoordinator>,
 }
 
@@ -221,34 +220,37 @@ impl ServerSessionState {
 
             config_path: Arc::new(Mutex::new(PathBuf::new())),
             token_notify: Arc::new(Notify::new()),
-            // Seed the cached API client with the boot origin; rebuilt on the first request after a swap.
-            api_http: Arc::new(Mutex::new((
+            // Seed the cached API client map with the boot origin; additional configured routes are retained.
+            api_http: Arc::new(Mutex::new(std::collections::HashMap::from([(
                 initial_origin.clone(),
                 http_client_for(&initial_origin),
-            ))),
+            )]))),
             upload_cancels: Arc::new(Mutex::new(upload_cancellation::UploadCancellations::default())),
             http_cancels: Arc::new(Mutex::new(std::collections::HashMap::new())),
-            #[cfg(not(desktop))]
+            #[cfg(any(target_os = "android", target_os = "ios"))]
             native_voice_pending: Arc::new(Mutex::new(std::collections::HashMap::new())),
             media_download_cancels: Arc::new(Mutex::new(std::collections::HashMap::new())),
-            #[cfg(not(desktop))]
-            logout_tasks: native_logout::LogoutTasks::default(),
             logout: Arc::new(native_logout::LogoutCoordinator::default()),
         }
     }
 
-    /// Return a reqwest client for API calls to `origin`, rebuilding + caching only when the origin
-    /// changes. `reqwest::Client` is `Clone`-cheap (Arc internals), so the cached pool is shared across
-    /// concurrent requests and kept warm between them (keepalive). On an origin swap
-    /// the next request sees a mismatched tag and rebuilds — in-flight requests keep working (they hold
-    /// their own clone of the old client).
+    /// Return a reusable reqwest client for `origin`, retaining clients across configured routes
+    /// (active, primary, secondary) so failover/probing never churns pools.
     fn api_client(&self, origin: &str) -> reqwest::Client {
+        let active = self.api_origin.lock().ok().map(|g| g.clone());
+        let primary = self.api_origin_primary.lock().ok().map(|g| g.clone());
+        let secondary = self.api_origin_secondary.lock().ok().and_then(|g| g.clone());
         let mut g = self.api_http.lock().expect("api_http lock");
-        if g.0 == origin {
-            return g.1.clone();
+        if let Some(client) = g.get(origin) {
+            return client.clone();
         }
+        g.retain(|cached, _| {
+            active.as_deref() == Some(cached.as_str())
+                || primary.as_deref() == Some(cached.as_str())
+                || secondary.as_deref() == Some(cached.as_str())
+        });
         let client = http_client_for(origin);
-        *g = (origin.to_string(), client.clone());
+        g.insert(origin.to_string(), client.clone());
         client
     }
 }
@@ -330,7 +332,7 @@ pub fn run() {
     let proxy_state = android_runtime::proxy_state()
         .expect("Application must initialize the Rust runtime before Tauri")
         .clone();
-    #[cfg(not(target_os = "android"))]
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows", target_os = "ios"))]
     let proxy_state = ServerSessionState::new();
     let proxy_for_media = proxy_state.clone();
 
@@ -432,6 +434,7 @@ pub fn run() {
             #[cfg(desktop)]
             {
                 tauri::generate_handler![
+                    native_db::messages::native_db_set_message_media_status,
                     send_outbox_commands::native_send_enqueue,
                     send_outbox_commands::native_send_list,
                     send_outbox_commands::native_send_remove,
@@ -495,6 +498,8 @@ pub fn run() {
                     diagnostics::log_js,
                     diagnostics::read_native_log,
                     proxy::http_request,
+                    http_stream::http_stream_request,
+                    http_stream::http_stream_ack,
                     proxy::cancel_http_request,
                     media_cache::cache_media,
                     media_cache::has_cached_media,
@@ -524,7 +529,7 @@ pub fn run() {
                     native_db::attention::native_thread_feed_changes,
                     native_db::attention::native_db_advance_thread_read,
                     native_db::attention::native_db_project_thread_attention,
-                    native_db::attention::native_db_drain_thread_misc,
+                    native_db::attention::native_db_set_open_thread,
                     native_db::preferences::native_db_get_preference,
                     native_db::preferences::native_db_put_preference,
                     native_db::preferences::native_db_delete_preference,
@@ -538,6 +543,7 @@ pub fn run() {
                     native_db::messages::native_db_query_messages,
                     native_db::messages::native_db_count_unread_message_slots,
                     native_db::history_ipc::native_message_history_start,
+                    native_db::history_ipc::native_message_history_interval_start,
                     native_db::history_ipc::native_message_history_cancel,
                     native_db::messages::native_db_put_cached_messages,
                     native_db::messages::native_db_put_message_head,
@@ -552,9 +558,10 @@ pub fn run() {
                     navigation::open_external_url,
                 ]
             }
-            #[cfg(not(desktop))]
+            #[cfg(any(target_os = "android", target_os = "ios"))]
             {
                 tauri::generate_handler![
+                    native_db::messages::native_db_set_message_media_status,
                     send_outbox_commands::native_send_enqueue,
                     send_outbox_commands::native_send_list,
                     send_outbox_commands::native_send_remove,
@@ -575,7 +582,7 @@ pub fn run() {
                     origin_commands::login_session_for_token,
                     native_db::native_db_begin_login,
                     origin_commands::begin_logout,
-                    origin_commands::wait_for_logout,
+                    origin_commands::finish_logout,
                     origin_commands::logout_status,
                     origin_commands::try_logout,
                     server_setup::begin_server_setup,
@@ -594,6 +601,8 @@ pub fn run() {
                     diagnostics::log_js,
                     diagnostics::read_native_log,
                     proxy::http_request,
+                    http_stream::http_stream_request,
+                    http_stream::http_stream_ack,
                     proxy::cancel_http_request,
                     media_cache::cache_media,
                     media_cache::has_cached_media,
@@ -627,7 +636,7 @@ pub fn run() {
                     native_db::attention::native_thread_feed_changes,
                     native_db::attention::native_db_advance_thread_read,
                     native_db::attention::native_db_project_thread_attention,
-                    native_db::attention::native_db_drain_thread_misc,
+                    native_db::attention::native_db_set_open_thread,
                     native_db::preferences::native_db_get_preference,
                     native_db::preferences::native_db_put_preference,
                     native_db::preferences::native_db_delete_preference,
@@ -641,6 +650,7 @@ pub fn run() {
                     native_db::messages::native_db_query_messages,
                     native_db::messages::native_db_count_unread_message_slots,
                     native_db::history_ipc::native_message_history_start,
+                    native_db::history_ipc::native_message_history_interval_start,
                     native_db::history_ipc::native_message_history_cancel,
                     native_db::messages::native_db_put_cached_messages,
                     native_db::messages::native_db_put_message_head,
@@ -717,7 +727,7 @@ pub fn run() {
                     }
                 });
             }
-            #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+            #[cfg(any(target_os = "linux", target_os = "android", target_os = "ios"))]
             {
                 initialize_client_storage(app.handle(), &proxy_state)
                     .map_err(std::io::Error::other)?;
@@ -731,7 +741,7 @@ pub fn run() {
             }
 
             // Native launch hosts start this after their asynchronous initializer.
-            #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+            #[cfg(any(target_os = "linux", target_os = "android", target_os = "ios"))]
             {
                 let retry_app = app.handle().clone();
                 let retry_state = proxy_state.clone();
@@ -762,22 +772,14 @@ fn initialize_client_storage(
     if let Err(error) = native_db::initialize_login_cache() {
         warn!("login cache initialization requires repair: {error}");
     }
-    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    // Android restores during Application startup, before the Tauri host exists.
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
     if let Some(owner) = native_db::current_login()? {
-        #[cfg(target_os = "macos")]
-        let cards = native_db::desktop_notifications::macos_platform::restore_cards()?;
-        #[cfg(target_os = "windows")]
-        let cards = native_db::desktop_notifications::restore_windows_cards(app, owner.clone())?;
-        let candidates = {
-            let mut delivery = owner.notification_delivery.lock().map_err(|_| "notification state poisoned")?;
-            delivery.import_cards(cards).map_err(str::to_owned)?;
-            delivery.reconstruction_candidates()
-        };
-        *owner.notification_reconstruction.try_lock().map_err(|_| "notification restoration already running")? = Some(candidates);
+        native_db::notifications::restoration::restore(&owner, Some(app))?;
     }
     fs::create_dir_all(&data_dir).map_err(|error| error.to_string())?;
     // Android resources were restored by Application; do not overwrite live background state.
-    #[cfg(not(target_os = "android"))]
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows", target_os = "ios"))]
     {
         *proxy_state.config_path.lock().expect("config_path lock") = data_dir.join(CONFIG_FILENAME);
         server_setup::restore(proxy_state)?;

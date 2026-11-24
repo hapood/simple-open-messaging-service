@@ -7,7 +7,7 @@ import {
   ChangeDetectionStrategy,
 } from '@angular/core';
 import { TranslocoPipe } from '@jsverse/transloco';
-import type { ChatMsgData } from '../chat-item';
+import type { LinkMessageItem } from '../chat-item';
 import { DateRowComponent } from '../date-row/date-row.component';
 import { QuoteBlockComponent } from '../quote-block/quote-block.component';
 import type { HistoryAnchor } from '../../../services/history-anchor';
@@ -57,7 +57,7 @@ interface LinkCard {
 export class LinkRowComponent {
   private readonly externalLinks = inject(ExternalLinkService);
   readonly senderView = input<AvatarView>();
-  readonly data = input.required<ChatMsgData>();
+  readonly data = input.required<LinkMessageItem>();
   readonly quoteJump = output<HistoryAnchor>();
   readonly isShowHead = input(false);
   readonly isGroupStart = input(false);
@@ -73,17 +73,6 @@ export class LinkRowComponent {
   readonly showAvatar = this.sender.showAvatar;
   readonly showName = this.sender.showName;
   readonly pos = computed(() => (this.isShowHead() ? 'head' : 'body'));
-  readonly statusTick = computed(
-    () => this.data().isSelf && !!this.data().status,
-  );
-  readonly isSending = computed(
-    () => this.data().isSelf && this.data().status === 'sending',
-  );
-  readonly isFailed = computed(
-    () => this.data().isSelf && this.data().status === 'failed',
-  );
-  readonly retry = output<number>();
-  readonly cancel = output<number>();
 
   /** The parsed card payload, derived from `data().text` so an in-place update re-parses automatically:
    *  the optimistic bare `{ url }` card is swapped for the server-built rich card (title/image/...) via

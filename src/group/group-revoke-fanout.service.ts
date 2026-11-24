@@ -120,12 +120,15 @@ export class GroupRevokeFanoutService {
         const boundary = await tx.execute<{
           seq: number;
           tombstoneEndSeq: number;
+          clientMetaEndId: number;
           accountId: number;
         }>(sql`
           SELECT message.seq, thread."tombstoneEndSeq",
+            COALESCE(meta."clientMetaEndId", 0) AS "clientMetaEndId",
             local.id AS "accountId"
           FROM "MessageThread" thread
           JOIN "Message" message ON message."threadId" = thread.id
+          LEFT JOIN "GroupMeta" meta ON meta."threadId" = thread.id
           JOIN "Account" local ON local.account = ${member.account}
             AND local."namespaceId" = 0
           WHERE thread.id = ${threadId}
@@ -141,10 +144,16 @@ export class GroupRevokeFanoutService {
         await tx.execute(sql`
           UPDATE "AccountThreadState" state
           SET "messageVisibleThroughSeq" = ${final.seq},
+            "tombstoneVisibleThroughSeq" = ${final.tombstoneEndSeq},
+            "groupMetaVisibleThroughId" = ${final.clientMetaEndId},
             "updatedAt" = CURRENT_TIMESTAMP
           WHERE state."threadId" = ${threadId}
             AND state."accountId" = ${final.accountId}
-            AND state."messageVisibleThroughSeq" IS DISTINCT FROM ${final.seq}
+            AND (
+              state."messageVisibleThroughSeq" IS DISTINCT FROM ${final.seq}
+              OR state."tombstoneVisibleThroughSeq" IS DISTINCT FROM ${final.tombstoneEndSeq}
+              OR state."groupMetaVisibleThroughId" IS DISTINCT FROM ${final.clientMetaEndId}
+            )
         `);
         await enqueueDepartureFanoutsInTx(
           tx,
@@ -152,7 +161,6 @@ export class GroupRevokeFanoutService {
           {
             threadId,
             messageEndSeq: final.seq,
-            tombstoneEndSeq: final.tombstoneEndSeq,
           },
           'GROUP',
           { account: member.account, namespaceId: 0 },
@@ -173,7 +181,6 @@ export class GroupRevokeFanoutService {
           threadId,
           ...(denial
             ? {
-                peerDomain: denial.peerDomain,
                 namespaceId: denial.namespaceId,
                 expectedAuthorizationEpoch: denial.expectedAuthorizationEpoch,
                 direction: group.namespaceId === 0 ? 'GROUP' : 'MEMBER',

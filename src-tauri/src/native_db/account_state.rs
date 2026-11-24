@@ -58,6 +58,7 @@ pub(crate) struct AccountState {
     thread_feed_cursor: Option<i64>,
     state_feed_id: Option<i64>,
     state_feed_full_through: Option<i64>,
+    state_feed_target: i64,
     profile_namespace_change_end_id: Option<i64>,
     #[serde(serialize_with = "decimal")]
     intent_request_end_id: Option<i64>,
@@ -77,7 +78,7 @@ pub(super) fn read(conn: &Connection, user_id: i64) -> Result<AccountState, Stri
     conn.query_row(
         "SELECT schema_version,self_profile_json,self_identity_json,composer_drafts_json,
          thread_feed_cursor,state_feed_id,state_feed_full_through,profile_namespace_change_end_id,
-         intent_request_end_id,intent_request_read_id,intent_request_optimistic_read_id
+         intent_request_end_id,intent_request_read_id,intent_request_optimistic_read_id,state_feed_target
          FROM account_state WHERE user_id=?1",
         [user_id],
         |row| {
@@ -89,6 +90,7 @@ pub(super) fn read(conn: &Connection, user_id: i64) -> Result<AccountState, Stri
                 thread_feed_cursor: row.get(4)?,
                 state_feed_id: row.get(5)?,
                 state_feed_full_through: row.get(6)?,
+                state_feed_target: row.get(11)?,
                 profile_namespace_change_end_id: row.get(7)?,
                 intent_request_end_id: row.get(8)?,
                 intent_request_read_id: row.get(9)?,

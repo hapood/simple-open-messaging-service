@@ -26,6 +26,14 @@ import {
   take,
   filter,
   Observable,
+  concatMap,
+  combineLatest,
+  startWith,
+  fromEvent,
+  takeUntil,
+  defer,
+  EMPTY,
+  map,
   type Subscriber,
   type Subscription,
 } from 'rxjs';
@@ -63,20 +71,14 @@ import type {
   CbSourceWindowRequest,
 } from '../../lib/chat-box/cb-source';
 import type {
-  AlbumMedia,
   ChatItemData,
   ChatMsgData,
-  FileInfo,
   MediaStatus,
 } from '../message-cards/chat-item';
 import {
   contextualLinkContent,
   contextualMediaUrl,
-  parseAudioContent,
-  parseFileContent,
-  parseGalleryContent,
-  parseImageContent,
-  parseVideoContent,
+  projectMessageContent,
 } from '../message-cards/media-content';
 import {
   toDisplayText,
@@ -109,10 +111,9 @@ export interface HttpItemSourceLiveOpts {
   onQuoteDeleted?: (replySeq: number, targetSeq: number) => void;
   onQuoteUpdated?: (replySeq: number, quote: ChatMsgData['quote']) => void;
   /** Presentation-only notice for the unread/new-message badge. It never invokes a kernel load or retry. */
-  onNewerAvailable?: (seq: number) => void;
+  onNewerAvailable?: (seq: number, previousLatestSeq?: number) => void;
   /** A mediaStatus change landed for this thread through the shared availability service — the
    *  kernel re-renders that one card in place via updateItemData (height-neutral). */
-  onMediaStatus?: (seq: number, status: MediaStatus) => void;
 }
 
 export class HttpItemSource implements CbSource<ChatItemData> {
@@ -145,9 +146,8 @@ export class HttpItemSource implements CbSource<ChatItemData> {
   private sseSub?: Subscription;
   private reconnectSub?: Subscription;
   private livePaused = false;
-  private mediaStatusSub?: Subscription;
-  private readonly onMediaStatus: (seq: number, status: MediaStatus) => void;
-  private readonly onNewerAvailable: (seq: number) => void;
+  private readonly onNewerAvailable: (seq: number, previousLatestSeq?: number) => void;
+  private previousHeadSeq: number;
   private readonly seqsByCreator = new Map<string, Set<number>>();
   private readonly profilesBySeq = new Map<
     number,
@@ -168,6 +168,7 @@ export class HttpItemSource implements CbSource<ChatItemData> {
   private readonly newerWaiters = new Set<{
     cursorId: number;
     count: number;
+    scope: CancellationScope;
     subscriber: Subscriber<CbDemandResult<ChatItemData>>;
   }>();
   private pumpingNewer = false;
@@ -193,8 +194,9 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     private readonly outbox: ThreadSendOutbox,
     live: HttpItemSourceLiveOpts,
     private readonly messages: MsgService,
-    private readonly profileRepo?: ProfileRepository,
+    private readonly profileRepo: ProfileRepository,
   ) {
+    this.previousHeadSeq = conv.messageEndSeq;
     this.onQuoteUpdated = live.onQuoteUpdated ?? (() => {});
     this.quoteDbSub = repo.slotsChanged$
       .pipe(filter((threadId) => threadId === conv.threadId))
@@ -214,18 +216,12 @@ export class HttpItemSource implements CbSource<ChatItemData> {
           }
         }
       });
-    this.onMediaStatus = live.onMediaStatus ?? (() => {});
     this.onNewerAvailable = live.onNewerAvailable ?? (() => {});
     // MessageRepository turns committed content heads into per-thread live signals.
     // The kernel's subsequent getNewer is the single message-body path (IDB cache hit or backend gap-fill).
     // Filter to THIS thread. Multiple mounted sources share the repository's thread state while keeping
     // their viewport demand/cancellation lifecycle independent.
     this.resumeLiveUpdates();
-    // Shared mediaStatus changes → re-render that one card
-    // in place via updateItemData. Height-neutral (the overlay/meta slot never change the cell height).
-    this.mediaStatusSub = repo.mediaStatusLive$
-      .pipe(filter((s) => s.threadId === this.conv.threadId))
-      .subscribe((s) => this.onMediaStatus(s.seq, s.status));
   }
 
   /** Stop this chatbox's live mounts while the app is hidden. Account-level thread-feed
@@ -270,6 +266,8 @@ export class HttpItemSource implements CbSource<ChatItemData> {
   }
 
   private noteNewerAvailable(seq: number): void {
+    const previousLatestSeq = this.previousHeadSeq;
+    this.previousHeadSeq = Math.max(previousLatestSeq, seq);
     if (
       this.initializingDb ||
       this.livePaused ||
@@ -279,7 +277,7 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     // Retaining a ceiling can synchronously emit historyHead$. Repeated entry and
     // resume must wake demand, but must not count the same head as another arrival.
     this.notifiedNewestSeq = seq;
-    this.onNewerAvailable(seq);
+    this.onNewerAvailable(seq, previousLatestSeq);
   }
 
   /** Keep a mounted reply's quote synchronized with durable updates. */
@@ -475,7 +473,34 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     }
     this.entrySeed = undefined;
     if (result.failed) throw new MessagePageLoadError();
-    const items = await this.wait(this.historyItemsToCb(result.items));
+    let items = await this.wait(this.historyItemsToCb(result.items));
+    if (!items.some((item) => !item.displayInterval)) {
+      const pending = items.filter((item) => item.data.serverGap?.state === 'SERVER_PENDING');
+      if (pending.length) {
+        // Cold entry is a spinner, not a whole-thread gap. Subscribe before waiting
+        // so the first committed reverse page can establish a real local window.
+        items = await firstValueFromAbortable(
+          combineLatest(
+            items.map((gap) => this.watchInterval(gap).pipe(startWith([gap]))),
+          ).pipe(
+            map((pages) => pages.flat()),
+            map((page) => {
+              if (
+                page.length &&
+                page.every((item) => item.data.serverGap?.state === 'SERVER_UNAVAILABLE')
+              )
+                throw new MessagePageLoadError();
+              return page;
+            }),
+            filter((page) =>
+              page.length === 0 || page.some((item) => !item.displayInterval),
+            ),
+            take(1),
+          ),
+          this.lifetime.signal,
+        );
+      } else if (items.length) throw new MessagePageLoadError();
+    }
     this.noOlder = !result.hasOlder;
     this.noNewer = !result.hasNewer;
     this.applyBoundaries(items);
@@ -527,15 +552,18 @@ export class HttpItemSource implements CbSource<ChatItemData> {
   async getNewer(
     cursorId: number,
     count: number,
+    signal: AbortSignal = this.lifetime.signal,
   ): Promise<CbItem<ChatItemData>[]> {
+    signal.throwIfAborted();
     const take = Math.min(count, MAX_PAGE);
     const result = await this.queryHistory({
       kind: 'newer',
       after: this.gapById.get(cursorId)?.right ?? cursorId,
       count: take,
-    });
+    }, signal);
     if (result.failed) throw new MessagePageLoadError();
-    const items = await this.wait(this.historyItemsToCb(result.items));
+    const items = await awaitAbortable(this.historyItemsToCb(result.items), signal);
+    signal.throwIfAborted();
     this.noNewer = !result.hasNewer;
     if (!result.hasOlder && items.length > 0) {
       this.noOlder = true;
@@ -559,48 +587,84 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     });
   }
 
-  /** A finite entry read, unlike ordinary newer demand which parks at the head. */
-  requestEntrySuffix(count: number): CbDemand<ChatItemData> {
-    return new Observable((subscriber) => {
-      const request = new CancellationScope(this.lifetime.signal);
-      const run = async () => {
-        const result = await this.queryHistory(
-          {
-            kind: 'newer',
-            after: this.entryReadSeq,
-            count: Math.min(count, MAX_PAGE),
-          },
-          request.signal,
+  /** A renderer's interval owns the transport consumer. A page only replaces its
+   * committed scan; the unscanned part keeps its original server-gap identity. */
+  watchInterval(item: CbItem<ChatItemData>): Observable<CbItem<ChatItemData>[]> {
+    const gap = item.data.serverGap;
+    if (!gap) throw new Error('interval subscription requires a server gap');
+    return defer(() => {
+      if (this.lifetime.signal.aborted) return EMPTY;
+      let projection: MessageHistorySourceItem[] = [{ kind: 'serverGap', ...gap }];
+      return this.repo
+        .watchHistoryInterval(this.conv.threadId, gap.left, gap.right)
+        .pipe(
+          takeUntil(fromEvent(this.lifetime.signal, 'abort')),
+          concatMap(async (page) => {
+            this.lifetime.signal.throwIfAborted();
+            const left = Math.max(gap.left, page.left);
+            const right = Math.min(gap.right, page.right);
+            if (left >= right) return this.historyItemsToCb(projection);
+            const items: MessageHistorySourceItem[] = [];
+            // Cold entry can consume several deleted-only scans before it mounts
+            // a real page. Preserve prior scan evidence, not the original gap.
+            for (const candidate of projection) {
+              if (candidate.kind === 'message') {
+                if (candidate.message.seq <= left) items.push(candidate);
+              } else if (candidate.left < left) {
+                items.push({ ...candidate, right: Math.min(candidate.right, left) });
+              }
+            }
+            for (const candidate of page.items) {
+              if (candidate.kind === 'message') {
+                if (candidate.message.seq > left && candidate.message.seq <= right)
+                  items.push(candidate);
+              } else {
+                const clipped = {
+                  ...candidate,
+                  left: Math.max(left, candidate.left),
+                  right: Math.min(right, candidate.right),
+                };
+                if (clipped.left < clipped.right) items.push(clipped);
+              }
+            }
+            for (const candidate of projection) {
+              if (candidate.kind === 'message') {
+                if (candidate.message.seq > right) items.push(candidate);
+              } else if (candidate.right > right) {
+                items.push({ ...candidate, left: Math.max(candidate.left, right) });
+              }
+            }
+            const canonical: MessageHistorySourceItem[] = [];
+            for (const candidate of items) {
+              const previous = canonical[canonical.length - 1];
+              if (
+                previous?.kind === 'serverGap' &&
+                candidate.kind === 'serverGap' &&
+                previous.right === candidate.left &&
+                previous.state === candidate.state
+              )
+                previous.right = candidate.right;
+              else canonical.push({ ...candidate });
+            }
+            projection = canonical;
+            const replacements = await this.historyItemsToCb(canonical);
+            // Thread boundary evidence survives replacement of an edge display row.
+            if (
+              replacements.length &&
+              (item.boundary === 'oldest' || item.boundary === 'both')
+            )
+              replacements[0].boundary = 'oldest';
+            if (
+              replacements.length &&
+              (item.boundary === 'newest' || item.boundary === 'both')
+            ) {
+              const last = replacements[replacements.length - 1];
+              last.boundary = last.boundary === 'oldest' ? 'both' : 'newest';
+            }
+            return replacements;
+          }),
+          takeUntil(fromEvent(this.lifetime.signal, 'abort')),
         );
-        if (result.failed) throw new MessagePageLoadError();
-        request.signal.throwIfAborted();
-        const items = await awaitAbortable(
-          this.historyItemsToCb(result.items),
-          request.signal,
-        );
-        request.signal.throwIfAborted();
-        // This page does not describe the prefix still mounted in the window.
-        // Keep source-wide older state intact; attach only this page's evidence.
-        if (items.length > 0) {
-          if (!result.hasOlder) items[0] = { ...items[0], boundary: 'oldest' };
-          if (!result.hasNewer) {
-            const last = items.length - 1;
-            items[last] = {
-              ...items[last],
-              boundary: items[last].boundary === 'oldest' ? 'both' : 'newest',
-            };
-          }
-        }
-        await this.confirmSendingTasks(items);
-        subscriber.next({ kind: 'items', items });
-        subscriber.complete();
-      };
-      void run().catch((error: unknown) => {
-        if (subscriber.closed) return;
-        subscriber.next({ kind: 'error', error });
-        subscriber.complete();
-      });
-      return () => request.cancel();
     });
   }
 
@@ -614,11 +678,13 @@ export class HttpItemSource implements CbSource<ChatItemData> {
         subscriber.complete();
         return;
       }
-      const waiter = { cursorId, count, subscriber };
+      const scope = new CancellationScope(this.lifetime.signal);
+      const waiter = { cursorId, count, subscriber, scope };
       this.newerWaiters.add(waiter);
       this.requestNewerPump();
       return () => {
         this.newerWaiters.delete(waiter);
+        scope.cancel();
       };
     });
   }
@@ -641,7 +707,7 @@ export class HttpItemSource implements CbSource<ChatItemData> {
         if (this.livePaused) break; // finish the current request, but start no new one
         if (!this.newerWaiters.has(waiter)) continue;
         try {
-          const items = await this.getNewer(waiter.cursorId, waiter.count);
+          const items = await this.getNewer(waiter.cursorId, waiter.count, waiter.scope.signal);
           if (!this.newerWaiters.has(waiter) || items.length === 0) continue;
           this.newerWaiters.delete(waiter);
           waiter.subscriber.next({ kind: 'items', items });
@@ -685,8 +751,6 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     this.deletedSub = undefined;
     this.sseSub?.unsubscribe();
     this.sseSub = undefined;
-    this.mediaStatusSub?.unsubscribe();
-    this.mediaStatusSub = undefined;
     this.reconnectSub?.unsubscribe();
     this.reconnectSub = undefined;
     for (const waiter of this.newerWaiters) waiter.subscriber.complete();
@@ -767,8 +831,6 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     const out: CbItem<ChatItemData>[] = [];
     for (const m of msgs) {
       const id = m.seq;
-      const resolveMediaUrl = (item: Record<string, unknown>) =>
-        contextualMediaUrl(item, m.threadId, id);
       if (id > this.loadedSeq) this.loadedSeq = id;
       const creatorKey = this.creatorKey(m.creator);
       if (creatorKey !== null) {
@@ -779,44 +841,13 @@ export class HttpItemSource implements CbSource<ChatItemData> {
         }
         creatorSeqs.add(id);
       }
-      // Each IMAGE/VIDEO/AUDIO message → a single-element media array (carrying its own msgId); consecutive
-      // same-creator IMAGE/VIDEO are merged into an album by the kernel's mergeItems (AUDIO stays standalone).
-      let images: AlbumMedia[] | null = null;
-      if (m.contentType === 'IMAGE') {
-        images = [
-          {
-            ...parseImageContent(m.content, resolveMediaUrl),
-            msgId: id,
-            status: m.mediaStatus,
-          },
-        ];
-      } else if (m.contentType === 'VIDEO') {
-        const v = parseVideoContent(m.content, resolveMediaUrl);
-        if (v) images = [{ ...v, msgId: id, status: m.mediaStatus }];
-      } else if (m.contentType === 'AUDIO') {
-        const a = parseAudioContent(m.content, resolveMediaUrl);
-        if (a) images = [{ ...a, msgId: id, status: m.mediaStatus }];
-      } else if (m.contentType === 'GALLERY') {
-        images = parseGalleryContent(m.content, resolveMediaUrl).map(
-          (media) => ({
-            ...media,
-            msgId: id,
-            status: m.mediaStatus,
-          }),
-        );
-      }
-      // FILE message → the attachment metadata parsed from content JSON (url/name/size/mimeType).
-      const file: FileInfo | null =
-        m.contentType === 'FILE'
-          ? parseFileContent(m.content, resolveMediaUrl)
-          : null;
       // Surface the clientMessageId so the kernel can pair this server-confirmed real with the optimistic
       // bubble that shares it (mountNewerReals flags resortTarget by clientMessageId; reconcileOptimistic then
       // removes the optimistic duplicate). Without this the optimistic would never be reconciled away → two
       // bubbles. Backend serializeBody ships clientMessageId on the wire (no DTO whitelisting).
       const item: CbItem<ChatMsgData> = {
         id,
-        data: { ...this.toMsgData(m, images, file), quote: quotes.get(m.seq) },
+        data: { ...this.toMsgData(m), quote: quotes.get(m.seq) },
       };
       if (
         item.data.quote?.seq !== undefined &&
@@ -875,6 +906,7 @@ export class HttpItemSource implements CbSource<ChatItemData> {
       }
       out.push({
         id: gapId,
+        displayInterval: { left: item.left, right: item.right },
         data: {
           type: 'system',
           contentType: 'SYSTEM',
@@ -951,11 +983,7 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     return messageCreatorKey(creator);
   }
 
-  private toMsgData(
-    m: Message,
-    images: AlbumMedia[] | null,
-    file: FileInfo | null,
-  ): ChatMsgData {
+  private toMsgData(m: Message): ChatMsgData {
     if (m.contentType === 'SYSTEM') {
       return {
         type: 'system',
@@ -1038,11 +1066,10 @@ export class HttpItemSource implements CbSource<ChatItemData> {
       textSegments: renderedText?.segments,
       mentionState: renderedText?.mentionState,
       time: dayjs(m.createdAt).format('HH:mm'),
-      contentType: m.contentType,
-      images,
-      file,
+      ...projectMessageContent(m.contentType, m.content, {
+        msgId: m.seq, senderName: p.name, sentAt: m.createdAt,
+      }, item => contextualMediaUrl(item, m.threadId, m.seq)),
       createdAtMs: m.createdAt,
-      mediaStatus: m.mediaStatus,
     };
   }
 
@@ -1063,7 +1090,7 @@ export class HttpItemSource implements CbSource<ChatItemData> {
         // identity; the sender avatar demand keeps resolving the full
         // evidenced form in the background.
         const demand = messageAuthorProfileDemand(message);
-        const cached = await (this.profileRepo && demand
+        const cached = await (demand
           ? firstValueFromAbortable(
               this.profileRepo
                 .watch(unevidencedProfileDemand(demand))

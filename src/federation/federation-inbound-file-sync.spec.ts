@@ -64,9 +64,6 @@ function setup(failure?: Error) {
   const cleanupCompletedDownload = vi.fn().mockResolvedValue(undefined);
   const sse = {
     hasMediaFileProgressSubscriber: vi.fn().mockReturnValue(true),
-    hasMediaMessageProgressSubscriber: vi.fn().mockReturnValue(true),
-    onMediaFileDownloadProgress: vi.fn(),
-    onMediaMessageDownloadProgress: vi.fn(),
     completeMediaFileDownloadProgress: vi.fn(),
   };
   const quota = { isExhausted: vi.fn().mockResolvedValue(false) };
@@ -178,9 +175,6 @@ describe('inbound attachment jobs', () => {
       where: eq(tables.message.id, s.row.messageId),
       columns: { threadId: true, seq: true, content: true },
     });
-    expect(s.sse.onMediaFileDownloadProgress).toHaveBeenCalledWith(
-      expect.objectContaining({ threadId: 8, seq: 13, status: 'downloading' }),
-    );
     expect(s.sse.completeMediaFileDownloadProgress).toHaveBeenCalledWith(
       expect.objectContaining({
         threadId: 8,
@@ -902,91 +896,19 @@ describe('inbound attachment jobs', () => {
     expect(s.promote).toHaveBeenCalledWith('batch');
   });
 
-  it('does not emit late downloading progress after a stopped row rejects the write', async () => {
+  it('does not persist byte progress after its logical consumer is cancelled', async () => {
     const s = setup();
-    s.database.db.update.mockReturnValue({
-      set: () => ({ where: () => ({ returning: async () => [] }) }),
-    } as never);
+    const controller = new AbortController();
+    controller.abort();
     const subject = s.sync as unknown as {
       writeProgress: (
         id: bigint,
         received: number,
         signal: AbortSignal,
       ) => Promise<void>;
-      publishProgress: (id: bigint, received: number) => Promise<void>;
     };
-    const publish = vi
-      .spyOn(subject, 'publishProgress')
-      .mockResolvedValue(undefined);
-    await subject.writeProgress(1n, 100, new AbortController().signal);
-    expect(publish).not.toHaveBeenCalled();
-  });
-
-  it.each(['file', 'message'] as const)(
-    'suppresses late %s progress after cancellation during target lookup',
-    async (kind) => {
-      const s = setup();
-      const controller = new AbortController();
-      const subject = s.sync as unknown as {
-        progressTarget: (id: bigint) => Promise<unknown>;
-        publishProgress: (
-          id: bigint,
-          received: number,
-          signal: AbortSignal,
-        ) => Promise<void>;
-        publishMessageProgress: (
-          id: bigint,
-          active: boolean,
-          signal: AbortSignal,
-        ) => Promise<void>;
-      };
-      vi.spyOn(subject, 'progressTarget').mockImplementationOnce(async () => {
-        controller.abort();
-        return {
-          threadId: 8,
-          seq: 13,
-          batchId: 'batch',
-          file: { digest: s.row.digest },
-          total: 4,
-        };
-      });
-      if (kind === 'file')
-        await subject.publishProgress(1n, 2, controller.signal);
-      else await subject.publishMessageProgress(1n, true, controller.signal);
-      expect(s.sse.onMediaFileDownloadProgress).not.toHaveBeenCalled();
-      expect(s.sse.onMediaMessageDownloadProgress).not.toHaveBeenCalled();
-      expect(s.database.db.select).not.toHaveBeenCalled();
-    },
-  );
-
-  it('suppresses message progress after cancellation during counts lookup', async () => {
-    const s = setup();
-    const controller = new AbortController();
-    const subject = s.sync as unknown as {
-      progressTarget: (id: bigint) => Promise<unknown>;
-      publishMessageProgress: (
-        id: bigint,
-        active: boolean,
-        signal: AbortSignal,
-      ) => Promise<void>;
-    };
-    vi.spyOn(subject, 'progressTarget').mockResolvedValue({
-      threadId: 8,
-      seq: 13,
-      batchId: 'batch',
-      file: { digest: s.row.digest },
-      total: 4,
-    });
-    s.database.db.select.mockImplementationOnce(() => ({
-      from: () => ({
-        where: async () => {
-          controller.abort();
-          return [{ totalFiles: 1, completedFiles: 0 }];
-        },
-      }),
-    }));
-    await subject.publishMessageProgress(1n, true, controller.signal);
-    expect(s.sse.onMediaMessageDownloadProgress).not.toHaveBeenCalled();
+    await subject.writeProgress(1n, 100, controller.signal);
+    expect(s.database.db.update).not.toHaveBeenCalled();
   });
 
   it('ignores a shared physical writer callback after its logical consumer is stopped and retried', async () => {

@@ -15,10 +15,15 @@ import { and, asc, eq, inArray, sql } from 'drizzle-orm';
 import { DatabaseService } from '../database/database.service.js';
 import {
   accountThreadState,
+  groupMeta,
   identityNamespace,
   messageThread,
   account as user,
 } from '../database/schema.js';
+import {
+  enqueueThreadMetaFanoutInTx,
+  enqueueThreadTombFanoutInTx,
+} from '../message/thread-fanout-task.js';
 import { MessageThreadType } from '../database/enums.js';
 import {
   isThreadMutuallyAuthorized,
@@ -151,11 +156,32 @@ export class AccountThreadStateService {
           threadLock,
         );
         // A blocked member missed every fan-out; resuming publishes the
-        // current Group Meta coordinate with the reopened read windows.
-        await ThreadFeedHeadWriter.reconcileGroupMetaCoordinateInTx(tx, {
+        // current group profile and wakes tomb/meta heads with the reopened read windows.
+        await ThreadFeedHeadWriter.reconcileGroupProfileInTx(tx, {
           threadId,
           userIds: [userId],
         });
+        const [heads] = await tx
+          .select({
+            tombstoneEndSeq: messageThread.tombstoneEndSeq,
+            clientMetaEndId: groupMeta.clientMetaEndId,
+          })
+          .from(messageThread)
+          .leftJoin(groupMeta, eq(groupMeta.threadId, messageThread.id))
+          .where(eq(messageThread.id, threadId))
+          .limit(1);
+        if (heads && heads.tombstoneEndSeq > 0) {
+          await enqueueThreadTombFanoutInTx(tx, threadLock, {
+            threadId,
+            tombstoneEndSeq: heads.tombstoneEndSeq,
+          });
+        }
+        if (heads?.clientMetaEndId && heads.clientMetaEndId > 0) {
+          await enqueueThreadMetaFanoutInTx(tx, threadLock, {
+            threadId,
+            groupMetaFeedEndId: heads.clientMetaEndId,
+          });
+        }
       }
       const head = await tx.execute<{
         feedId: number;

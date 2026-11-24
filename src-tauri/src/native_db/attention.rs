@@ -1,5 +1,4 @@
 use chrono::DateTime;
-use log::warn;
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -18,7 +17,7 @@ use crate::ServerSessionState;
 #[derive(Clone)]
 pub(super) struct FeedIntent {
     pub(super) work: DatabaseWork,
-    request: LoginRequest,
+    pub(super) request: LoginRequest,
     pub(super) user_id: i64,
 }
 
@@ -168,119 +167,12 @@ impl FeedIntent {
 // This is not the cache lifetime lock: network waits must not block account cleanup.
 static THREAD_FEED_SYNC: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-// The thread currently open in the UI. Per-thread Group Meta + tombstone drains
-// (drain-open mode) check this between pages: switching away lets the current
-// page commit, then stops. `None` means no thread is open (stop signal).
+// The thread currently open in the UI, used only for desktop notification suppression.
 static OPEN_THREAD_ID: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
 
 pub(crate) fn open_thread_id() -> Option<i64> {
     let value = OPEN_THREAD_ID.load(std::sync::atomic::Ordering::Acquire);
     (value > 0).then_some(value)
-}
-
-/// Same-thread drains coalesce into one in-flight round plus at most one
-/// trailing round; different threads run concurrently. A trigger carries no
-/// argument: every round reads its current target from durable storage, so
-/// there is nothing to merge or order. Mirrors the web worker's per-thread
-/// `TrailingSingleFlight`.
-struct TrailingFlight {
-    state: std::sync::Mutex<TrailingFlightState>,
-    completed: tokio::sync::Notify,
-}
-
-struct TrailingFlightState {
-    running: bool,
-    trailing: bool,
-}
-
-type TrailingFlightKey = (
-    crate::login_session_store::LoginSessionId,
-    i64, // user
-    i64, // thread
-);
-
-/// The two coalesced drains of one thread (Group Meta and tombstones) run
-/// concurrently with each other, so each key owns two independent flights.
-struct ThreadDrainFlights {
-    group_meta: std::sync::Arc<TrailingFlight>,
-    tombstone: std::sync::Arc<TrailingFlight>,
-}
-
-impl TrailingFlight {
-    fn new() -> Self {
-        Self {
-            state: std::sync::Mutex::new(TrailingFlightState {
-                running: false,
-                trailing: false,
-            }),
-            completed: tokio::sync::Notify::new(),
-        }
-    }
-
-    /// Concurrent triggers join the running sequence and schedule exactly one
-    /// trailing round; the returned future settles once the sequence covering
-    /// this trigger has completed. Rounds never fail here: drain bodies report
-    /// errors themselves and rely on the next wake for retries, matching the
-    /// web worker's swallow-and-warn policy.
-    async fn trigger(
-        &self,
-        run: impl Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>,
-    ) {
-        let settled = {
-            let mut state = self.state.lock().expect("drain flight state poisoned");
-            if state.running {
-                state.trailing = true;
-                Some(self.completed.notified())
-            } else {
-                state.running = true;
-                None
-            }
-        };
-        if let Some(settled) = settled {
-            settled.await;
-            return;
-        }
-        loop {
-            run().await;
-            let more = {
-                let mut state = self.state.lock().expect("drain flight state poisoned");
-                if state.trailing {
-                    state.trailing = false;
-                    true
-                } else {
-                    state.running = false;
-                    false
-                }
-            };
-            if !more {
-                self.completed.notify_waiters();
-                return;
-            }
-        }
-    }
-}
-
-/// Weak registry entries do not retain finished work, ended logins, or closed
-/// threads; live flights are upgraded in place.
-fn drain_flights(key: TrailingFlightKey) -> std::sync::Arc<ThreadDrainFlights> {
-    static FLIGHTS: std::sync::LazyLock<
-        std::sync::Mutex<
-            std::collections::HashMap<TrailingFlightKey, std::sync::Weak<ThreadDrainFlights>>,
-        >,
-    > = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
-    let mut flights = FLIGHTS.lock().expect("drain flight registry poisoned");
-    flights.retain(|_, flight| flight.strong_count() > 0);
-    flights
-        .get(&key)
-        .and_then(std::sync::Weak::upgrade)
-        .unwrap_or_else(|| {
-            let flight = std::sync::Arc::new(ThreadDrainFlights {
-                group_meta: std::sync::Arc::new(TrailingFlight::new()),
-                tombstone: std::sync::Arc::new(TrailingFlight::new()),
-            });
-            flights.insert(key, std::sync::Arc::downgrade(&flight));
-            flight
-        })
 }
 
 /// The serialized shape emitted on the `soms-sse-event` channel for local
@@ -293,16 +185,10 @@ struct LocalEventPayload {
     data: serde_json::Value,
 }
 
-/// Wake the per-thread Group Meta + tombstone drains (drain-open mode) for
-/// the open thread. Every round reads its current target from durable
-/// storage, so the wake carries no coordinates. `thread_id <= 0` is the stop
-/// signal: clears `OPEN_THREAD_ID` so in-flight drains stop after the current
-/// page commits. On completion, emits `LOCAL_GROUP_META_COMMITTED` and a
-/// `tombstone-committed`-equivalent event so the renderer refreshes.
+/// Update the currently open thread for desktop notification suppression.
 #[tauri::command]
-pub(crate) async fn native_db_drain_thread_misc(
+pub(crate) async fn native_db_set_open_thread(
     app: tauri::AppHandle,
-    proxy: tauri::State<'_, ServerSessionState>,
     user_id: i64,
     thread_id: i64,
 ) -> Result<(), String> {
@@ -310,100 +196,16 @@ pub(crate) async fn native_db_drain_thread_misc(
         return Err("invalid user id".into());
     }
     if thread_id <= 0 {
-        // Stop signal.
         OPEN_THREAD_ID.store(0, std::sync::atomic::Ordering::Release);
-        return Ok(());
+    } else {
+        OPEN_THREAD_ID.store(thread_id, std::sync::atomic::Ordering::Release);
     }
-    OPEN_THREAD_ID.store(thread_id, std::sync::atomic::Ordering::Release);
-    let intent = FeedIntent::capture(&proxy, user_id)?;
     #[cfg(desktop)]
     if let Err(error) =
-        super::desktop_notifications::desktop_notification_presentation_changed(app.clone()).await
+        super::desktop_notifications::desktop_notification_presentation_changed(app).await
     {
         log::warn!("notification presentation refresh failed: {error}");
     }
-    // Same-thread drains coalesce (one in-flight round plus one trailing
-    // round); different threads run concurrently. Rounds read their targets
-    // from storage, and both flights share the `OPEN_THREAD_ID` guard.
-    let flights = drain_flights((intent.work.owner().id().clone(), user_id, thread_id));
-    let group_meta_flight = flights.group_meta.clone();
-    let group_meta_intent = intent.clone();
-    let group_meta_events = group_meta_intent.events(Some(&app));
-    let group_meta_task = tokio::spawn(async move {
-        // The trigger is a bare wake signal: `group_meta_plan` reads the
-        // target from the threads table on every round.
-        group_meta_flight
-            .trigger(move || {
-                let intent = group_meta_intent.clone();
-                let events = group_meta_events.clone();
-                Box::pin(async move {
-                    let (changed, patches, error) = sync_group_meta_thread(intent, thread_id).await;
-                    // Deliver committed pages even when a later page or
-                    // profile reference failed; the persisted cursor
-                    // already advanced.
-                    if !changed.is_empty() {
-                        let _ = events.emit(
-                            "soms-sse-event",
-                            LocalEventPayload {
-                                event: "LOCAL_GROUP_META_COMMITTED".into(),
-                                status: 0,
-                                message: "local group meta committed".into(),
-                                data: serde_json::json!({
-                                    "userId": user_id,
-                                    "threadIds": changed,
-                                    "patches": patches,
-                                }),
-                            },
-                        );
-                    }
-                    if let Some(error) = error {
-                        warn!("group-meta per-thread drain failed; next wake retries: {error}");
-                    }
-                })
-            })
-            .await;
-    });
-    let tombstone_intent = intent.clone();
-    let tombstone_flight = flights.tombstone.clone();
-    let tombstone_events = tombstone_intent.events(Some(&app));
-    let tombstone_task = tokio::spawn(async move {
-        // The trigger is a bare wake signal: `sync_tombstone_thread` reads
-        // the target from the threads table on every round.
-        tombstone_flight
-                .trigger(move || {
-                    let mut intent = tombstone_intent.clone();
-                    let events = tombstone_events.clone();
-                    Box::pin(async move {
-                        match sync_tombstone_thread(&mut intent, thread_id).await {
-                                Ok(committed) if !committed.is_empty() => {
-                                    let _ = events.emit(
-                                        "soms-sse-event",
-                                        LocalEventPayload {
-                                            event: "LOCAL_TOMBSTONE_COMMITTED".into(),
-                                            status: 0,
-                                            message: "local tombstone committed".into(),
-                                            data: serde_json::json!({
-                                                "userId": user_id,
-                                                "threadId": thread_id,
-                                                "tombstones": committed.iter().map(|item| serde_json::json!({
-                                                    "seq": item.get("messageSeq").and_then(Value::as_i64).unwrap_or(0),
-                                                    "type": item.get("type").and_then(Value::as_str).unwrap_or(""),
-                                                })).collect::<Vec<_>>(),
-                                            }),
-                                        },
-                                    );
-                                }
-                                Ok(_) => {}
-                                Err(error) => {
-                                    warn!("tombstone per-thread drain failed; next wake retries: {error}")
-                                }
-                            }
-                        })
-                    },
-                )
-                .await;
-    });
-    let _ = tokio::join!(group_meta_task, tombstone_task);
     Ok(())
 }
 
@@ -865,207 +667,96 @@ struct GroupMetaPlan {
     recovery_through: Option<String>,
 }
 
-#[derive(Clone)]
-struct GroupMetaProfileReference {
-    is_group: bool,
-    thread_id: i64,
-    account: String,
-    namespace_id: i64,
-    rev: i64,
+pub(super) struct PendingThreadResourceWork {
+    pub(super) tomb_thread_ids: Vec<i64>,
+    pub(super) meta_thread_ids: Vec<i64>,
 }
 
-fn commit_group_meta_profile(
+pub(super) fn pending_thread_resource_work(
     conn: &Connection,
     user_id: i64,
-    reference: &GroupMetaProfileReference,
-    profile: &Value,
-) -> Result<bool, String> {
-    if profile.get("account").and_then(Value::as_str) != Some(reference.account.as_str())
-        || profile.get("profileNamespaceId").and_then(Value::as_i64)
-            != Some(if reference.is_group {
-                0
-            } else {
-                reference.namespace_id
-            })
-        || profile.get("rev").and_then(Value::as_i64) != Some(reference.rev)
-        || (reference.is_group
-            && profile.get("publisherNamespaceId").and_then(Value::as_i64)
-                != Some(reference.namespace_id))
-    {
-        return Err("resolved profile revision does not match Group Meta".into());
-    }
-    let current: bool = if reference.is_group {
-        conn.query_row(
-            "SELECT EXISTS(SELECT 1 FROM threads
-             WHERE user_id=?1 AND thread_id=?2 AND kind='GROUP'
-               AND subject_account=?3
-               AND authority_namespace_id=?4 AND thread_profile_rev=?5)",
-            params![
-                user_id,
-                reference.thread_id,
-                reference.account,
-                reference.namespace_id,
-                reference.rev
-            ],
-            |row| row.get(0),
+) -> Result<PendingThreadResourceWork, String> {
+    let mut tomb_thread_ids = Vec::new();
+    let mut meta_thread_ids = Vec::new();
+    let mut stmt = conn
+        .prepare(
+            "SELECT threads.thread_id, threads.kind, threads.deleted_hwm, targets.tombstone_end_seq,
+                    targets.group_meta_feed_end_id, meta.feed_id, meta.recovery_through
+             FROM threads JOIN thread_resource_sync targets
+               ON targets.user_id=threads.user_id AND targets.thread_id=threads.thread_id
+             LEFT JOIN group_meta meta
+               ON meta.user_id=threads.user_id AND meta.thread_id=threads.thread_id
+             WHERE threads.user_id=?1",
         )
-    } else {
-        conn.query_row(
-            "SELECT EXISTS(SELECT 1 FROM members member
-             JOIN threads thread ON thread.user_id=member.user_id AND thread.thread_id=member.thread_id
-             WHERE member.user_id=?1 AND member.thread_id=?2
-             AND member.member_account=?3 AND member.namespace_id=?4
-             AND member.profile_rev=?5 AND member.left_state=0
-             AND thread.kind='GROUP' AND thread.authority_namespace_id=?6)",
-            params![
-                user_id,
-                reference.thread_id,
-                reference.account,
-                reference.namespace_id,
-                reference.rev,
-                profile.get("publisherNamespaceId").and_then(Value::as_i64)
-                    .ok_or("resolved member profile has no publisher namespace")?
-            ],
-            |row| row.get(0),
-        )
-    }
-    .map_err(|e| format!("validate Group Meta profile reference: {e}"))?;
-    if !current {
-        return Ok(false);
-    }
-    // Preserve the group's publisher and the member namespace in that publisher's space.
-    commit_resolved_profile(conn, user_id, profile)?;
-    Ok(true)
-}
-
-async fn resolve_group_meta_profile(
-    intent: &mut FeedIntent,
-    reference: GroupMetaProfileReference,
-) -> Result<bool, String> {
-    let user_id = intent.user_id;
-    let target = serde_json::json!({
-        "profileNamespaceId": if reference.is_group { 0 } else { reference.namespace_id },
-        "account": reference.account,
-        "rev": reference.rev,
-    });
-    let demand = if reference.is_group {
-        serde_json::json!({
-            "publisherNamespaceId": reference.namespace_id,
-            "lookup": "ACCOUNT_PROFILE",
-            "target": target,
+        .map_err(|e| format!("prepare pending thread resource scan: {e}"))?;
+    let rows = stmt
+        .query_map([user_id], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, Option<String>>(4)?,
+                row.get::<_, Option<String>>(5)?,
+                row.get::<_, Option<String>>(6)?,
+            ))
         })
-    } else {
-        let thread_id = reference.thread_id;
-        let (group_account, authority_namespace_id): (String, i64) = intent
-            .db(move |conn| {
-                conn.query_row(
-                    "SELECT subject_account, authority_namespace_id FROM threads WHERE user_id=?1 AND thread_id=?2 AND kind='GROUP'",
-                    params![user_id, thread_id],
-                    |row| Ok((row.get(0)?, row.get(1)?)),
-                )
-                .map_err(|e| format!("read group account for profile demand: {e}"))
-            })
-            .await?;
-        // Member snapshots remain scoped to the group's publisher.
-        serde_json::json!({
-            "publisherNamespaceId": authority_namespace_id,
-            "lookup": "GROUP_MEMBER_PROFILE",
-            "target": target,
-            "groupAccount": group_account,
-        })
-    };
-    let data = fetch_profile(intent, &demand).await?;
-    match data.get("status").and_then(Value::as_str) {
-        Some("READY") => {
-            let profile = data
-                .get("profile")
-                .cloned()
-                .ok_or("missing resolved profile")?;
-            let wake = serde_json::json!({
-                "publisherNamespaceId": profile["publisherNamespaceId"],
-                "profileNamespaceId": profile["profileNamespaceId"],
-                "account": profile["account"], "rev": profile["rev"],
-            });
-            let committed = intent
-                .db(move |conn| commit_group_meta_profile(conn, user_id, &reference, &profile))
-                .await?;
-            if committed {
-                super::profile_subscriptions::wake(user_id, "PROFILE_AVAILABLE", &wake);
+        .map_err(|e| format!("query pending thread resources: {e}"))?;
+    for row in rows {
+        let (thread_id, kind, deleted_hwm, tombstone_end_seq, meta_end, meta_feed_id, recovery) =
+            row.map_err(|e| format!("read pending thread resource row: {e}"))?;
+        if deleted_hwm < tombstone_end_seq {
+            tomb_thread_ids.push(thread_id);
+        }
+        if kind == "GROUP" {
+            if let (Some(end_id), Some(feed_id)) = (meta_end, meta_feed_id) {
+                let end_num = end_id.parse::<u64>().unwrap_or(0);
+                let feed_num = feed_id.parse::<u64>().unwrap_or(0);
+                if recovery.is_some() || feed_num < end_num {
+                    meta_thread_ids.push(thread_id);
+                }
             }
-            return Ok(committed);
         }
-        Some("PENDING") => {
-            return Ok(false);
-        }
-        _ => return Err("invalid profile-resolution result".into()),
     }
+    Ok(PendingThreadResourceWork {
+        tomb_thread_ids,
+        meta_thread_ids,
+    })
 }
 
-fn unresolved_group_meta_profiles(
+pub(super) fn read_tomb_progress(
     conn: &Connection,
     user_id: i64,
-) -> Result<Vec<GroupMetaProfileReference>, String> {
-    let mut references = Vec::new();
-    let mut groups = conn
-        .prepare(
-            "SELECT state.thread_id, state.subject_account,
-                    state.authority_namespace_id, state.thread_profile_rev
-             FROM threads state
-             WHERE state.user_id=?1 AND state.kind='GROUP'
-               AND state.conversation_state <> 'READ_ONLY'
-               AND state.thread_profile_rev > 0
-               AND NOT EXISTS (
-                 SELECT 1 FROM profiles profile WHERE profile.user_id=state.user_id
-                   AND profile.account=state.subject_account
-                   AND profile.publisher_namespace_id=state.authority_namespace_id
-                   AND profile.profile_namespace_id=0
-                   AND profile.profile_rev=state.thread_profile_rev)",
+    thread_id: i64,
+) -> Result<Option<(i64, i64, i64)>, String> {
+    let row = conn
+        .query_row(
+            "SELECT targets.tombstone_end_seq, threads.deleted_hwm
+             FROM threads JOIN thread_resource_sync targets USING(user_id,thread_id)
+             WHERE threads.user_id=?1 AND threads.thread_id=?2",
+            params![user_id, thread_id],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
         )
-        .map_err(|e| format!("prepare unresolved group profiles: {e}"))?;
-    let rows = groups
-        .query_map([user_id], |row| {
-            Ok(GroupMetaProfileReference {
-                is_group: true,
-                thread_id: row.get(0)?,
-                account: row.get(1)?,
-                namespace_id: row.get(2)?,
-                rev: row.get(3)?,
-            })
-        })
-        .map_err(|e| format!("query unresolved group profiles: {e}"))?;
-    for row in rows {
-        references.push(row.map_err(|e| format!("read unresolved group profile: {e}"))?);
-    }
-    let mut members = conn
-        .prepare(
-            "SELECT member.thread_id, member.member_account,
-                    member.namespace_id, member.profile_rev
-             FROM members member
-             JOIN threads thread ON thread.user_id=member.user_id AND thread.thread_id=member.thread_id AND thread.kind='GROUP'
-             WHERE member.user_id=?1 AND member.left_state=0 AND member.profile_rev>0
-               AND NOT EXISTS (
-                 SELECT 1 FROM profiles profile WHERE profile.user_id=member.user_id
-                   AND profile.account=member.member_account
-                   AND profile.publisher_namespace_id=thread.authority_namespace_id
-                   AND profile.profile_namespace_id=member.namespace_id
-                   AND profile.profile_rev=member.profile_rev)",
-        )
-        .map_err(|e| format!("prepare unresolved member profiles: {e}"))?;
-    let rows = members
-        .query_map([user_id], |row| {
-            Ok(GroupMetaProfileReference {
-                is_group: false,
-                thread_id: row.get(0)?,
-                account: row.get(1)?,
-                namespace_id: row.get(2)?,
-                rev: row.get(3)?,
-            })
-        })
-        .map_err(|e| format!("query unresolved member profiles: {e}"))?;
-    for row in rows {
-        references.push(row.map_err(|e| format!("read unresolved member profile: {e}"))?);
-    }
-    Ok(references)
+        .optional()
+        .map_err(|e| format!("read tombstone progress: {e}"))?;
+    let Some((target, hwm)) = row else {
+        return Ok(None);
+    };
+    let cutoff = super::messages::read_tombstone_cutoff(conn, user_id, thread_id)?;
+    Ok(Some((target, hwm, cutoff)))
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub(super) enum MetaPageOutcome {
+    Done,
+    More,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub(super) enum TombPageOutcome {
+    Done,
+    More,
+    CutoffStalled { target: i64, cutoff: i64 },
 }
 
 fn group_meta_plan(
@@ -1075,14 +766,13 @@ fn group_meta_plan(
 ) -> Result<Option<GroupMetaPlan>, String> {
     let row = conn
         .query_row(
-            "SELECT threads.thread_id,threads.group_meta_feed_end_id,
+            "SELECT threads.thread_id,targets.group_meta_feed_end_id,
                     threads.subject_account,threads.authority_namespace_id,
                     meta.feed_id,meta.recovery_through
-             FROM threads LEFT JOIN group_meta meta
+             FROM threads JOIN thread_resource_sync targets USING(user_id,thread_id)
+             LEFT JOIN group_meta meta
                ON meta.user_id=threads.user_id AND meta.thread_id=threads.thread_id
-             WHERE threads.user_id=?1 AND threads.thread_id=?2 AND threads.kind='GROUP'
-               AND threads.conversation_state = 'ACTIVE'
-               AND threads.group_meta_feed_end_id IS NOT NULL",
+             WHERE threads.user_id=?1 AND threads.thread_id=?2 AND threads.kind='GROUP'",
             params![user_id, thread_id],
             |row| {
                 Ok((
@@ -1123,10 +813,156 @@ fn group_meta_plan(
     }))
 }
 
-/// Drain Group Meta for a single thread (drain-open mode). Only the open
-/// thread's Group Meta advances; switching away stops after the current
-/// page commits. Returns the changed thread ids (just `thread_id` when any
-/// page committed).
+pub(super) async fn sync_group_meta_page(
+    intent: &mut FeedIntent,
+    thread_id: i64,
+    events: &crate::realtime::NativeEvents,
+) -> Result<MetaPageOutcome, String> {
+    let (outcome, changed, patch) = sync_group_meta_page_inner(intent, thread_id).await?;
+    if changed {
+        let patches = patch.into_iter().collect::<Vec<_>>();
+        let _ = events.emit(
+            "soms-sse-event",
+            LocalEventPayload {
+                event: "LOCAL_GROUP_META_COMMITTED".into(),
+                status: 0,
+                message: "local group meta committed".into(),
+                data: serde_json::json!({
+                    "userId": intent.user_id,
+                    "threadIds": [thread_id],
+                    "patches": patches,
+                }),
+            },
+        );
+    }
+    Ok(outcome)
+}
+
+async fn sync_group_meta_page_inner(
+    intent: &mut FeedIntent,
+    thread_id: i64,
+) -> Result<(MetaPageOutcome, bool, Option<super::client_state::GroupMetaCommitPatch>), String> {
+    let user_id = intent.user_id;
+    let Some(plan) = intent
+        .db(move |conn| group_meta_plan(conn, user_id, thread_id))
+        .await?
+    else {
+        return Ok((MetaPageOutcome::Done, false, None));
+    };
+    let target = plan.target.parse::<u64>().map_err(|e| e.to_string())?;
+    let mut after = plan
+        .processed_through
+        .parse::<u64>()
+        .map_err(|e| e.to_string())?;
+    let recovery_through = plan.recovery_through;
+    if recovery_through.is_none() && after >= target {
+        return Ok((MetaPageOutcome::Done, false, None));
+    }
+    let through = recovery_through
+        .as_deref()
+        .unwrap_or(&plan.target)
+        .parse::<u64>()
+        .map_err(|e| e.to_string())?;
+    let mut began_recovery = false;
+    if recovery_through.is_none() && after == 0 {
+        let boundary = through.to_string();
+        intent
+            .db(move |conn| {
+                super::client_state::begin_group_meta_recovery(
+                    conn,
+                    user_id,
+                    plan.thread_id,
+                    &boundary,
+                )
+            })
+            .await?;
+        began_recovery = true;
+        after = 0;
+    }
+    intent.work.assert_current().map_err(|e| e.to_string())?;
+    let path = format!(
+        "/api/v1/user/group-meta?threadId={}&after={after}&take=100&through={through}",
+        plan.thread_id
+    );
+    let response = intent.get(path).await?;
+    if !(200..300).contains(&response.status) {
+        return Err(format!("group-meta HTTP {}", response.status));
+    }
+    let envelope: GroupMetaResponse = serde_json::from_str(&response.body)
+        .map_err(|e| format!("decode group-meta response: {e}"))?;
+    if envelope.code == 30006 {
+        if recovery_through.is_some() {
+            return Err("group-meta recovery window is unavailable".into());
+        }
+        let reset = envelope.data.ok_or("missing group-meta recovery window")?;
+        if reset["resumeAfter"].as_str() != Some("0") {
+            return Err("invalid group-meta recovery window".into());
+        }
+        let before = reset["resumeBefore"]
+            .as_str()
+            .ok_or("invalid group-meta recovery boundary")?
+            .parse::<u64>()
+            .map_err(|_| "invalid group-meta recovery boundary".to_string())?;
+        let reset_through = before
+            .checked_sub(1)
+            .ok_or("invalid group-meta recovery boundary")?;
+        let boundary = reset_through.to_string();
+        let thread_id = plan.thread_id;
+        intent
+            .db(move |conn| {
+                super::client_state::begin_group_meta_recovery(
+                    conn, user_id, thread_id, &boundary,
+                )
+            })
+            .await?;
+        return Ok((MetaPageOutcome::More, true, None));
+    }
+    if envelope.code != 0 {
+        return Err("group-meta pull failed".into());
+    }
+    let page: ClientGroupMetaPage =
+        serde_json::from_value(envelope.data.ok_or("missing group-meta page")?)
+            .map_err(|e| format!("decode group-meta page: {e}"))?;
+    let scanned = page
+        .scanned_through
+        .parse::<u64>()
+        .map_err(|_| "invalid group-meta scanned boundary".to_string())?;
+    let source_end = page
+        .group_meta_feed_end_id
+        .parse::<u64>()
+        .map_err(|_| "invalid group-meta source boundary".to_string())?;
+    if page.account != plan.account
+        || scanned < after
+        || scanned > through
+        || source_end < through
+        || (!page.has_more && scanned != through)
+        || (page.has_more && scanned == after)
+    {
+        return Err("invalid group-meta page".into());
+    }
+    let has_more = page.has_more || scanned < target;
+    let update = ClientGroupMetaApply {
+        thread_id: plan.thread_id,
+        namespace_id: plan.namespace_id,
+        page,
+    };
+    let patch = intent
+        .db(move |conn| super::client_state::apply_group_meta_page(conn, user_id, update))
+        .await?;
+    let changed = began_recovery || patch.is_some();
+    Ok((
+        if has_more {
+            MetaPageOutcome::More
+        } else {
+            MetaPageOutcome::Done
+        },
+        changed,
+        patch,
+    ))
+}
+
+/// Drain Group Meta for a single thread.
+#[cfg(test)]
 async fn sync_group_meta_thread(
     mut intent: FeedIntent,
     thread_id: i64,
@@ -1137,183 +973,25 @@ async fn sync_group_meta_thread(
 ) {
     let mut changed = Vec::new();
     let mut patches = Vec::new();
-    let result =
-        sync_group_meta_thread_unchecked(&mut intent, thread_id, &mut changed, &mut patches).await;
+    let result = async {
+        loop {
+            let (outcome, page_changed, patch) =
+                sync_group_meta_page_inner(&mut intent, thread_id).await?;
+            if page_changed {
+                changed.push(thread_id);
+            }
+            if let Some(patch) = patch {
+                patches.push(patch);
+            }
+            if outcome != MetaPageOutcome::More {
+                return Ok::<(), String>(());
+            }
+        }
+    }
+    .await;
     changed.sort_unstable();
     changed.dedup();
     (changed, patches, result.err())
-}
-
-async fn sync_group_meta_thread_unchecked(
-    intent: &mut FeedIntent,
-    thread_id: i64,
-    changed: &mut Vec<i64>,
-    patches: &mut Vec<super::client_state::GroupMetaCommitPatch>,
-) -> Result<(), String> {
-    let user_id = intent.user_id;
-    let Some(plan) = intent
-        .db(move |conn| group_meta_plan(conn, user_id, thread_id))
-        .await?
-    else {
-        return Ok(());
-    };
-    'drain: {
-        if open_thread_id() != Some(thread_id) {
-            return Ok(());
-        }
-        let target = plan.target.parse::<u64>().map_err(|e| e.to_string())?;
-        let mut after = plan
-            .processed_through
-            .parse::<u64>()
-            .map_err(|e| e.to_string())?;
-        let recovery_through = plan.recovery_through;
-        if recovery_through.is_none() && after >= target {
-            break 'drain;
-        }
-        let mut mode = if recovery_through.is_some() || after == 0 {
-            "full"
-        } else {
-            "delta"
-        };
-        let mut through = recovery_through
-            .as_deref()
-            .unwrap_or(&plan.target)
-            .parse::<u64>()
-            .map_err(|e| e.to_string())?;
-        if mode == "full" && recovery_through.is_none() {
-            let boundary = through.to_string();
-            intent
-                .db(move |conn| {
-                    super::client_state::begin_group_meta_recovery(
-                        conn,
-                        user_id,
-                        plan.thread_id,
-                        &boundary,
-                    )
-                })
-                .await?;
-            changed.push(plan.thread_id);
-            after = 0;
-        }
-        let mut reopened = false;
-        loop {
-            if open_thread_id() != Some(thread_id) {
-                return Ok(());
-            }
-            intent.work.assert_current().map_err(|e| e.to_string())?;
-            let path = format!(
-                "/api/v1/user/group-meta?threadId={}&mode={mode}&after={after}&take=100&through={through}",
-                plan.thread_id
-            );
-            let response = intent.get(path).await;
-            let response = response?;
-            if !(200..300).contains(&response.status) {
-                return Err(format!("group-meta HTTP {}", response.status));
-            }
-            let envelope: GroupMetaResponse = serde_json::from_str(&response.body)
-                .map_err(|e| format!("decode group-meta response: {e}"))?;
-            if envelope.code == 30006 {
-                if reopened {
-                    return Err("group-meta recovery window is unavailable".into());
-                }
-                let reset = envelope.data.ok_or("missing group-meta recovery window")?;
-                if reset["resumeAfter"].as_str() != Some("0") {
-                    return Err("invalid group-meta recovery window".into());
-                }
-                let before = reset["resumeBefore"]
-                    .as_str()
-                    .ok_or("invalid group-meta recovery boundary")?
-                    .parse::<u64>()
-                    .map_err(|_| "invalid group-meta recovery boundary".to_string())?;
-                through = before
-                    .checked_sub(1)
-                    .ok_or("invalid group-meta recovery boundary")?;
-                let boundary = through.to_string();
-                let thread_id = plan.thread_id;
-                intent
-                    .db(move |conn| {
-                        super::client_state::begin_group_meta_recovery(
-                            conn, user_id, thread_id, &boundary,
-                        )
-                    })
-                    .await?;
-                changed.push(plan.thread_id);
-                after = 0;
-                mode = "full";
-                reopened = true;
-                continue;
-            }
-            if envelope.code != 0 {
-                return Err("group-meta pull failed".into());
-            }
-            let page: ClientGroupMetaPage =
-                serde_json::from_value(envelope.data.ok_or("missing group-meta page")?)
-                    .map_err(|e| format!("decode group-meta page: {e}"))?;
-            let scanned = page
-                .scanned_through
-                .parse::<u64>()
-                .map_err(|_| "invalid group-meta scanned boundary".to_string())?;
-            let source_end = page
-                .group_meta_feed_end_id
-                .parse::<u64>()
-                .map_err(|_| "invalid group-meta source boundary".to_string())?;
-            if page.mode != mode
-                || page.account != plan.account
-                || scanned < after
-                || scanned > through
-                || source_end < through
-                || (!page.has_more && scanned != through)
-                || (page.has_more && scanned == after)
-            {
-                return Err("invalid group-meta page".into());
-            }
-            let has_more = page.has_more;
-            let update = ClientGroupMetaApply {
-                thread_id: plan.thread_id,
-                namespace_id: plan.namespace_id,
-                page,
-            };
-            let patch = intent
-                .db(move |conn| super::client_state::apply_group_meta_page(conn, user_id, update))
-                .await?;
-            if let Some(patch) = patch {
-                patches.push(patch);
-                changed.push(plan.thread_id);
-            }
-            after = scanned;
-            if !has_more {
-                if mode == "full" && after < target {
-                    mode = "delta";
-                    through = target;
-                    continue;
-                }
-                break;
-            }
-        }
-    }
-    if !changed.is_empty() && open_thread_id() != Some(thread_id) {
-        return Ok(());
-    }
-    let references = intent
-        .db(move |conn| unresolved_group_meta_profiles(conn, user_id))
-        .await?;
-    for reference in references
-        .into_iter()
-        .filter(|reference| reference.thread_id == thread_id)
-    {
-        if open_thread_id() != Some(thread_id) {
-            return Ok(());
-        }
-        let changed_thread_id = reference.thread_id;
-        // Profile warming is optional: one failed reference must not discard
-        // the already-committed Group Meta pages of this drain.
-        match resolve_group_meta_profile(intent, reference).await {
-            Ok(true) => changed.push(changed_thread_id),
-            Ok(false) => {}
-            Err(error) => warn!("group-meta profile reference failed; next wake retries: {error}"),
-        }
-    }
-    Ok(())
 }
 
 #[derive(Deserialize)]
@@ -1330,74 +1008,127 @@ struct TombstoneResponse {
     data: Option<DeletedMessagePage>,
 }
 
-/// Drain the deletion (tombstone) feed for one thread up to `target` (drain-open
-/// mode). Checks `open_thread_id() === thread_id` between pages so switching
-/// away lets the current page commit, then stops. Returns the committed
-/// tombstones so the caller can emit a notification.
+pub(super) async fn sync_tombstone_page(
+    intent: &mut FeedIntent,
+    thread_id: i64,
+    events: &crate::realtime::NativeEvents,
+) -> Result<TombPageOutcome, String> {
+    let (outcome, _) = sync_tombstone_page_inner(intent, thread_id, events).await?;
+    Ok(outcome)
+}
+
+async fn sync_tombstone_page_inner(
+    intent: &mut FeedIntent,
+    thread_id: i64,
+    events: &crate::realtime::NativeEvents,
+) -> Result<(TombPageOutcome, Vec<Value>), String> {
+    let user_id = intent.user_id;
+    let (target, hwm, cutoff) = intent
+        .db(move |conn| read_tomb_progress(conn, user_id, thread_id))
+        .await?
+        .ok_or_else(|| "thread deletion progress is not initialized".to_string())?;
+    if hwm >= target {
+        return Ok((TombPageOutcome::Done, Vec::new()));
+    }
+    if cutoff == 0 {
+        return Ok((TombPageOutcome::CutoffStalled { target, cutoff }, Vec::new()));
+    }
+    intent.work.assert_current().map_err(|e| e.to_string())?;
+    let body = serde_json::to_vec(&serde_json::json!({
+        "threadId": thread_id,
+        "after": hwm,
+        "take": 50,
+        "through": target,
+        "maxMessageSeq": cutoff,
+    }))
+    .map_err(|e| format!("encode tombstone request: {e}"))?;
+    let response = intent
+        .post_query("/api/v1/deleted-messages/query".into(), body)
+        .await?;
+    if !(200..300).contains(&response.status) {
+        return Err(format!("tombstone HTTP {}", response.status));
+    }
+    let envelope: TombstoneResponse = serde_json::from_str(&response.body)
+        .map_err(|e| format!("decode tombstone response: {e}"))?;
+    if envelope.code != 0 {
+        return Err("tombstone query failed".into());
+    }
+    let page = envelope.data.ok_or("missing tombstone page")?;
+    if page.scanned_through < hwm
+        || page.scanned_through > target
+        || (page.scanned_through == hwm && page.has_more)
+    {
+        return Err("invalid tombstone page".into());
+    }
+    let mut applied = hwm;
+    for item in &page.tombstones {
+        let deletion = item
+            .get("deletionSeq")
+            .and_then(Value::as_i64)
+            .ok_or("invalid deletion sequence")?;
+        let message = item
+            .get("messageSeq")
+            .and_then(Value::as_i64)
+            .ok_or("invalid message sequence")?;
+        if deletion <= applied
+            || deletion > page.scanned_through
+            || message < 1
+            || message > cutoff
+        {
+            return Err("invalid tombstone facts".into());
+        }
+        applied = deletion;
+    }
+    if applied == hwm {
+        return Ok((TombPageOutcome::CutoffStalled { target, cutoff }, Vec::new()));
+    }
+    let has_more = page.has_more;
+    let tombstones = page.tombstones;
+    let page_committed = tombstones.clone();
+    super::messages::apply_deleted_messages(
+        intent.work.clone(),
+        user_id,
+        thread_id,
+        tombstones,
+        applied,
+    )
+    .await?;
+    intent.work.assert_current().map_err(|e| e.to_string())?;
+    let _ = events.emit(
+        "soms-sse-event",
+        LocalEventPayload {
+            event: "LOCAL_TOMBSTONE_COMMITTED".into(),
+            status: 0,
+            message: "local tombstone committed".into(),
+            data: serde_json::json!({"userId":user_id,"threadId":thread_id,
+            "tombstones":page_committed.iter().map(|item| serde_json::json!({
+                "seq":item["messageSeq"],"type":item["type"]
+            })).collect::<Vec<_>>() }),
+        },
+    );
+    Ok((
+        if has_more {
+            TombPageOutcome::More
+        } else {
+            TombPageOutcome::Done
+        },
+        page_committed,
+    ))
+}
+
+/// Drain the deletion (tombstone) feed for one thread up to `target`.
+#[cfg(test)]
 async fn sync_tombstone_thread(
     intent: &mut FeedIntent,
     thread_id: i64,
 ) -> Result<Vec<Value>, String> {
-    let user_id = intent.user_id;
+    let events = intent.events(None);
     let mut committed = Vec::new();
-    // Read the advertised bound and client progress from one account-thread row.
-    let (target, mut hwm) = intent
-        .db(move |conn| {
-            conn.query_row(
-                "SELECT tombstone_end_seq,deleted_hwm FROM threads WHERE user_id=?1 AND thread_id=?2",
-                rusqlite::params![user_id, thread_id],
-                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
-            )
-            .optional()
-            .map_err(|e| format!("read tombstone progress: {e}"))?
-            .ok_or_else(|| "thread deletion progress is not initialized".to_string())
-        })
-        .await?;
     loop {
-        if open_thread_id() != Some(thread_id) {
-            return Ok(committed);
-        }
-        if hwm >= target {
-            return Ok(committed);
-        }
-        intent.work.assert_current().map_err(|e| e.to_string())?;
-        let body = serde_json::to_vec(&serde_json::json!({
-            "threadId": thread_id,
-            "after": hwm,
-            "take": 100,
-            "through": target,
-        }))
-        .map_err(|e| format!("encode tombstone request: {e}"))?;
-        let response = intent
-            .post_query("/api/v1/deleted-messages/query".into(), body)
-            .await?;
-        if !(200..300).contains(&response.status) {
-            return Err(format!("tombstone HTTP {}", response.status));
-        }
-        let envelope: TombstoneResponse = serde_json::from_str(&response.body)
-            .map_err(|e| format!("decode tombstone response: {e}"))?;
-        if envelope.code != 0 {
-            return Err("tombstone query failed".into());
-        }
-        let page = envelope.data.ok_or("missing tombstone page")?;
-        if page.scanned_through < hwm || (page.scanned_through == hwm && page.has_more) {
-            return Err("invalid tombstone page".into());
-        }
-        let scanned = page.scanned_through;
-        let has_more = page.has_more;
-        let tombstones = page.tombstones;
-        let page_committed = tombstones.clone();
-        super::messages::apply_deleted_messages(
-            intent.work.clone(),
-            user_id,
-            thread_id,
-            tombstones,
-            scanned,
-        )
-        .await?;
+        let (outcome, page_committed) =
+            sync_tombstone_page_inner(intent, thread_id, &events).await?;
         committed.extend(page_committed);
-        hwm = scanned;
-        if !has_more {
+        if outcome != TombPageOutcome::More {
             return Ok(committed);
         }
     }
@@ -1594,14 +1325,18 @@ async fn sync_thread_feed_intent(
             cursor = scanned;
             target = Some(target.unwrap_or(head).max(head));
         }
-        // Group Meta is no longer drained inline here. It runs as an independent
-        // per-thread drain driven by `native_db_drain_thread_misc` (drain-open mode):
-        // only the open thread's Group Meta advances, switched-away threads stop
-        // after the current page commits.
         Ok(())
     }
     .await;
     intent.work.assert_current().map_err(|e| e.to_string())?;
+    if !states.is_empty() {
+        super::resource_scheduler::schedule_pending(
+            intent.work.clone(),
+            intent.request.clone(),
+            user_id,
+            events,
+        );
+    }
     // A later network failure must not hide earlier committed pages from the live renderer.
     Ok(ThreadFeedSyncResult {
         states: states.into_values().collect(),
@@ -1665,9 +1400,6 @@ pub(crate) struct ThreadFeedSnapshot {
     /// Peer's profile revision in the publisher's namespace (wire: `profileRev`).
     #[serde(rename = "profileRev")]
     pub(super) thread_profile_rev: i32,
-    pub(super) tombstone_end_seq: i32,
-    #[serde(deserialize_with = "required_nullable")]
-    pub(super) group_meta_feed_end_id: Option<String>,
     pub(super) join_request_end_feed_id: i32,
     pub(super) join_request_read_feed_id: i32,
     pub(super) group_invite_end_feed_id: i32,
@@ -1752,7 +1484,6 @@ fn validate_snapshot(state: &ThreadFeedSnapshot) -> Result<(), String> {
         || state.subject_account.is_empty()
         || state.thread_profile_rev < 0
         || state.message_end_seq < 0
-        || state.tombstone_end_seq < 0
         || state.join_request_end_feed_id < 0
         || state.join_request_read_feed_id < -1
         || state.join_request_read_feed_id > state.join_request_end_feed_id
@@ -1777,11 +1508,12 @@ pub(super) fn read_state(
             "SELECT thread_feed_id, kind, authority_namespace_id, conversation_state,
                 blocked, role, subject_account,
                 alias, thread_profile_rev,
-                message_end_seq, tombstone_end_seq, group_meta_feed_end_id,
+                message_end_seq,
                 join_request_end_feed_id, join_request_read_feed_id,
                 group_invite_end_feed_id, server_last_read_seq, announcement_read_feed_id,
                 server_unread_count, last_mention_seq, local_read_seq, self_mention_namespace_id
-         FROM threads WHERE user_id=?1 AND thread_id=?2",
+         FROM threads JOIN thread_resource_sync targets USING(user_id,thread_id)
+         WHERE threads.user_id=?1 AND threads.thread_id=?2",
             params![user_id, thread_id],
             |row| {
                 Ok(LocalThreadAttention {
@@ -1800,8 +1532,6 @@ pub(super) fn read_state(
                         alias: row.get("alias")?,
                         thread_profile_rev: row.get("thread_profile_rev")?,
                         message_end_seq: row.get("message_end_seq")?,
-                        tombstone_end_seq: row.get("tombstone_end_seq")?,
-                        group_meta_feed_end_id: row.get("group_meta_feed_end_id")?,
                         join_request_end_feed_id: row.get("join_request_end_feed_id")?,
                         join_request_read_feed_id: row.get("join_request_read_feed_id")?,
                         group_invite_end_feed_id: row.get("group_invite_end_feed_id")?,
@@ -1872,16 +1602,18 @@ pub(super) fn write_state(
     let local_read_seq = state
         .local_read_seq
         .ok_or("attention read position missing")?;
+    super::thread_resource_sync::advance(
+        conn, user_id, i64::from(state.thread_id), i64::from(server.message_end_seq), 0, "0",
+    )?;
     let affected = conn
         .execute(
             "UPDATE threads SET
            thread_feed_id=?3,conversation_state=?6,blocked=?7,role=?8,
-           alias=?10,thread_profile_rev=?11,message_end_seq=?12,
-           tombstone_end_seq=?13,group_meta_feed_end_id=?14,
-           join_request_end_feed_id=?15,join_request_read_feed_id=?16,
-           group_invite_end_feed_id=?17,server_last_read_seq=?18,
-           announcement_read_feed_id=?19,server_unread_count=?20,
-           last_mention_seq=?21,local_read_seq=?22,self_mention_namespace_id=?23
+           alias=?10,thread_profile_rev=?11,
+           join_request_end_feed_id=?12,join_request_read_feed_id=?13,
+           group_invite_end_feed_id=?14,server_last_read_seq=?15,
+           announcement_read_feed_id=?16,server_unread_count=?17,
+           last_mention_seq=?18,local_read_seq=?19,self_mention_namespace_id=?20
          WHERE user_id=?1 AND thread_id=?2 AND kind=?4
            AND authority_namespace_id=?5 AND subject_account=?9",
             params![
@@ -1896,9 +1628,6 @@ pub(super) fn write_state(
                 server.subject_account,
                 server.alias,
                 server.thread_profile_rev,
-                server.message_end_seq,
-                server.tombstone_end_seq,
-                server.group_meta_feed_end_id,
                 server.join_request_end_feed_id,
                 server.join_request_read_feed_id,
                 server.group_invite_end_feed_id,
@@ -1987,7 +1716,6 @@ fn merge_states(
                 // historical messages; another message/read change can refresh normally.
                 (!old.blocked && snapshot.blocked)
                     || old.message_end_seq != snapshot.message_end_seq
-                    || old.tombstone_end_seq != snapshot.tombstone_end_seq
                     || old.last_read_seq != snapshot.last_read_seq
                     || old.unread_count != snapshot.unread_count
                     || old.last_mention_seq != snapshot.last_mention_seq
@@ -2238,43 +1966,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn creation_seeds_deletion_baseline_but_updates_do_not_initialize_or_rebase() {
+    fn creation_starts_deletion_progress_at_zero_independent_of_targets() {
         let mut conn = db();
-        let mut first = snapshot(1, 0);
-        first.tombstone_end_seq = 17;
-        merge_states(&mut conn, 1, vec![first.clone()], Some(1)).unwrap();
-        assert_eq!(
-            super::super::messages::read_deleted_hwm(&conn, 1, 7).unwrap(),
-            Some(17),
-        );
-        let mut next = first.clone();
+        super::super::thread_resource_sync::advance(&conn, 1, 7, 0, 17, "0").unwrap();
+        let mut next = snapshot(1, 0);
+        merge_states(&mut conn, 1, vec![next.clone()], Some(1)).unwrap();
+        assert_eq!(super::super::messages::read_deleted_hwm(&conn, 1, 7).unwrap(), Some(0));
+        conn.execute("UPDATE threads SET deleted_hwm=5 WHERE user_id=1 AND thread_id=7", []).unwrap();
+        super::super::thread_resource_sync::advance(&conn, 1, 7, 0, 23, "0").unwrap();
         next.thread_feed_id = 2;
-        next.tombstone_end_seq = 23;
         merge_states(&mut conn, 1, vec![next.clone()], Some(2)).unwrap();
-        assert_eq!(
-            super::super::messages::read_deleted_hwm(&conn, 1, 7).unwrap(),
-            Some(17),
-        );
+        assert_eq!(super::super::messages::read_deleted_hwm(&conn, 1, 7).unwrap(), Some(5));
         super::super::client_state::delete_thread(&mut conn, 1, 7).unwrap();
-        assert_eq!(
-            super::super::messages::read_deleted_hwm(&conn, 1, 7).unwrap(),
-            None,
-        );
-        merge_states(&mut conn, 1, vec![next.clone()], Some(2)).unwrap();
-        assert_eq!(
-            super::super::messages::read_deleted_hwm(&conn, 1, 7).unwrap(),
-            Some(23),
-        );
-        assert!(conn
-            .execute("UPDATE threads SET deleted_hwm=NULL", [])
-            .is_err());
-        next.thread_feed_id = 3;
-        next.tombstone_end_seq = 30;
-        merge_states(&mut conn, 1, vec![next], Some(3)).unwrap();
-        assert_eq!(
-            super::super::messages::read_deleted_hwm(&conn, 1, 7).unwrap(),
-            Some(23),
-        );
+        merge_states(&mut conn, 1, vec![next], Some(2)).unwrap();
+        assert_eq!(super::super::messages::read_deleted_hwm(&conn, 1, 7).unwrap(), Some(0));
+        assert!(conn.execute("UPDATE threads SET deleted_hwm=NULL", []).is_err());
+        let target: i64 = conn.query_row("SELECT tombstone_end_seq FROM thread_resource_sync WHERE user_id=1 AND thread_id=7", [], |row| row.get(0)).unwrap();
+        assert_eq!(target, 23);
     }
 
     #[test]
@@ -2302,7 +2010,7 @@ mod tests {
         let mut tomb = preview(9);
         tomb.status = ThreadPreviewStatus::UserRetraction;
         tomb.text = None;
-        snapshot.tombstone_end_seq = 2;
+        super::super::thread_resource_sync::advance(&conn, 1, 7, 0, 2, "0").unwrap();
         snapshot.last_read_seq = 5;
         snapshot.previews = vec![preview(4), tomb.clone(), preview(6)];
         let merged = merge_states(&mut conn, 1, vec![snapshot], Some(1)).unwrap();
@@ -2320,7 +2028,7 @@ mod tests {
             .unwrap();
         assert_eq!(persisted, (9, "USER_RETRACTION".into(), None));
         let row: (i32, i32) = conn.query_row(
-            "SELECT server_last_read_seq, tombstone_end_seq FROM threads WHERE user_id=1 AND thread_id=7",
+            "SELECT server_last_read_seq, tombstone_end_seq FROM threads JOIN thread_resource_sync USING(user_id,thread_id) WHERE user_id=1 AND thread_id=7",
             [], |row| Ok((row.get(0)?, row.get(1)?)),
         ).unwrap();
         assert_eq!(row, (5, 2));
@@ -2470,7 +2178,7 @@ mod tests {
         let mut group = snapshot(1, 0);
         group.kind = "GROUP".into();
         group.subject_account = "!team".into();
-        group.group_meta_feed_end_id = Some("2".into());
+        super::super::thread_resource_sync::advance(&conn, 1, 7, 0, 0, "2").unwrap();
         merge_states(&mut conn, 1, vec![group.clone()], None).unwrap();
         group.thread_id = 8;
         merge_states(&mut conn, 1, vec![group], None).unwrap();
@@ -2489,7 +2197,7 @@ mod tests {
             [],
         )
         .unwrap();
-        assert!(group_meta_plan(&conn, 1, 7).unwrap().is_none());
+        assert!(group_meta_plan(&conn, 1, 7).unwrap().is_some());
     }
 
     #[test]
@@ -2546,8 +2254,6 @@ mod tests {
             alias: None,
             message_end_seq: 200,
             thread_profile_rev: 0,
-            tombstone_end_seq: 0,
-            group_meta_feed_end_id: None,
             join_request_end_feed_id: 0,
             join_request_read_feed_id: -1,
             group_invite_end_feed_id: 0,
@@ -2679,23 +2385,17 @@ mod tests {
             [],
         )
         .unwrap();
-        let reference = GroupMetaProfileReference {
-            is_group: false,
-            thread_id: 7,
-            account: "alice".into(),
-            namespace_id: 2,
-            rev: 3,
-        };
+
         let mut profile = serde_json::json!({
             "publisherNamespaceId": 2, "profileNamespaceId": 2,
             "account": "alice", "rev": 3, "name": "Wrong diagonal", "bio": "",
             "avatarBase64": null,
         });
         commit_resolved_profile(&conn, 1, &profile).unwrap();
-        assert_eq!(unresolved_group_meta_profiles(&conn, 1).unwrap().len(), 1);
+        assert!(super::super::contacts::read_profile(&conn, 1, 7, 2, "alice", 3).unwrap().is_none());
         profile["publisherNamespaceId"] = serde_json::json!(7);
         profile["name"] = serde_json::json!("Correct publisher");
-        commit_group_meta_profile(&conn, 1, &reference, &profile).unwrap();
+        commit_resolved_profile(&conn, 1, &profile).unwrap();
         let exact = super::super::contacts::read_profile(&conn, 1, 7, 2, "alice", 3)
             .unwrap()
             .unwrap();
@@ -2704,7 +2404,6 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(diagonal["name"], "Wrong diagonal");
-        assert!(unresolved_group_meta_profiles(&conn, 1).unwrap().is_empty());
     }
 
     #[test]
@@ -2717,29 +2416,23 @@ mod tests {
         group.thread_profile_rev = 2;
         group.thread_profile_rev = 2;
         merge_states(&mut conn, 1, vec![group], None).unwrap();
-        let reference = GroupMetaProfileReference {
-            is_group: true,
-            thread_id: 7,
-            account: "!team".into(),
-            namespace_id: 0,
-            rev: 2,
-        };
+
         let mut profile = serde_json::json!({
             "publisherNamespaceId": 0, "profileNamespaceId": 0,
             "account": "!team", "rev": 2, "name": "Team", "bio": "About",
             "avatarBase64": null,
         });
         profile["rev"] = serde_json::json!(3);
-        assert!(commit_group_meta_profile(&conn, 1, &reference, &profile).is_err());
+        commit_resolved_profile(&conn, 1, &profile).unwrap();
+        assert!(super::super::contacts::read_profile(&conn, 1, 0, 0, "!team", 2).unwrap().is_none());
         profile["rev"] = serde_json::json!(2);
-        commit_group_meta_profile(&conn, 1, &reference, &profile).unwrap();
+        commit_resolved_profile(&conn, 1, &profile).unwrap();
         let mut stored = super::super::thread_store::read(&conn, 1, 7)
             .unwrap()
             .unwrap();
         assert_eq!(stored["profile"]["name"], "!team");
         super::super::thread_store::apply_selected_profile(&conn, 1, 7, &mut stored).unwrap();
         assert_eq!(stored["profile"]["name"], "Team");
-        assert!(unresolved_group_meta_profiles(&conn, 1).unwrap().is_empty());
     }
 
     #[test]
@@ -2752,24 +2445,18 @@ mod tests {
         group.authority_namespace_id = 7;
         group.thread_profile_rev = 2;
         merge_states(&mut conn, 1, vec![group], None).unwrap();
-        let reference = GroupMetaProfileReference {
-            is_group: true,
-            thread_id: 7,
-            account: "!team".into(),
-            namespace_id: 7,
-            rev: 2,
-        };
+
         let mut profile = serde_json::json!({
             "publisherNamespaceId": 7, "profileNamespaceId": 7,
             "account": "!team", "rev": 2, "name": "Remote Team", "bio": "About",
             "avatarBase64": null,
         });
-        assert!(commit_group_meta_profile(&conn, 1, &reference, &profile).is_err());
+        commit_resolved_profile(&conn, 1, &profile).unwrap();
+        assert!(super::super::contacts::read_profile(&conn, 1, 7, 0, "!team", 2).unwrap().is_none());
         profile["profileNamespaceId"] = 0.into();
-        commit_group_meta_profile(&conn, 1, &reference, &profile).unwrap();
+        commit_resolved_profile(&conn, 1, &profile).unwrap();
         let list = super::super::client_state::read_threads(&conn, 1).unwrap();
         assert_eq!(list[0]["profile"]["name"], "Remote Team");
-        assert!(unresolved_group_meta_profiles(&conn, 1).unwrap().is_empty());
     }
 
     #[test]
@@ -2825,7 +2512,6 @@ mod tests {
             find_profile_for_key(&conn, 1, &key).unwrap().unwrap()["name"],
             "Team"
         );
-        assert!(unresolved_group_meta_profiles(&conn, 1).unwrap().is_empty());
     }
 
     #[test]
@@ -2852,7 +2538,7 @@ mod tests {
                     "selfMentionNamespaceId": null,
                     "blocked": false, "role": null, "profileAccount": "bob",
                     "profileRev": 3, "alias": "Pal",
-                    "messageEndSeq": 7, "tombstoneEndSeq": 0, "groupMetaFeedEndId": null,
+                    "messageEndSeq": 7,
                     "joinRequestEndFeedId": 0, "joinRequestReadFeedId": -1,
                     "groupInviteEndFeedId": 0, "lastReadSeq": 0,
                     "announcementReadFeedId": 0, "unreadCount": 2, "lastMentionSeq": null,
@@ -2986,7 +2672,7 @@ mod tests {
     #[test]
     fn nullable_snapshot_fields_still_must_be_present() {
         let snapshot = serde_json::to_value(snapshot(1, 0)).unwrap();
-        for key in ["alias", "role", "groupMetaFeedEndId", "lastMentionSeq"] {
+        for key in ["alias", "role", "lastMentionSeq"] {
             let mut missing = snapshot.clone();
             missing.as_object_mut().unwrap().remove(key);
             assert!(

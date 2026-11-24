@@ -1,4 +1,5 @@
 import '@angular/compiler';
+import { ThreadSendOutbox } from './thread-send-outbox.service';
 import {
   afterEach,
   beforeEach,
@@ -101,11 +102,7 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
           );
         if (cmd === 'try_logout') return Promise.resolve({ status: 'revoked' });
         if (cmd === 'logout_status') return Promise.resolve('awaitingRevocation');
-        if (cmd === 'begin_logout')
-          return Promise.resolve({
-            ticket: 'logout-operation',
-            localClearFailed: !secureClearOk,
-          });
+        if (cmd === 'begin_logout') return Promise.resolve(undefined);
         if (cmd === 'secure_get_token')
           return secureGetOk
             ? Promise.resolve(keyringToken)
@@ -127,7 +124,6 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
             'native_db_validate_cache',
             'native_db_recreate_cache',
             'desktop_notifications_clear',
-            'wait_for_logout',
             'finish_logout',
           ].includes(cmd)
         )
@@ -222,6 +218,7 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
         provideHttpClient(withXhr()),
         provideHttpClientTesting(),
         AuthService,
+        { provide: ThreadSendOutbox, useValue: { clear: vi.fn().mockResolvedValue(undefined) } },
         // AuthService resolves i18n keys for its keyring-failure toasts; stub the translator (returns the key).
         {
           provide: TranslocoService,
@@ -636,12 +633,12 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
       await firstValueFrom(svc.logout());
 
       expect(svc.loggedIn()).toBe(false);
-      expect(invokeSpy).toHaveBeenCalledWith('desktop_notifications_clear', {
+      expect(invokeSpy).not.toHaveBeenCalledWith('desktop_notifications_clear', {
         resetNavigation: true,
       });
       const commands = invokeSpy.mock.calls.map(([command]) => command);
       expect(commands.indexOf('begin_logout')).toBeLessThan(
-        commands.indexOf('desktop_notifications_clear'),
+        commands.indexOf('finish_logout'),
       );
       expect(invokeSpy).toHaveBeenCalledWith('try_logout', undefined);
       expect(invokeSpy).toHaveBeenCalledWith('finish_logout', { localOnly: false });
@@ -813,21 +810,20 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
       expect(svc.loggedIn()).toBe(false);
     });
 
-    it('logout clears the Android secure token after Rust captures it for revocation', async () => {
+    it('Android logout delegates credential cleanup to the shared Rust coordinator', async () => {
       const { set } = androidGlobals('st-logout');
       await passwordLogin('st-logout');
 
-      // Rust must acknowledge capture before the adapter clears both native token copies.
+      set.mockClear();
+      invokeSpy.mockClear();
       await firstValueFrom(svc.logout());
 
-      expect(set).toHaveBeenCalledWith(
-        null,
-        '11111111-2222-4d9e-af01-234567890abc',
-      );
-      expect(invokeSpy).toHaveBeenCalledWith('begin_logout', {
-        origin: '',
-        sessionUuid: '11111111-2222-4d9e-af01-234567890abc',
-      });
+      expect(set).not.toHaveBeenCalled();
+      expect(invokeSpy).toHaveBeenCalledWith('begin_logout', undefined);
+      expect(invokeSpy).toHaveBeenCalledWith('finish_logout', { localOnly: false });
+      const commands = invokeSpy.mock.calls.map(([command]) => command);
+      expect(commands.indexOf('begin_logout')).toBeLessThan(commands.indexOf('try_logout'));
+      expect(commands.indexOf('try_logout')).toBeLessThan(commands.indexOf('finish_logout'));
       expect(svc.loggedIn()).toBe(false);
     });
   });

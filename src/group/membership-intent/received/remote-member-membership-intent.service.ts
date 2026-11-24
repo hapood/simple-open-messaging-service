@@ -37,6 +37,8 @@ import {
   type GroupMembershipRevocationInput,
 } from '../shared/group-membership-revocation-sql.js';
 import { admitGroupMembershipProjectionFanoutInTx } from '../shared/group-membership-projection-fanout.js';
+import { reconcileClientMemberCountInTx } from '../../meta/reconcile-client-member-count-in-tx.js';
+import { GroupMetaFeedService } from '../../meta/group-meta-feed.service.js';
 import { mintGroupMemberPairInTx } from '../shared/group-member-pair-mint.js';
 import { lockGroupMemberIntentRowsInTx } from '../shared/group-member-intent-lock.js';
 import {
@@ -105,6 +107,7 @@ export class RemoteMemberMembershipIntentService {
     private readonly peerFeed: PeerStateFeedService,
     private readonly federation: FederationStateFeedPusher,
     private readonly relationshipMutations: GroupRelationshipMutationService,
+    private readonly groupMeta: GroupMetaFeedService,
   ) {}
 
   async execute(
@@ -306,6 +309,7 @@ export class RemoteMemberMembershipIntentService {
       wireIntent,
       pairId,
       threadId: command.threadId,
+      threadLock,
       group,
       member,
       row,
@@ -542,6 +546,11 @@ export class RemoteMemberMembershipIntentService {
         },
       ),
     };
+    await this.groupMeta.reconcileProfileInTx(
+      tx,
+      context.threadId,
+      context.row.profileRev,
+    );
     for (const write of groupMembershipAcceptanceIntentWrites(input))
       await tx.execute(write);
     const result = await tx.execute<{
@@ -555,6 +564,8 @@ export class RemoteMemberMembershipIntentService {
     const row = result.rows[0];
     if (!row) throw new Error('remote member acceptance update disappeared');
     if (row.invalidPeerHead) throw new Error('conflicting peer content head');
+    if (row.canonicalRosterChanged)
+      await reconcileClientMemberCountInTx(tx, context.threadLock);
     const peers = context.peers;
     if (row.recipientFeedId !== null) peers.add(member.namespaceId);
     return {
@@ -584,6 +595,7 @@ export class RemoteMemberMembershipIntentService {
       };
       pairId: bigint;
       threadId: number;
+      threadLock: ThreadContentLock;
       group: { groupAccount: string };
       member: { account: string; namespaceId: number };
       row: GroupMembershipAuthorizationRow & { pairId: string };
@@ -631,6 +643,8 @@ export class RemoteMemberMembershipIntentService {
     }>(groupMembershipRevocationSql(input));
     const row = result.rows[0];
     if (!row) throw new Error('remote member revocation update disappeared');
+    if (row.pairChanged)
+      await reconcileClientMemberCountInTx(tx, context.threadLock);
     const peers = context.peers;
     if (row.recipientFeedId !== null) peers.add(member.namespaceId);
     const groupDirectionEffective =

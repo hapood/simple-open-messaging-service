@@ -176,7 +176,10 @@ export class S2sController {
       sentAt: req.peer!.signatureCreatedAtSec * 1000,
     });
     const stateFeedEndId = BigInt(body.stateFeedEndId);
-    this.roundScheduler.wakeStateFeed(signer, stateFeedEndId);
+    void this.roundScheduler.wakeStateFeed(
+      req.peer!.namespaceId,
+      stateFeedEndId,
+    );
     // Each field is handled independently: the profile-namespace head wakes
     // that pull when it is ahead of the receiver's cursor.
     this.profileNamespacePull.wake(

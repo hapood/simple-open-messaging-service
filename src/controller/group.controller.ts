@@ -27,6 +27,11 @@ import { BusinessException } from '../common/business.exception.js';
 import { RelationshipRequestService } from '../relationship/request/relationship-request.service.js';
 import { RequestDecisionDto } from '../dto/relationship-request.dto.js';
 import { GroupService } from '../group/group.service.js';
+import { GroupMemberQueryService } from '../group/member-query/group-member-query.service.js';
+import {
+  QueryGroupMembersDto,
+  GroupMemberQueryPageDto,
+} from '../dto/group-member-query.dto.js';
 import { normalizeAccount } from '../common/account.js';
 import { ThreadAccessGuard } from '../account-thread-state/thread-access.guard.js';
 import { ResourceId } from '../common/resource-id.decorator.js';
@@ -38,6 +43,7 @@ import {
   GroupInviteAddressDto,
   GroupIdDto,
   KickGroupDto,
+  LeaveGroupDto,
   TransferGroupDto,
   SetRoleGroupDto,
   UpdateGroupDto,
@@ -70,7 +76,20 @@ export class GroupController {
     private readonly rosterRoles: GroupRosterRoleService,
     private readonly groupIntents: GroupAuthoredMembershipIntentService,
     private readonly memberIntents: MemberAuthoredGroupMembershipIntentService,
+    private readonly memberQueries: GroupMemberQueryService,
   ) {}
+
+  @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
+  @Post('group/members')
+  @ApiOperation({ summary: 'Query current group members and mention candidates' })
+  @ApiResultResponse(GroupMemberQueryPageDto)
+  async queryMembers(
+    @Request() req: FastifyRequest,
+    @Body() dto: QueryGroupMembersDto,
+  ) {
+    return this.memberQueries.query(req.user.userId, dto);
+  }
 
   @UseGuards(ThrottleGuard)
   @Throttle('group.create')
@@ -308,6 +327,7 @@ export class GroupController {
       req.user.userId,
       dto.requestId,
       'ACCEPT',
+      dto.note,
     );
   }
 
@@ -327,6 +347,7 @@ export class GroupController {
       req.user.userId,
       dto.requestId,
       'REJECT',
+      dto.note,
     );
   }
 
@@ -346,6 +367,7 @@ export class GroupController {
       req.user.userId,
       dto.requestId,
       'WITHDRAW',
+      dto.note,
     );
   }
 
@@ -357,12 +379,14 @@ export class GroupController {
     userId: number,
     requestId: string,
     decision: 'ACCEPT' | 'REJECT' | 'WITHDRAW',
+    note?: string,
   ) {
     return decideMemberGroupRound(
       { requests: this.requests, memberIntents: this.memberIntents },
       userId,
       requestId,
       decision,
+      note,
     );
   }
 
@@ -390,6 +414,7 @@ export class GroupController {
         decision: decision === 'ACCEPT' ? 'ACCEPTED' : 'REVOKED',
         target: resolution.member,
         scope,
+        ...(dto.note !== undefined ? { note: dto.note } : {}),
       },
       {
         requestDecision: {
@@ -451,16 +476,16 @@ export class GroupController {
   @Throttle('group.leave')
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
-  @ResourceId<GroupIdDto>('groupId')
+  @ResourceId<LeaveGroupDto>('groupId')
   @Post('group/leave')
   @ApiOperation({ summary: 'Leave a group (owner must transfer first)' })
-  async leaveGroup(@Request() req: FastifyRequest, @Body() _dto: GroupIdDto) {
-    void _dto;
+  async leaveGroup(@Request() req: FastifyRequest, @Body() dto: LeaveGroupDto) {
     return this.memberIntentResult(
       await this.memberIntents.execute({
         threadId: req.threadAccess!.threadId,
         memberUserId: req.user.userId,
         decision: 'REVOKED',
+        ...(dto.note !== undefined ? { note: dto.note } : {}),
       }),
     );
   }
@@ -517,6 +542,7 @@ export class GroupController {
         decision: 'REVOKED',
         scope: 'MEMBER',
         target: this.managerTarget(dto),
+        ...(dto.note !== undefined ? { note: dto.note } : {}),
       }),
     );
   }

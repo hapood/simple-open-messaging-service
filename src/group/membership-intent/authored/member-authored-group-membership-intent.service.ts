@@ -34,7 +34,8 @@ import {
 } from '../shared/group-membership-revocation-sql.js';
 import { admitGroupMembershipProjectionFanoutInTx } from '../shared/group-membership-projection-fanout.js';
 import { Logger } from '@nestjs/common';
-import { sql } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
+import { groupMeta, messageThread } from '../../../database/schema.js';
 import { captureThreadStateUpdatesInTx } from '../../../client-state-feed/capture-thread-state-updates.js';
 import { captureGroupDepartureUpdatesInTx } from '../../shared/capture-group-departure-updates.js';
 import { validateRequestDecisionInTx } from '../../../relationship/request/validate-request-decision-in-tx.js';
@@ -60,6 +61,12 @@ import type { FederationStateFeedPusher } from '../../../federation/federation-s
 import { normalizeAccount } from '../../../common/account.js';
 import { groupStateSql } from '../../shared/group-state.js';
 import { ensureMirrorGroupShellInTx } from '../../shared/ensure-mirror-group-shell-in-tx.js';
+import { reconcileClientMemberCountInTx } from '../../meta/reconcile-client-member-count-in-tx.js';
+import {
+  enqueueThreadMetaFanoutInTx,
+  enqueueThreadTombFanoutInTx,
+} from '../../../message/thread-fanout-task.js';
+import { GroupMetaFeedService } from '../../meta/group-meta-feed.service.js';
 
 /** One command family: a local member's authored intent about their own group
  * membership — apply (REQUESTED), withdraw / decline / leave (REVOKED), and
@@ -77,7 +84,7 @@ export type MemberAuthoredGroupMembershipIntentCommand =
       threadId: number;
       memberUserId: number;
       decision: 'ACCEPTED' | 'REVOKED';
-      note?: never;
+      note?: string;
     };
 
 export interface MemberAuthoredGroupMembershipIntentOptions {
@@ -131,6 +138,7 @@ type ValidatedMembership = ValidatedBase &
     | {
         readonly kind: 'mirror-revocation';
         readonly action: 'LEAVE' | 'WITHDRAW' | 'DECLINE';
+        readonly note: string;
       }
   );
 
@@ -150,6 +158,7 @@ export class MemberAuthoredGroupMembershipIntentService {
     private readonly relationshipMutations: GroupRelationshipMutationService,
     private readonly federation: FederationStateFeedPusher,
     private readonly quota: UserQuotaService,
+    private readonly groupMeta: GroupMetaFeedService,
   ) {}
 
   async execute(
@@ -626,11 +635,15 @@ export class MemberAuthoredGroupMembershipIntentService {
     base: ValidatedBase,
   ): Promise<ValidatedMembership> {
     const { row } = base;
+    const memberNote =
+      base.params.note !== undefined
+        ? base.params.note.slice(0, 255)
+        : (row.groupIntentNote ?? '');
     if (row.namespaceId !== 0)
       return this.finalizeValidationInTx(base, {
         kind: 'mirror-positive',
         authoredStatus: 'ACCEPTED',
-        note: row.groupIntentNote ?? '',
+        note: memberNote,
       });
     return this.finalizeValidationInTx(base, {
       kind: 'acceptance',
@@ -642,6 +655,7 @@ export class MemberAuthoredGroupMembershipIntentService {
         memberAccount: row.memberAccount,
         profileNamespaceId: row.profileNamespaceId,
         note: row.groupIntentNote ?? '',
+        memberNote,
         acceptedAt: new Date(),
         memberAck: true,
       },
@@ -687,10 +701,12 @@ export class MemberAuthoredGroupMembershipIntentService {
       : (decision ? decision === 'WITHDRAW' : row.applicationPending)
         ? ('WITHDRAW' as const)
         : ('DECLINE' as const);
+    const note = (base.params.note ?? '').slice(0, 255);
     if (row.namespaceId !== 0)
       return this.finalizeValidationInTx(base, {
         kind: 'mirror-revocation',
         action,
+        note,
       });
 
     return this.finalizeValidationInTx(base, {
@@ -709,6 +725,7 @@ export class MemberAuthoredGroupMembershipIntentService {
           namespaceId: row.profileNamespaceId,
         },
         receiver: { account: row.account, namespaceId: 0 },
+        note,
       },
     });
   }
@@ -738,7 +755,11 @@ export class MemberAuthoredGroupMembershipIntentService {
           authoredStatus: 'REQUESTED' | 'ACCEPTED';
           note: string;
         }
-      | { kind: 'mirror-revocation'; action: 'LEAVE' | 'WITHDRAW' | 'DECLINE' },
+      | {
+          kind: 'mirror-revocation';
+          action: 'LEAVE' | 'WITHDRAW' | 'DECLINE';
+          note: string;
+        },
   ): Promise<ValidatedMembership> {
     if (
       branch.kind === 'mirror-positive' ||
@@ -764,6 +785,11 @@ export class MemberAuthoredGroupMembershipIntentService {
     if (context[validated] !== true || context.threadLock.tx !== context.tx)
       throw new Error('invalid group membership lock context');
     if (context.kind === 'acceptance') {
+      await this.groupMeta.reconcileProfileInTx(
+        context.tx,
+        context.params.threadId,
+        context.input.groupProfileRev,
+      );
       for (const write of groupMembershipAcceptanceIntentWrites(context.input))
         await context.tx.execute(write);
       const result = await context.tx.execute<{
@@ -776,6 +802,29 @@ export class MemberAuthoredGroupMembershipIntentService {
       }>(groupMembershipAcceptanceSql(context.input));
       const row = result.rows[0];
       if (!row) throw new Error('membership acceptance update disappeared');
+      if (row.canonicalRosterChanged)
+        await reconcileClientMemberCountInTx(context.tx, context.threadLock);
+      const [heads] = await context.tx
+        .select({
+          tombstoneEndSeq: messageThread.tombstoneEndSeq,
+          clientMetaEndId: groupMeta.clientMetaEndId,
+        })
+        .from(messageThread)
+        .leftJoin(groupMeta, eq(groupMeta.threadId, messageThread.id))
+        .where(eq(messageThread.id, context.params.threadId))
+        .limit(1);
+      if (heads && heads.tombstoneEndSeq > 0) {
+        await enqueueThreadTombFanoutInTx(context.tx, context.threadLock, {
+          threadId: context.params.threadId,
+          tombstoneEndSeq: heads.tombstoneEndSeq,
+        });
+      }
+      if (heads?.clientMetaEndId && heads.clientMetaEndId > 0) {
+        await enqueueThreadMetaFanoutInTx(context.tx, context.threadLock, {
+          threadId: context.params.threadId,
+          groupMetaFeedEndId: heads.clientMetaEndId,
+        });
+      }
       if (row.invalidPeerHead) throw new Error('conflicting peer content head');
       clientUpdates.push(
         ...(await captureThreadStateUpdatesInTx(context.tx, [
@@ -800,7 +849,7 @@ export class MemberAuthoredGroupMembershipIntentService {
         context.params.memberUserId,
         'REVOKED',
         clientUpdates,
-        '',
+        context.note,
         {
           lockedGroupPair: {
             pairId: BigInt(context.row.pairId),
@@ -858,6 +907,8 @@ export class MemberAuthoredGroupMembershipIntentService {
       }>(groupMembershipRevocationSql(context.input));
       const row = result.rows[0];
       if (!row) throw new Error('membership revocation update disappeared');
+      if (row.pairChanged)
+        await reconcileClientMemberCountInTx(context.tx, context.threadLock);
       if (row.pairChanged)
         clientUpdates.push(
           ...(await captureGroupDepartureUpdatesInTx(

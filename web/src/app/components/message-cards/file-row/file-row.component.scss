@@ -11,8 +11,8 @@
   overflow: hidden;
 }
 
-// Click target: icon + meta + download glyph in a row. Clicking opens the file-detail overlay (the row emits openFile);
-// the actual <a download> lives inside that overlay. role=button + tabindex make it keyboard-accessible.
+// Click target: icon + meta + download glyph. The shared immersive viewer owns the download action.
+// role=button + tabindex make the card keyboard-accessible.
 // min-width:0 breaks the default min-width:auto chain: a nowrap filename's min-content is the WHOLE unbreakable name,
 // so without this the row would refuse to shrink below it and overflow the fixed 280px bubble. Paired with .msg-file-meta's
 // own min-width:0 + .msg-file-name's overflow:hidden/ellipsis, the filename now truncates inside the bubble.
@@ -35,9 +35,10 @@
   }
 }
 
-// Type icon: a rounded square + category-color tint. Keep the artwork and extension in normal flow so
-// they have a stable gap instead of overlapping around the icon's vertical center.
+// Fixed-size shared resource cell with a category-color tint.
 .msg-file-ico {
+  position: relative;
+  overflow: hidden;
   flex: 0 0 auto;
   width: 40px;
   height: 48px;
@@ -48,40 +49,7 @@
   gap: 3px;
   border-radius: 6px;
   color: #fff;
-  background: var(--msg-file-c, #6b7280);
-}
-.msg-file-svg {
-  width: 26px;
-  height: 26px;
-  flex: 0 0 26px;
-}
-.msg-file-ext {
-  font-size: 8px;
-  line-height: 9px;
-  font-weight: 700;
-  letter-spacing: 0.3px;
-}
-// Category tint (pdf red / doc blue / sheet green / slides orange / archive purple / text gray / file blue-gray).
-.msg-file-ico--pdf {
-  --msg-file-c: #e53935;
-}
-.msg-file-ico--doc {
-  --msg-file-c: #2b6cb0;
-}
-.msg-file-ico--sheet {
-  --msg-file-c: #2e7d32;
-}
-.msg-file-ico--slides {
-  --msg-file-c: #ef6c00;
-}
-.msg-file-ico--archive {
-  --msg-file-c: #7b1fa2;
-}
-.msg-file-ico--text {
-  --msg-file-c: #546e7a;
-}
-.msg-file-ico--unknown {
-  --msg-file-c: #6b7280;
+  background: #6b7280;
 }
 
 // Meta column: filename (single-line ellipsis) + size (de-emphasized).
@@ -114,8 +82,6 @@
 }
 
 // Download glyph (de-emphasized; darkens on hover — the whole row is click-to-download, this is auxiliary cue).
-// When the federated media is not yet local, the glyph slot swaps to a spinner (downloading) or a
-// cloud_off icon (failed) — HEIGHT-NEUTRAL: the slot is fixed, the swap never changes the row height.
 .msg-file-dl {
   display: inline-flex;
   align-items: center;
@@ -130,10 +96,6 @@
     height: 20px;
     line-height: 20px;
   }
-}
-.msg-file-dl-failed {
-  color: var(--app-danger, #ff5252);
-  opacity: 0.95;
 }
 .msg-file-row:hover .msg-file-dl {
   opacity: 0.8;

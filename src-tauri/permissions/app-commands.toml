@@ -71,7 +71,7 @@ commands.allow = ["native_db_begin_login"]
 [[permission]]
 identifier = "allow-begin-logout"
 description = "Begins, observes, retries, and finishes native logout and its bounded remote revocation."
-commands.allow = ["begin_logout", "wait_for_logout", "try_logout", "logout_status", "finish_logout"]
+commands.allow = ["begin_logout", "try_logout", "logout_status", "finish_logout"]
 
 [[permission]]
 identifier = "allow-init-check-compat"
@@ -169,8 +169,8 @@ commands.allow = ["set_debug_logging", "log_js"]
 
 [[permission]]
 identifier = "allow-http-request"
-description = "Enables http_request and cancel_http_request — the unified webview→backend HTTP transport under Tauri for API and media. Performs reqwest calls on the Rust side, injects Bearer from ProxyState.token, enforces timeouts (inactivity/headers), cancellation, and supports text and binary modes."
-commands.allow = ["http_request", "cancel_http_request"]
+description = "Enables native HTTP requests, incremental streams, stream consumption acknowledgements and cancellation. Rust owns authentication and opening/inactivity deadlines; streamed payloads wait for frontend consumption before further delivery."
+commands.allow = ["http_request", "http_stream_request", "http_stream_ack", "cancel_http_request"]
 
 [[permission]]
 identifier = "allow-media-download"
@@ -245,6 +245,7 @@ commands.allow = [
   "native_db_delete_messages_by_thread",
   "native_db_get_message_by_origin",
   "native_message_history_start",
+  "native_message_history_interval_start",
   "native_message_history_cancel",
   "native_profile_resolve",
   "native_watch_profile",

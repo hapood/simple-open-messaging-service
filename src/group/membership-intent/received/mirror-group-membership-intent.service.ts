@@ -13,6 +13,10 @@ import type {
 import type { FederationStateFeedPusher } from '../../../federation/federation-state-feed.events.js';
 import type { PeerStateFeedService } from '../../../federation/peer-state-feed.service.js';
 import type { GroupRelationshipMutationService } from '../shared/group-relationship-mutation.service.js';
+import {
+  enqueueThreadMetaFanoutInTx,
+  enqueueThreadTombFanoutInTx,
+} from '../../../message/thread-fanout-task.js';
 import { initializeRelationshipThreadStateInTx } from '../../../federation/federation-relationship-thread-state.js';
 import { captureThreadStateUpdatesInTx } from '../../../client-state-feed/capture-thread-state-updates.js';
 import { groupStateFields, readGroupState } from '../../shared/group-state.js';
@@ -600,6 +604,30 @@ export class MirrorGroupMembershipIntentService {
       context.clientUpdates.push(
         ...(await captureThreadStateUpdatesInTx(tx, [memberId])),
       );
+      const [heads] = await tx
+        .select({
+          tombstoneEndSeq: tables.messageThread.tombstoneEndSeq,
+          clientMetaEndId: tables.groupMeta.clientMetaEndId,
+        })
+        .from(tables.messageThread)
+        .leftJoin(
+          tables.groupMeta,
+          eq(tables.groupMeta.threadId, tables.messageThread.id),
+        )
+        .where(eq(tables.messageThread.id, context.threadId))
+        .limit(1);
+      if (heads && heads.tombstoneEndSeq > 0) {
+        await enqueueThreadTombFanoutInTx(tx, context.threadLock, {
+          threadId: context.threadId,
+          tombstoneEndSeq: heads.tombstoneEndSeq,
+        });
+      }
+      if (heads?.clientMetaEndId && heads.clientMetaEndId > 0) {
+        await enqueueThreadMetaFanoutInTx(tx, context.threadLock, {
+          threadId: context.threadId,
+          groupMetaFeedEndId: heads.clientMetaEndId,
+        });
+      }
     }
     await initializeRelationshipThreadStateInTx(
       tx,

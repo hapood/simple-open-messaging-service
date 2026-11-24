@@ -1,9 +1,9 @@
-import { eq, sql } from 'drizzle-orm';
+import { sql } from 'drizzle-orm';
 import type { DatabaseTransaction } from '../../database/database.service.js';
-import { messageThread } from '../../database/schema.js';
 import { MessageService } from '../../message/message.service.js';
 import { SystemMessageType } from '../../message/system-message.js';
 import { enqueueThreadFanoutInTx } from '../../message/thread-fanout-task.js';
+import { reconcileClientMemberCountInTx } from './reconcile-client-member-count-in-tx.js';
 import { readCurrentLocalAuthorizedGroupMemberIdsInTx } from './current-group-roster.js';
 import { requireGroupThreadContentLockUnderGroupInTx } from '../../common/locks/thread-content-lock.js';
 import type { ProfilePrefetchDemand } from '../../profile-resolution/profile-resolution-demand.js';
@@ -50,7 +50,7 @@ export async function applyDeltaMirrorMetaItemInTx(
 }> {
   await lockMirrorGroupInTx(tx, input.group);
   const mirror = await requireMirrorMetaInTx(tx, input.group);
-  if (mirror.metaRecoveryThroughId !== null)
+  if (mirror.metaRecoveryThroughId !== 0)
     throw new Error('a meta recovery drain opened during this delta round');
   const threadLock = await requireGroupThreadContentLockUnderGroupInTx(
     tx,
@@ -71,6 +71,12 @@ export async function applyDeltaMirrorMetaItemInTx(
     input.item,
     'delta',
   );
+  if (
+    input.item.operation === 'MEMBER_UPSERT' ||
+    input.item.operation === 'MEMBER_DEPART'
+  ) {
+    await reconcileClientMemberCountInTx(tx, threadLock);
+  }
   const transition = await writeObservedMembershipTransitionInTx(
     tx,
     mirror.threadId,
@@ -80,22 +86,13 @@ export async function applyDeltaMirrorMetaItemInTx(
     { threadLock, messages: input.messages },
   );
   const transitioned = transition.transitioned;
-  if (!transitioned) {
-    // A meta-only advance is legitimate member-visible progress: publish the
-    // current head so the new coordinate reaches every member's thread feed.
-    const [head] = await tx
-      .select({ tombstoneEndSeq: messageThread.tombstoneEndSeq })
-      .from(messageThread)
-      .where(eq(messageThread.id, mirror.threadId))
-      .limit(1);
-    if (!head) throw new Error('group-meta mirror thread is missing');
+  if (!transitioned && input.item.operation === 'GROUP_PROFILE') {
     const messageEnd = await tx.execute<{ head: number }>(sql`
       SELECT COALESCE(max(seq), 0)::integer AS head FROM "Message"
       WHERE "threadId" = ${mirror.threadId}`);
     await enqueueThreadFanoutInTx(tx, threadLock, {
       threadId: mirror.threadId,
       messageEndSeq: messageEnd.rows[0]!.head,
-      tombstoneEndSeq: head.tombstoneEndSeq,
     });
   }
   if (input.reachedBoundary) {
@@ -176,7 +173,7 @@ export async function finalizeDeltaMirrorMetaRoundInTx(
 }> {
   await lockMirrorGroupInTx(tx, input.group);
   const mirror = await requireMirrorMetaInTx(tx, input.group);
-  if (mirror.metaRecoveryThroughId !== null)
+  if (mirror.metaRecoveryThroughId !== 0)
     throw new Error('a meta recovery drain opened during this delta round');
   const threadLock = await requireGroupThreadContentLockUnderGroupInTx(
     tx,

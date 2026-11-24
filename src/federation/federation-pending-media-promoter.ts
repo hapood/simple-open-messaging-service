@@ -53,7 +53,6 @@ export class FederationPendingMediaPromoter {
       await DeletedMessageService.lockFederatedIdentity(
         tx,
         stagedIdentity.threadId,
-        batch.originDomain,
         batch.publisherNamespaceId,
         stagedIdentity.originSeq,
       );
@@ -122,6 +121,13 @@ export class FederationPendingMediaPromoter {
         ),
         columns: { type: true },
       });
+      if (tombstone) {
+        await DeletedMessageService.markFederatedTombstoneConsumedInTx(tx, {
+          threadId: stagedMessage.threadId,
+          publisherNamespaceId: batch.publisherNamespaceId,
+          messageSeq: stagedMessage.originSeq,
+        });
+      }
 
       if (!tombstone) {
         const requiredDigests = extractDigests(stagedMessage.content);

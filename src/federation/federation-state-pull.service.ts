@@ -17,7 +17,7 @@ import {
   FederationStateFeedConsumerService,
   type StatePageEffect,
 } from './federation-state-feed-consumer.service.js';
-import { FederationThreadAccessService } from './federation-thread-access.service.js';
+import { FederationNamespaceService } from './federation-namespace.service.js';
 import { FederationTrustedPeerClient } from './federation-trusted-peer-client.service.js';
 import { PeerStateFeedPullService } from './peer-state-feed-pull.service.js';
 import { FederationProfileNamespacePullService } from './federation-profile-namespace-pull.service.js';
@@ -33,7 +33,7 @@ export class FederationStatePullService {
     private readonly database: DatabaseService,
     private readonly peerHttp: FederationPeerHttp,
     private readonly trustedPeers: FederationTrustedPeerClient,
-    private readonly threadAccess: FederationThreadAccessService,
+    private readonly namespaces: FederationNamespaceService,
     private readonly stateFeedPull: PeerStateFeedPullService,
     private readonly stateFeedConsumer: FederationStateFeedConsumerService,
     private readonly clientStateFeed: ClientStateFeedService,
@@ -46,6 +46,7 @@ export class FederationStatePullService {
 
   async pullStateFeedPage(
     domain: string,
+    signal: AbortSignal,
     after?: bigint,
     take?: number,
     through?: bigint,
@@ -68,6 +69,7 @@ export class FederationStatePullService {
           `/somfp/v1/state-feed${query.size === 0 ? '' : `?${query.toString()}`}`,
           domain,
           16 * 1024 * 1024,
+          signal,
         ),
       );
     } catch (error) {
@@ -77,23 +79,24 @@ export class FederationStatePullService {
 
   /** Drain state before data feeds and durably reach an advertised revision when supplied. */
   async pullStateFromPeer(
-    domain: string,
-    requiredRevision?: bigint,
+    namespaceId: number,
+    requiredRevision: bigint,
+    signal: AbortSignal,
   ): Promise<bigint> {
-    const context = await this.threadAccess.capturePeerResponseToken(domain);
-    if (requiredRevision !== undefined)
-      this.stateFeedPull.advertise(
-        domain,
-        context.namespaceId,
-        requiredRevision,
-      );
+    signal.throwIfAborted();
+    const context = await this.namespaces.captureActiveById(namespaceId);
+    const domain = context.domain;
+    signal.throwIfAborted();
+    this.stateFeedPull.advertise(context.namespaceId, requiredRevision);
     const changed = new WeakMap<PeerStateFeedPage, StatePageEffect>();
     let observedProfileNamespaceEnd: bigint | undefined;
-    await this.stateFeedPull.run(domain, context.namespaceId, {
+    await this.stateFeedPull.run(context.namespaceId, signal, {
       fetch: async (after, through) => {
+        signal.throwIfAborted();
         await this.quota.assertCanConsumeState(context.namespaceId);
         const page = await this.pullStateFeedPage(
           domain,
+          signal,
           after,
           after === undefined ? undefined : 100,
           through,

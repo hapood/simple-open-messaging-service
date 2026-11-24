@@ -2,9 +2,7 @@
 export type WindowPositionScenario =
   | { kind: 'olderDelivery' }
   | { kind: 'newerDelivery' }
-  | { kind: 'entryDelivery' }
   | { kind: 'pendingUpdate' }
-  | { kind: 'gapReplacement'; suffixId: number }
   | { kind: 'viewportResize' }
   | { kind: 'preserveReading' }
   | { kind: 'goToLatest' }

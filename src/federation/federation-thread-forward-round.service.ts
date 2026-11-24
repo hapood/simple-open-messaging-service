@@ -6,14 +6,12 @@ import { FederationThreadRoundRemoteError } from './federation-thread-round-erro
 export interface FederationThreadForwardMessageRoundDriver {
   process(params: {
     threadId: number;
-    peerDomain: string;
     after: number;
     through: number;
     take: number;
   }): Promise<void>;
   complete(params: {
     threadId: number;
-    peerDomain: string;
     authorizationEpoch: number;
     targetSeq: number;
   }): Promise<void>;
@@ -22,7 +20,6 @@ export interface FederationThreadForwardMessageRoundDriver {
 export interface FederationThreadForwardTombstoneRoundDriver {
   process(params: {
     threadId: number;
-    peerDomain: string;
     after: number;
     through: number;
     maxMessageSeq?: number;
@@ -30,7 +27,6 @@ export interface FederationThreadForwardTombstoneRoundDriver {
   }): Promise<void>;
   complete(params: {
     threadId: number;
-    peerDomain: string;
     authorizationEpoch: number;
     targetSeq: number;
   }): Promise<void>;
@@ -45,6 +41,8 @@ export interface FederationThreadForwardTombstoneRoundResult {
   targetSeq: number;
   maxMessageSeq?: number;
   processed: boolean;
+  /** More applicable facts remain in this request's cutoff. */
+  hasMore?: boolean;
 }
 
 /** Freezes one bounded page for either independent forward stream. */
@@ -54,12 +52,15 @@ export class FederationThreadForwardRoundService {
 
   async runMessages(
     threadId: number,
-    peerDomain: string,
     namespaceId: number,
     driver: FederationThreadForwardMessageRoundDriver,
+    signal: AbortSignal,
     requestedTake?: number,
   ): Promise<FederationThreadForwardMessageRoundResult> {
+    signal.throwIfAborted();
     const take = resolveFederationThreadRoundTake(requestedTake);
+    await this.states.prepareMessageRound(threadId, namespaceId);
+    signal.throwIfAborted();
     const state = await this.states.require(threadId, namespaceId);
     const targetSeq = state.messageTargetSeq;
     const processedThrough = state.messageProcessedThroughSeq;
@@ -67,22 +68,23 @@ export class FederationThreadForwardRoundService {
     if (targetSeq <= processedThrough) return { targetSeq, processed: false };
 
     try {
+      signal.throwIfAborted();
       await driver.process({
         threadId,
-        peerDomain,
         after: processedThrough,
         through: targetSeq,
         take,
       });
     } catch (error) {
+      signal.throwIfAborted();
       throw new FederationThreadRoundRemoteError(
         error,
         state.authorizationEpoch,
       );
     }
+    signal.throwIfAborted();
     await driver.complete({
       threadId,
-      peerDomain,
       authorizationEpoch: state.authorizationEpoch,
       targetSeq,
     });
@@ -91,22 +93,24 @@ export class FederationThreadForwardRoundService {
 
   async runTombstones(
     threadId: number,
-    peerDomain: string,
     namespaceId: number,
     driver: FederationThreadForwardTombstoneRoundDriver,
+    signal: AbortSignal,
     requestedTake?: number,
   ): Promise<FederationThreadForwardTombstoneRoundResult> {
+    signal.throwIfAborted();
     const take = resolveFederationThreadRoundTake(requestedTake);
     const state = await this.states.require(threadId, namespaceId);
-    const recovering = state.deletionRecoveryThroughSeq !== null;
-    if (recovering !== (state.deletionRecoveryMaxMessageSeq !== null))
-      throw new Error('incomplete tombstone recovery state');
-    const frozenTargetSeq =
-      state.deletionRecoveryThroughSeq ?? state.deletionTargetSeq;
-    const maxMessageSeq = state.deletionRecoveryMaxMessageSeq ?? undefined;
+    const frozenTargetSeq = state.deletionTargetSeq;
+    // Reservations and previous rounds are not stored messages. Read the
+    // publisher coordinate from the rows that exist when building this query.
+    const maxMessageSeq = await this.states.readCurrentMessageSeq(
+      threadId,
+      namespaceId,
+    );
+    signal.throwIfAborted();
     this.assertCoordinate(frozenTargetSeq, 'tombstone target seq');
-    if (maxMessageSeq !== undefined)
-      this.assertCoordinate(maxMessageSeq, 'tombstone message cutoff seq');
+    this.assertCoordinate(maxMessageSeq, 'tombstone message cutoff seq');
     const processedThrough = state.deletionProcessedThroughSeq;
     this.assertCoordinate(processedThrough, 'processed deletion seq');
     if (frozenTargetSeq <= processedThrough) {
@@ -118,23 +122,24 @@ export class FederationThreadForwardRoundService {
     }
 
     try {
+      signal.throwIfAborted();
       await driver.process({
         threadId,
-        peerDomain,
         after: processedThrough,
         through: frozenTargetSeq,
         maxMessageSeq,
         take,
       });
     } catch (error) {
+      signal.throwIfAborted();
       throw new FederationThreadRoundRemoteError(
         error,
         state.authorizationEpoch,
       );
     }
+    signal.throwIfAborted();
     await driver.complete({
       threadId,
-      peerDomain,
       authorizationEpoch: state.authorizationEpoch,
       targetSeq: frozenTargetSeq,
     });

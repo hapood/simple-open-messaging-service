@@ -14,10 +14,10 @@ import type { DurableTask } from '../durable-task/durable-task.types.js';
 import { saveTaskCheckpointInTx } from '../durable-task/task-checkpoint.js';
 import { requireThreadContentLockInTx } from '../common/locks/thread-content-lock.js';
 import {
-  parseThreadFanoutTarget,
+  parseFederationThreadFanoutTarget,
   threadFanoutScope,
-  yieldThreadFanoutInTx,
-  type ThreadFanoutTarget,
+  yieldFederationThreadFanoutInTx,
+  type FederationThreadFanoutTarget,
 } from '../message/thread-fanout-task.js';
 import { FederationThreadContentHeadService } from './federation-thread-content-head.service.js';
 import { FEDERATION_STATE_FEED_PUSH } from './federation-state-feed.events.js';
@@ -63,7 +63,7 @@ export class FederationThreadFanoutTaskHandler
   }
 
   async execute(task: DurableTask): Promise<void> {
-    const target = parseThreadFanoutTarget(task.payload);
+    const target = parseFederationThreadFanoutTarget(task.payload);
     if (
       task.kind !== 'PROJECTION' ||
       task.scopeType !== 'THREAD' ||
@@ -88,7 +88,7 @@ export class FederationThreadFanoutTaskHandler
 
   private async projectNext(
     taskId: bigint,
-    target: ThreadFanoutTarget,
+    target: FederationThreadFanoutTarget,
   ): Promise<{ done: true } | { done: false; namespaceId?: number }> {
     return this.database.db.transaction(async (tx) => {
       // Preserve business -> thread -> projection/task lock ordering.
@@ -102,14 +102,7 @@ export class FederationThreadFanoutTaskHandler
       if (checkpoint.phase === 'DONE') return { done: true };
       const done = { phase: 'DONE', afterNamespaceId: 0 };
       if (
-        await yieldThreadFanoutInTx(
-          tx,
-          lock,
-          taskId,
-          target,
-          this.taskType,
-          done,
-        )
+        await yieldFederationThreadFanoutInTx(tx, lock, taskId, target, done)
       )
         return { done: true };
 

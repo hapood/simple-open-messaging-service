@@ -97,7 +97,7 @@ export class CallHistoryService implements OnModuleInit {
         JSON.stringify(existing.snapshot),
       );
       if (!terminalContent) throw new Error('invalid journaled terminal call');
-      const [{ seq, tombstoneEndSeq }] = await tx
+      const [{ seq }] = await tx
         .update(messageThread)
         .set({
           curSeq: sql`${messageThread.curSeq} + 1`,
@@ -106,7 +106,6 @@ export class CallHistoryService implements OnModuleInit {
         .where(eq(messageThread.id, snapshot.threadId))
         .returning({
           seq: messageThread.curSeq,
-          tombstoneEndSeq: messageThread.tombstoneEndSeq,
         });
       await tx.insert(message).values({
         threadId: snapshot.threadId,
@@ -130,7 +129,6 @@ export class CallHistoryService implements OnModuleInit {
       await enqueueThreadFanoutInTx(tx, lock, {
         threadId: snapshot.threadId,
         messageEndSeq: seq,
-        tombstoneEndSeq,
       });
     });
   }

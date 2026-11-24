@@ -135,6 +135,22 @@ describe('TextRowComponent — forwarded quote navigation', () => {
     ref.destroy();
   });
 
+  it('renders a bundle zero target as an error on the reply, without navigation or pending text', () => {
+    const ref = mount(message({ seq: 0, status: 'NOT_FOUND' }));
+    const host = ref.location.nativeElement as HTMLElement;
+    const targets: unknown[] = [];
+    ref.instance.quoteJump.subscribe((target) => targets.push(target));
+    const quote = host.querySelector<HTMLElement>('.msg-quote')!;
+    expect(quote.textContent?.trim()).toBe('Message not found');
+    expect(host.querySelector('button.msg-quote')).toBeNull();
+    quote.click();
+    expect(targets).toEqual([]);
+    expect(host.querySelector('.msg-bubble-text')?.textContent).toContain(
+      'reply',
+    );
+    ref.destroy();
+  });
+
   it('renders a non-interactive preview when the quoted message was not forwarded', () => {
     const ref = mount(message({ author: 'Alice', body: 'original' }));
     const host = ref.location.nativeElement as HTMLElement;

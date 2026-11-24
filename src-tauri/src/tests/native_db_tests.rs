@@ -218,8 +218,7 @@ fn test_thread_snapshot(kind: &str, feed: i64, lifecycle: &str) -> serde_json::V
         "selfMentionNamespaceId": if kind == "GROUP" { serde_json::json!(0) } else { serde_json::Value::Null },
         "conversationState":lifecycle,"blocked":lifecycle == "READ_ONLY","role":role,
         "profileAccount":account,"profileRev":3,
-        "alias":null,"messageEndSeq":0,"tombstoneEndSeq":0,
-        "groupMetaFeedEndId":null,"joinRequestEndFeedId":0,"joinRequestReadFeedId":-1,
+        "alias":null,"messageEndSeq":0,        "joinRequestEndFeedId":0,"joinRequestReadFeedId":-1,
         "groupInviteEndFeedId":0,"lastReadSeq":0,"announcementReadFeedId":0,
         "unreadCount":0,"lastMentionSeq":null,"previews":[],
     })
@@ -440,9 +439,7 @@ fn native_group_roster_rebuilds_through_departure_and_reestablishment() {
     let page = serde_json::from_value(serde_json::json!({
         "threadId":52,"namespaceId":0,"page":{
             "account":"!dev","mode":"full","items":[
-                {"feedId":"21","createdAt":1000,"originCreatedAt":null,"operation":"MEMBER_UPSERT","body":{
-                    "account":"bob","namespaceId":0,"role":"MEMBER","profileRev":3
-                }}
+                {"feedId":"21","createdAt":1000,"originCreatedAt":null,"operation":"GROUP_MEMBER_COUNT","body":{"memberCount":1}}
             ],
             "hasMore":false,"scannedThrough":"21","groupMetaFeedEndId":"21"
         }
@@ -456,17 +453,7 @@ fn native_group_roster_rebuilds_through_departure_and_reestablishment() {
     let thread = super::thread_store::read(&conn, 1, 52).unwrap().unwrap();
     assert_eq!(thread["meta"]["memberCount"], 1);
     assert_eq!(thread["meta"]["groupMetaFeedId"], "21");
-    assert_eq!(
-        conn.query_row("SELECT COUNT(*) FROM members", [], |r| r.get::<_, i64>(0))
-            .unwrap(),
-        1
-    );
     super::client_state::begin_group_meta_recovery(&mut conn, 1, 52, "21").unwrap();
-    assert_eq!(
-        conn.query_row("SELECT COUNT(*) FROM members", [], |r| r.get::<_, i64>(0))
-            .unwrap(),
-        0
-    );
     let thread = super::thread_store::read(&conn, 1, 52).unwrap().unwrap();
     assert_eq!(thread["meta"]["groupMetaFeedId"], "0");
 }
@@ -484,10 +471,8 @@ fn meta_commits_and_thread_operations_never_write_each_others_table() {
     let page = serde_json::from_value(serde_json::json!({
         "threadId":52,"namespaceId":0,"page":{
             "account":"!dev","mode":"full","hasMore":false,
-            "scannedThrough":"2","groupMetaFeedEndId":"2","items":[
-                {"feedId":"1","createdAt":1000,"originCreatedAt":null,"operation":"MEMBER_UPSERT","body":{
-                    "account":"bob","namespaceId":0,"role":"MEMBER","profileRev":3
-                }},
+            "scannedThrough":"2","items":[
+                {"feedId":"1","createdAt":1000,"originCreatedAt":null,"operation":"GROUP_MEMBER_COUNT","body":{"memberCount":1}},
                 {"feedId":"2","createdAt":1000,"originCreatedAt":null,"operation":"GROUP_ANNOUNCEMENT","body":{"text":"Notice"}}
             ]
         }
@@ -535,7 +520,7 @@ fn native_group_meta_rejects_out_of_contract_member_pages_atomically() {
         let page = serde_json::from_value(serde_json::json!({
             "threadId":52,"namespaceId":0,"page":{
                 "account":"!dev","mode":"full","hasMore":false,
-                "scannedThrough":"21","groupMetaFeedEndId":"21","items":[
+                "scannedThrough":"21","items":[
                     {"feedId":"21","createdAt":1000,"originCreatedAt":null,
                      "operation":operation,"body":body}
                 ]
@@ -564,10 +549,8 @@ fn native_group_meta_rejects_out_of_contract_member_pages_atomically() {
     let page = serde_json::from_value(serde_json::json!({
         "threadId":52,"namespaceId":0,"page":{
             "account":"!dev","mode":"full","hasMore":false,
-            "scannedThrough":"21","groupMetaFeedEndId":"21","items":[
-                {"feedId":"21","createdAt":1000,"originCreatedAt":null,"operation":"MEMBER_UPSERT","body":{
-                    "account":"bob","namespaceId":0,"role":"ADMIN","profileRev":3
-                }}
+            "scannedThrough":"21","items":[
+                {"feedId":"21","createdAt":1000,"originCreatedAt":null,"operation":"GROUP_MEMBER_COUNT","body":{"memberCount":1}}
             ]
         }
     }))
@@ -579,10 +562,8 @@ fn native_group_meta_rejects_out_of_contract_member_pages_atomically() {
     let page = serde_json::from_value(serde_json::json!({
         "threadId":52,"namespaceId":0,"page":{
             "account":"!dev","mode":"delta","hasMore":false,
-            "scannedThrough":"22","groupMetaFeedEndId":"22","items":[
-                {"feedId":"22","createdAt":1000,"originCreatedAt":null,"operation":"MEMBER_DEPART","body":{
-                    "account":"bob","namespaceId":0,"role":"ADMIN","profileRev":3
-                }}
+            "scannedThrough":"22","items":[
+                {"feedId":"22","createdAt":1000,"originCreatedAt":null,"operation":"GROUP_MEMBER_COUNT","body":{"memberCount":0}}
             ]
         }
     }))
@@ -591,10 +572,6 @@ fn native_group_meta_rejects_out_of_contract_member_pages_atomically() {
         .unwrap()
         .unwrap();
     assert_eq!(patch.member_count, 0);
-    let left_state: i64 = conn
-        .query_row("SELECT left_state FROM members", [], |row| row.get(0))
-        .unwrap();
-    assert_eq!(left_state, 1);
 }
 
 #[test]
@@ -606,10 +583,8 @@ fn late_meta_page_commits_server_truth_even_after_departure() {
     let page = serde_json::from_value(serde_json::json!({
         "threadId":52,"namespaceId":0,"page":{
             "account":"!dev","mode":"delta","hasMore":false,
-            "scannedThrough":"2","groupMetaFeedEndId":"2","items":[
-                {"feedId":"2","createdAt":1000,"originCreatedAt":null,"operation":"MEMBER_UPSERT","body":{
-                    "account":"late","namespaceId":0,"role":"MEMBER","profileRev":3
-                }}
+            "scannedThrough":"2","items":[
+                {"feedId":"2","createdAt":1000,"originCreatedAt":null,"operation":"GROUP_MEMBER_COUNT","body":{"memberCount":1}}
             ]
         }
     }))
@@ -620,12 +595,6 @@ fn late_meta_page_commits_server_truth_even_after_departure() {
         .unwrap();
     assert_eq!(patch.group_meta_feed_id, "2");
     assert_eq!(patch.member_count, 1);
-    assert_eq!(
-        conn.query_row("SELECT COUNT(*) FROM members", [], |row| row
-            .get::<_, i64>(0))
-            .unwrap(),
-        1
-    );
 }
 
 #[test]
@@ -777,7 +746,7 @@ fn old_message_cache_is_rejected_and_rebuilt_without_importing_bodies() {
             Ok((row.get::<_, Option<i64>>(0)?, row.get::<_, i64>(1)?))
         })
         .unwrap(),
-        (None, 3)
+        (None, 0)
     );
 }
 
@@ -927,8 +896,7 @@ fn native_group_meta_preserves_member_addresses_and_commits_cursor() {
         "selfMentionNamespaceId":12,
         "conversationState":"ACTIVE","blocked":false,"role":"MEMBER",
         "profileAccount":"!mirror","profileRev":0,
-        "alias":null,"messageEndSeq":0,"tombstoneEndSeq":0,
-        "groupMetaFeedEndId":null,"joinRequestEndFeedId":0,"joinRequestReadFeedId":-1,
+        "alias":null,"messageEndSeq":0,        "joinRequestEndFeedId":0,"joinRequestReadFeedId":-1,
         "groupInviteEndFeedId":0,"lastReadSeq":0,"announcementReadFeedId":0,
         "unreadCount":0,"lastMentionSeq":null,"previews":[],
     });
@@ -942,10 +910,8 @@ fn native_group_meta_preserves_member_addresses_and_commits_cursor() {
             .unwrap();
     super::attention::write_state(&conn, 1, &local).unwrap();
     let page = serde_json::json!([{"threadId":90,"namespaceId":7,"page":{
-    "mode":"full","scannedThrough":"3","items":[
-        {"feedId":"1","createdAt":1000,"originCreatedAt":null,"operation":"MEMBER_UPSERT","body":{"account":"me","namespaceId":0,"role":"ADMIN","profileRev":2}},
-        {"feedId":"2","createdAt":1000,"originCreatedAt":null,"operation":"MEMBER_UPSERT","body":{"account":"other","namespaceId":7,"role":"MEMBER","profileRev":2}},
-        {"feedId":"3","createdAt":1000,"originCreatedAt":null,"operation":"GROUP_PROFILE","body":{"account":"!mirror","namespaceId":7,"profileRev":4}}
+    "mode":"full","scannedThrough":"2","items":[
+        {"feedId":"2","createdAt":1000,"originCreatedAt":null,"operation":"GROUP_MEMBER_COUNT","body":{"memberCount":2}}
     ]}}]);
     super::client_state::apply_state_feed_page(
         &mut conn,
@@ -955,14 +921,6 @@ fn native_group_meta_preserves_member_addresses_and_commits_cursor() {
         serde_json::from_value(page).unwrap(),
     )
     .unwrap();
-    let local_ns: i64 = conn
-        .query_row(
-            "SELECT namespace_id FROM members WHERE member_account='me'",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
-    assert_eq!(local_ns, 0);
     let home_binding: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM profile_namespaces WHERE user_id=1 AND publisher_namespace_id=0 AND profile_namespace_id=0",
@@ -971,10 +929,6 @@ fn native_group_meta_preserves_member_addresses_and_commits_cursor() {
         )
         .unwrap();
     assert_eq!(home_binding, 0);
-    let count: i64 = conn
-        .query_row("SELECT COUNT(*) FROM members", [], |row| row.get(0))
-        .unwrap();
-    assert_eq!(count, 2);
     let profiles: i64 = conn
         .query_row("SELECT COUNT(*) FROM profiles", [], |row| row.get(0))
         .unwrap();
@@ -1003,7 +957,7 @@ fn native_group_meta_preserves_member_addresses_and_commits_cursor() {
 
     let delta = serde_json::json!([{"threadId":90,"namespaceId":7,"page":{
     "mode":"delta","scannedThrough":"4","items":[
-        {"feedId":"4","createdAt":1000,"originCreatedAt":null,"operation":"MEMBER_UPSERT","body":{"account":"other","namespaceId":7,"role":"ADMIN","profileRev":2}}
+        {"feedId":"4","createdAt":1000,"originCreatedAt":null,"operation":"GROUP_MEMBER_COUNT","body":{"memberCount":3}}
     ]}}]);
     super::client_state::apply_state_feed_page(
         &mut conn,
@@ -1015,14 +969,6 @@ fn native_group_meta_preserves_member_addresses_and_commits_cursor() {
     .unwrap();
     // A Meta fact selects the profile revision directly; no message anchor
     // competes with it.
-    let (rev, role): (i64, String) = conn
-        .query_row(
-            "SELECT profile_rev, role FROM members WHERE member_account='other'",
-            [],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .unwrap();
-    assert_eq!((rev, role.as_str()), (2, "ADMIN"));
 }
 
 #[test]

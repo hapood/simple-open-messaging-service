@@ -154,12 +154,8 @@ describe('framework SSE streams', () => {
 
   it('sends media progress through temporary keyed streams and closes on terminal events', () => {
     const { svc } = makeService();
-    const messageEvents: MessageEvent[] = [];
     const fileEvents: MessageEvent[] = [];
     const otherFileEvents: MessageEvent[] = [];
-    const messageSub = svc
-      .registerMediaMessageProgress(7, 3, 9)
-      .subscribe((event) => messageEvents.push(event));
     const fileSub = svc
       .registerMediaFileProgress(7, 3, 9, 'a'.repeat(64))
       .subscribe((event) => fileEvents.push(event));
@@ -167,22 +163,6 @@ describe('framework SSE streams', () => {
       .registerMediaFileProgress(7, 3, 9, 'b'.repeat(64))
       .subscribe((event) => otherFileEvents.push(event));
 
-    svc.onMediaMessageDownloadProgress({
-      threadId: 3,
-      seq: 9,
-      status: 'downloading',
-      completedFiles: 1,
-      totalFiles: 2,
-      activeFile: { digest: 'a'.repeat(64), name: 'a.png' },
-    });
-    svc.onMediaFileDownloadProgress({
-      threadId: 3,
-      seq: 9,
-      file: { digest: 'a'.repeat(64), name: 'a.png' },
-      status: 'downloading',
-      loaded: 128,
-      total: 256,
-    });
     svc.completeMediaFileDownloadProgress({
       threadId: 3,
       seq: 9,
@@ -190,30 +170,31 @@ describe('framework SSE streams', () => {
       status: 'ready',
       loaded: 256,
       total: 256,
+      bytesPerSecond: null,
     });
-    svc.completeMediaMessageDownloadProgress({
-      threadId: 3,
-      seq: 9,
-      status: 'ready',
-      completedFiles: 2,
-      totalFiles: 2,
-      activeFile: null,
-    });
-
-    expect(messageEvents.map((event) => event.type)).toEqual([
-      'MEDIA_MESSAGE_DOWNLOAD_PROGRESS',
-      'MEDIA_MESSAGE_DOWNLOAD_PROGRESS',
-    ]);
     expect(fileEvents.map((event) => event.type)).toEqual([
-      'MEDIA_FILE_DOWNLOAD_PROGRESS',
       'MEDIA_FILE_DOWNLOAD_PROGRESS',
     ]);
     expect(otherFileEvents).toHaveLength(0);
-    expect(messageSub.closed).toBe(true);
     expect(fileSub.closed).toBe(true);
     expect(otherFileSub.closed).toBe(false);
     otherFileSub.unsubscribe();
     svc.onModuleDestroy();
+  });
+
+  it('releases file observers on unsubscribe and completes remaining streams on shutdown', () => {
+    const { svc } = makeService();
+    const digest = 'a'.repeat(64);
+    const first = svc.registerMediaFileProgress(7, 3, 9, digest).subscribe();
+    const second = svc.registerMediaFileProgress(7, 3, 9, digest).subscribe();
+    first.unsubscribe();
+    expect(svc.hasMediaFileProgressSubscriber(3, 9, digest)).toBe(true);
+    second.unsubscribe();
+    expect(svc.hasMediaFileProgressSubscriber(3, 9, digest)).toBe(false);
+    const held = svc.registerMediaFileProgress(7, 3, 9, digest).subscribe();
+    svc.onModuleDestroy();
+    expect(held.closed).toBe(true);
+    expect(svc.hasMediaFileProgressSubscriber(3, 9, digest)).toBe(false);
   });
 
   it('sends push revision only to matching sessions and thread wake-up only to its user', () => {

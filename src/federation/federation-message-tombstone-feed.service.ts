@@ -1,5 +1,5 @@
 import { HttpStatus, Injectable } from '@nestjs/common';
-import { and, asc, eq, gt, lte, ne, or } from 'drizzle-orm';
+import { and, asc, eq, gt, lte, sql } from 'drizzle-orm';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import type { MessageDeleteType } from '../database/enums.js';
@@ -107,19 +107,17 @@ export class FederationMessageTombstoneFeedService {
           .where(
             and(
               eq(deletedMessage.threadId, threadId),
-              or(
-                eq(deletedMessage.publisherNamespaceId, 0),
-                groupQueryDirection === 'MIRROR_TO_ORIGIN'
-                  ? eq(deletedMessage.publisherNamespaceId, namespaceId)
-                  : undefined,
-              ),
-              groupQueryDirection !== 'MIRROR_TO_ORIGIN' &&
-                demand.type === 'P2P'
-                ? eq(message.profileNamespaceId, 0)
-                : undefined,
-              includeSelf
-                ? undefined
-                : ne(message.profileNamespaceId, namespaceId),
+              eq(deletedMessage.publisherNamespaceId, 0),
+              // P2P and non-authoritative mirrors publish only local deletions of locally authored messages.
+              // Authoritative groups publish all local/translated deletions, optionally excluding the requester's own authors.
+              groupQueryDirection !== 'ORIGIN_DISTRIBUTION'
+                ? and(
+                    eq(message.publisherNamespaceId, 0),
+                    eq(message.profileNamespaceId, 0),
+                  )
+                : includeSelf
+                  ? undefined
+                  : sql`(CASE WHEN ${message.profileNamespaceId} = 0 THEN ${message.publisherNamespaceId} ELSE ${message.profileNamespaceId} END) <> ${namespaceId}`,
               maxMessageSeq !== undefined
                 ? lte(message.seq, maxMessageSeq)
                 : undefined,

@@ -289,8 +289,11 @@ export class DiscoveryService implements OnApplicationShutdown {
 
   /** Acquire an ordinary S2S HTTP slot. Callers acquire before signing and release
    * after consuming the response. Media range downloads deliberately use their own scheduler. */
-  acquireRequestSlot(peerDomain: string): Promise<() => void> {
-    return this.httpScheduler.acquire(this.normalizeDomain(peerDomain));
+  acquireRequestSlot(
+    peerDomain: string,
+    signal?: AbortSignal,
+  ): Promise<() => void> {
+    return this.httpScheduler.acquire(this.normalizeDomain(peerDomain), signal);
   }
 
   async fetchDiscoveryDocument(domain: string): Promise<DiscoveryDocument> {

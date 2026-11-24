@@ -28,6 +28,7 @@ describe('mergeAlbumItems', () => {
   const img = (msgId: number): AlbumMedia => ({
     kind: 'image',
     src: `data:,${msgId}`,
+    size: 100, name: 'photo.jpg', mimeType: 'image/jpeg', senderName: null, sentAt: null,
     w: 100,
     h: 100,
     msgId,
@@ -217,6 +218,7 @@ describe('absorbAlbumTail (cross-batch absorb hook)', () => {
   const oneImg = (msgId: number): AlbumMedia => ({
     kind: 'image',
     src: `data:,${msgId}`,
+    size: 100, name: 'photo.jpg', mimeType: 'image/jpeg', senderName: null, sentAt: null,
     w: 100,
     h: 100,
     msgId,

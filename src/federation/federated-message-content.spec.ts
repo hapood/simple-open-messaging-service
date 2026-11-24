@@ -4,6 +4,7 @@ import {
   federatedContentDigests,
   fromFederatedMessageContent,
   toFederatedMessageContent,
+  wirePayloadDigest,
 } from './federated-message-content.js';
 
 const digestA = 'a'.repeat(64);
@@ -476,7 +477,30 @@ describe('federated message content projection', () => {
     ).toThrow('invalid fields');
   });
 
-  it.each([null, { seq: 1 }, { seq: -1 }])(
+  it.each([{ seq: 41, namespaceId: 3 }, { originSeq: 41 }])(
+    'keeps payload digest verification independent of stored coordinate %j',
+    (quote) => {
+      const digest = 'd'.repeat(64);
+      const wire = JSON.stringify({ text: 'reply' });
+      const stored = JSON.stringify({
+        text: 'reply',
+        quote: { ...quote, digest },
+      });
+      expect(toFederatedMessageContent(ContentType.PURE_TEXT, stored)).toBe(
+        wire,
+      );
+      expect(wirePayloadDigest(ContentType.PURE_TEXT, stored, [], digest)).toBe(
+        wirePayloadDigest(ContentType.PURE_TEXT, wire, [], digest),
+      );
+      expect(
+        wirePayloadDigest(ContentType.PURE_TEXT, stored, [], digest),
+      ).not.toBe(
+        wirePayloadDigest(ContentType.PURE_TEXT, wire, [], 'e'.repeat(64)),
+      );
+    },
+  );
+
+  it.each([null, { seq: 1 }, { seq: -1 }, { originSeq: 41 }])(
     'rejects any inline quote field in wire text: %j',
     (quote) => {
       expect(() =>

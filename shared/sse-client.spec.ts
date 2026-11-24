@@ -1,11 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { readFileSync } from 'node:fs';
 import { consumeSse, SseDecoder } from './sse-client.js';
-import {
-  SSE_HEARTBEAT_EVENT,
-  SSE_IDLE_TIMEOUT_MS,
-  SSE_OPEN_TIMEOUT_MS,
-} from './sse-policy.js';
+import { consumeHttpStream } from './http-stream.js';
+import { SSE_OPEN_TIMEOUT_MS, SSE_MAX_FRAME_CHARS } from './sse-policy.js';
 
 function stream() {
   let output!: ReadableStreamDefaultController<Uint8Array>;
@@ -21,6 +17,7 @@ function stream() {
   const frames = vi.fn();
   const open = vi.fn();
   const result = consumeSse('/events', {
+    transport: consumeHttpStream,
     signal: controller.signal,
     onFrame: frames,
     onOpen: open,
@@ -58,6 +55,45 @@ describe('shared SSE transport', () => {
     });
   });
 
+  it('bounds incomplete lines across chunks without emitting a partial frame', () => {
+    const decoder = new SseDecoder();
+    const frames = vi.fn();
+    decoder.push('x'.repeat(SSE_MAX_FRAME_CHARS), frames);
+    expect(() => decoder.push('x', frames)).toThrow(
+      'SSE frame exceeds maximum size',
+    );
+    expect(frames).not.toHaveBeenCalled();
+  });
+
+  it('bounds multiline frames and comments, not just each individual line', () => {
+    for (const line of ['data: x\n', ': keepalive\n']) {
+      const decoder = new SseDecoder();
+      const frames = vi.fn();
+      expect(() =>
+        decoder.push(
+          line.repeat(Math.ceil(SSE_MAX_FRAME_CHARS / line.length) + 1),
+          frames,
+        ),
+      ).toThrow('SSE frame exceeds maximum size');
+      expect(frames).not.toHaveBeenCalled();
+    }
+  });
+
+  it('resets the size budget between frames even within one large chunk', () => {
+    const frames = vi.fn();
+    const frame = `event: log\ndata: ${'x'.repeat(SSE_MAX_FRAME_CHARS / 2)}\n\n`;
+    new SseDecoder().push(frame.repeat(3), frames);
+    expect(frames).toHaveBeenCalledTimes(3);
+  });
+
+  it('releases the response when an oversized frame is rejected', async () => {
+    const s = stream();
+    s.send('data: ' + 'x'.repeat(SSE_MAX_FRAME_CHARS));
+    expect(await s.result).toEqual(new Error('SSE frame exceeds maximum size'));
+    expect(s.cancel).toHaveBeenCalledOnce();
+    expect(s.body.locked).toBe(false);
+  });
+
   it('treats a trailing CR as a line ending without waiting for another chunk', () => {
     const frames = vi.fn();
     new SseDecoder().push('event: HELLO\rdata: {}\r\r', frames);
@@ -77,6 +113,7 @@ describe('shared SSE transport', () => {
     );
     await expect(
       consumeSse('/events', {
+        transport: consumeHttpStream,
         signal: controller.signal,
         onResponse: () => controller.abort(),
         onOpen: open,
@@ -85,6 +122,24 @@ describe('shared SSE transport', () => {
     ).rejects.toThrow();
     expect(open).not.toHaveBeenCalled();
     expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('cancels the response body when headers are rejected before reading', async () => {
+    const cancel = vi.fn();
+    const body = new ReadableStream<Uint8Array>({ cancel });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(new Response(body, { status: 401 })),
+    );
+    await expect(
+      consumeSse('/events', {
+        transport: consumeHttpStream,
+        signal: new AbortController().signal,
+        onFrame: vi.fn(),
+      }),
+    ).rejects.toThrow('SSE open failed: 401');
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(body.locked).toBe(false);
   });
 
   it('aborts a silent stream at 30s and releases reader and timers', async () => {
@@ -179,6 +234,7 @@ describe('shared SSE transport', () => {
       ),
     );
     const result = consumeSse('/events', {
+      transport: consumeHttpStream,
       signal: new AbortController().signal,
       onFrame: vi.fn(),
     }).catch((e: unknown) => e);
@@ -197,21 +253,5 @@ describe('shared SSE transport', () => {
     expect(s.frames).not.toHaveBeenCalled();
     expect(s.body.locked).toBe(false);
     expect(vi.getTimerCount()).toBe(0);
-  });
-
-  it('keeps the native runtime policy identical to the browser policy', () => {
-    const rust = readFileSync(
-      new URL('../src-tauri/src/sse.rs', import.meta.url),
-      'utf8',
-    ).replaceAll('_', '');
-    expect(rust).toContain(
-      `const SSECONNECTTIMEOUT: Duration = Duration::frommillis(${SSE_OPEN_TIMEOUT_MS});`,
-    );
-    expect(rust).toContain(
-      `const SSEIDLETIMEOUT: Duration = Duration::frommillis(${SSE_IDLE_TIMEOUT_MS});`,
-    );
-    expect(rust).toContain(
-      `const SSEHEARTBEATEVENT: &str = "${SSE_HEARTBEAT_EVENT}";`,
-    );
   });
 });

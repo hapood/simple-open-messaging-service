@@ -10,6 +10,8 @@ import {
   isNull,
   lt,
   or,
+  notInArray,
+  sql,
 } from 'drizzle-orm';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
@@ -22,6 +24,7 @@ import {
 } from './federation-protocol.js';
 import { FederationRecognitionService } from './federation-recognition.service.js';
 import { FederationTransportError } from './federation-errors.js';
+import { FederationPeerRuntimeService } from './federation-peer-runtime.service.js';
 
 /** Owns peer trust state, liveness bookkeeping, and administrative lifecycle operations. */
 @Injectable()
@@ -33,10 +36,11 @@ export class FederationPeerLifecycle {
     private readonly database: DatabaseService,
     private readonly recognition: FederationRecognitionService,
     private readonly discovery: DiscoveryService,
+    private readonly runtime: FederationPeerRuntimeService,
   ) {}
 
   /** Pure local gate for an ordinary outbound S2S operation. Never starts recognition or network IO. */
-  async checkOutboundReady(domain: string): Promise<void> {
+  async checkOutboundReady(domain: string): Promise<number> {
     const existing = await this.database.db.query.identityNamespace.findFirst({
       where: eq(tables.identityNamespace.domain, domain),
     });
@@ -60,8 +64,10 @@ export class FederationPeerLifecycle {
       existing?.active === true &&
       existing.localServiceAvailable &&
       existing.peerAcceptanceConfirmed
-    )
-      return;
+    ) {
+      this.runtime.assertBusinessAllowed(existing.id);
+      return existing.id;
+    }
     throw new BusinessException(
       BusinessCode.FEDERATION_RECOGNITION_REQUIRED,
       `${domain} peer acceptance is not established`,
@@ -300,14 +306,31 @@ export class FederationPeerLifecycle {
     status?: string;
     namespaceId?: number;
   }) {
+    const pausedIds = this.runtime.cooldownNamespaceIds();
+    const statusCondition =
+      opts.status === 'cooldown'
+        ? and(
+            eq(tables.identityNamespace.trustLevel, 'available'),
+            pausedIds.length
+              ? inArray(tables.identityNamespace.id, pausedIds)
+              : sql`false`,
+          )
+        : opts.status === 'available'
+          ? and(
+              eq(tables.identityNamespace.trustLevel, 'available'),
+              pausedIds.length
+                ? notInArray(tables.identityNamespace.id, pausedIds)
+                : undefined,
+            )
+          : opts.status
+            ? eq(tables.identityNamespace.trustLevel, opts.status)
+            : undefined;
     const where = and(
       gt(tables.identityNamespace.id, 0),
       ...(opts.search
         ? [ilike(tables.identityNamespace.domain, `%${opts.search}%`)]
         : []),
-      ...(opts.status
-        ? [eq(tables.identityNamespace.trustLevel, opts.status)]
-        : []),
+      statusCondition,
       ...(opts.namespaceId !== undefined
         ? [eq(tables.identityNamespace.id, opts.namespaceId)]
         : []),
@@ -371,6 +394,7 @@ export class FederationPeerLifecycle {
       if (!progress) throw new Error(`peer ${peer.id} has no feed state`);
       return {
         ...peer,
+        cooldown: this.runtime.getCooldown(peer.id),
         feedProgress: {
           namespaceId: peer.id,
           lastHandshakeAt: progress.lastHandshakeAt,

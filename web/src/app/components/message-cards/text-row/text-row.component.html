@@ -14,42 +14,13 @@
     </div>
   }
 
-  @if (isFailed() || isSending()) {
-    <div class="msg-failed-actions">
-      @if (isFailed()) {
-        <button
-          type="button"
-          class="msg-action--retry"
-          (click)="retry.emit(data().msgId)"
-          [attr.aria-label]="'transfer.retry' | transloco"
-        >
-          <svg viewBox="0 0 24 24" aria-hidden="true">
-            <path d="M20 11a8 8 0 10-2.34 5.66M20 4v7h-7" />
-          </svg>
-        </button>
-      }
-      <button
-        type="button"
-        class="msg-action--cancel"
-        (click)="cancel.emit(data().msgId)"
-        [attr.aria-label]="'transfer.cancel' | transloco"
-      >
-        <svg viewBox="0 0 24 24" aria-hidden="true">
-          <path d="M6 6l12 12M18 6L6 18" />
-        </svg>
-      </button>
-    </div>
-  }
   <div class="msg-col msg-{{ side() }}">
     @if (showName()) {
       <div class="msg-name msg-{{ side() }}">
         {{ sender.name() || ('common.unknown' | transloco) }}
       </div>
     }
-    <div
-      class="msg-bubble msg-{{ side() }} msg-{{ pos() }}"
-      [class.msg-sending]="isSending()"
-    >
+    <div class="msg-bubble msg-{{ side() }} msg-{{ pos() }}">
       @if (data().quote; as quote) {
         <app-msg-quote-block
           [quote]="quote"
@@ -89,14 +60,6 @@
           data().time
         }}</span>
       </p>
-      @if (statusTick()) {
-        @if (!isFailed()) {
-          <span
-            class="msg-status msg-status--{{ data().status }}"
-            aria-hidden="true"
-          ></span>
-        }
-      }
       <span class="msg-time">{{ data().time }}</span>
     </div>
   </div>

@@ -111,16 +111,11 @@ describe('FederationPendingMediaPromoter', () => {
           fail: (id: string) => Promise<void>,
         ) => fail(batchId),
       };
-      const sse = {
-        hasMediaMessageProgressSubscriber: () => false,
-        completeMediaMessageDownloadProgress: vi.fn(),
-      };
       const batches = new FederationInboundMediaBatchService(
         database,
         sync as never,
         promoter,
         {} as never,
-        sse as never,
       );
       const connection = await database.pool.connect();
       let releaseLock!: () => void;

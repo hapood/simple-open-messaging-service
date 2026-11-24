@@ -1,4 +1,15 @@
-import { categorizeFilename, fileExt } from './file-meta.util';
+import { categorizeFilename, fileExt, formatBytes } from './file-meta.util';
+
+describe('formatBytes', () => {
+  it.each([
+    [0, '0 B'],
+    [1, '1 B'],
+    [1024, '1.0 KB'],
+    [1048576, '1.0 MB'],
+  ] as const)('formats %i bytes as %s', (bytes, expected) => {
+    expect(formatBytes(bytes)).toBe(expected);
+  });
+});
 
 describe('categorizeFilename', () => {
   it('uses archive only for explicit compressed-file extensions', () => {

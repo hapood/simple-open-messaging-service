@@ -45,14 +45,18 @@ describe('FederationStatePullService drain window', () => {
         {} as never,
         {} as never,
         {
-          capturePeerResponseToken: vi
-            .fn()
-            .mockResolvedValue({ namespaceId: 7 }),
+          captureActiveById: vi.fn().mockResolvedValue({
+            domain: 'peer.test',
+            namespaceId: 7,
+            peerAssignedLocalNamespaceId: 1,
+            rootPublicKey: 'root-public-key',
+          }),
         } as never,
         {
+          advertise: vi.fn(),
           run: async (
-            _domain: string,
-            _namespace: number,
+            namespace: number,
+            signal: AbortSignal,
             callbacks: {
               apply: (tx: unknown, page: unknown) => Promise<void>;
               afterCommit: (page: unknown) => Promise<void>;
@@ -75,7 +79,9 @@ describe('FederationStatePullService drain window', () => {
         } as never,
       );
       try {
-        await expect(service.pullStateFromPeer('peer.test')).resolves.toBe(2n);
+        await expect(
+          service.pullStateFromPeer(7, 2n, new AbortController().signal),
+        ).resolves.toBe(2n);
         expect(resolveDemand).toHaveBeenCalledWith(demand);
         expect(warn).toHaveBeenCalledTimes(unavailable ? 0 : 1);
       } finally {
@@ -96,8 +102,8 @@ describe('FederationStatePullService drain window', () => {
       advertise: vi.fn(),
       run: vi.fn(
         async (
-          _domain: string,
-          _namespaceId: number,
+          namespaceId: number,
+          signal: AbortSignal,
           callbacks: {
             fetch: (after?: bigint, through?: bigint) => Promise<unknown>;
           },
@@ -119,12 +125,12 @@ describe('FederationStatePullService drain window', () => {
         },
       } as never,
       peerHttp as never,
-      { run: vi.fn((_domain, operation) => operation()) } as never,
+      { run: vi.fn((namespaceId, operation) => operation()) } as never,
       {
-        capturePeerResponseToken: vi.fn().mockResolvedValue({
+        captureActiveById: vi.fn().mockResolvedValue({
           domain: 'peer.test',
           namespaceId: 7,
-          rootKeyFingerprint: 'root',
+          peerAssignedLocalNamespaceId: 1,
           rootPublicKey: 'root-public-key',
         }),
       } as never,
@@ -141,12 +147,15 @@ describe('FederationStatePullService drain window', () => {
       } as never,
     );
 
-    await expect(service.pullStateFromPeer('peer.test', 5n)).resolves.toBe(5n);
+    await expect(
+      service.pullStateFromPeer(7, 5n, new AbortController().signal),
+    ).resolves.toBe(5n);
 
     expect(peerHttp.get).toHaveBeenCalledWith(
       '/somfp/v1/state-feed?after=2&take=100&through=5',
       'peer.test',
       16 * 1024 * 1024,
+      expect.any(AbortSignal),
     );
   });
 
@@ -156,8 +165,8 @@ describe('FederationStatePullService drain window', () => {
       advertise: vi.fn(),
       run: vi.fn(
         async (
-          _domain: string,
-          _namespaceId: number,
+          namespaceId: number,
+          signal: AbortSignal,
           callbacks: {
             apply: (tx: unknown, page: unknown) => Promise<void>;
             afterCommit: (page: unknown) => Promise<void>;
@@ -213,10 +222,10 @@ describe('FederationStatePullService drain window', () => {
       {} as never,
       {} as never,
       {
-        capturePeerResponseToken: vi.fn().mockResolvedValue({
+        captureActiveById: vi.fn().mockResolvedValue({
           domain: 'peer.test',
           namespaceId: 7,
-          rootKeyFingerprint: 'root',
+          peerAssignedLocalNamespaceId: 1,
           rootPublicKey: 'root-public-key',
         }),
       } as never,
@@ -233,7 +242,7 @@ describe('FederationStatePullService drain window', () => {
       } as never,
     );
 
-    await service.pullStateFromPeer('peer.test');
+    await service.pullStateFromPeer(7, 2n, new AbortController().signal);
 
     expect(notifyFeedUpdates).toHaveBeenNthCalledWith(1, [
       { userId: 3, feedId: 7 },

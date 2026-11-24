@@ -224,6 +224,8 @@ export type FederationTrustLevel =
   | 'degraded'
   | 'halted';
 
+export type FederationPeerRuntimeStatus = FederationTrustLevel | 'cooldown';
+
 export interface FederationFeedProgress {
   lastHandshakeAt: number | null;
   latestHealthCheck: FederationHealthObservation | null;
@@ -269,6 +271,7 @@ export interface FederationPeerState {
   trustedAt: number | null; // start of the current trust epoch
   lastSuccessAt: number | null; // last successful signed S2S op (liveness watermark, ±60s)
   degradedAt: number | null; // last available→degraded transition
+  cooldown: { until: number; reason: string } | null; // process-local business pause
   degradationReason: string | null; // latest failure message
   degradationCount: number; // how many times degraded — flakiness signal
   haltedAt: number | null;

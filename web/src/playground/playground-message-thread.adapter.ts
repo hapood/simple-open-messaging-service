@@ -154,7 +154,6 @@ export class PlaygroundMessageThreadAdapter extends MessageThreadAdapter {
         file: null,
         createdAtMs: now.getTime(),
         isSelf: true,
-        status: 'sent',
         isGroupConversation,
       },
     };

@@ -109,6 +109,29 @@ describe('message sender presentation integration', () => {
       expect(
         overlay.nativeElement.querySelector('img').getAttribute('src'),
       ).toBe('data:image/png;base64,YQ==');
+      expect(() =>
+        row.update!(
+          {
+            ...item,
+            data: {
+              ...item.data,
+              type: 'msg',
+              creator: 'a',
+              contentType: 'FILE',
+              images: null,
+              file: {
+                url: '/uploads/test.pdf',
+                name: 'test.pdf',
+                size: 1,
+                mimeType: 'application/pdf',
+              },
+            },
+          },
+          null,
+        ),
+      ).toThrow('Message row content type changed');
+      expect(resolve).toHaveBeenCalledTimes(1);
+      expect(row.el.querySelector('app-msg-file-row')).toBeNull();
       row.update!({ ...item, data: { ...item.data, text: 'edited' } }, null);
       expect(resolve).toHaveBeenCalledTimes(1);
       expect(first.observed).toBe(true);

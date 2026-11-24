@@ -61,6 +61,7 @@ import { FederationNamespaceService } from './federation-namespace.service.js';
 import { FederationStateFeedConsumerService } from './federation-state-feed-consumer.service.js';
 import { MessageProfileWorkDispatcherService } from './message-profile-work-dispatcher.service.js';
 import { FederationPeerLifecycle } from './federation-peer-lifecycle.js';
+import { FederationPeerRuntimeService } from './federation-peer-runtime.service.js';
 import { FederationHealthSchedulerService } from './federation-health-scheduler.service.js';
 import { FederationPeerHttp } from './federation-peer-http.js';
 import { FederationMediaRangeClient } from './federation-media-range-client.js';
@@ -77,6 +78,8 @@ import { FederationInboundMessageStoreService } from './federation-inbound-messa
 import { FederationInboundMessageRouteService } from './federation-inbound-message-route.service.js';
 import { FederationInboundMessageValidatorService } from './federation-inbound-message-validator.service.js';
 import { FederationInboundMessagePageService } from './federation-inbound-message-page.service.js';
+import { FederationInboundMessagePreparationService } from './federation-inbound-message-preparation.service.js';
+import { FederationInboundMessageReceiptService } from './federation-inbound-message-receipt.service.js';
 import { FederationLocalSystemMessagePublisher } from './federation-local-system-message-publisher.service.js';
 import { FederationStatePullService } from './federation-state-pull.service.js';
 import { FederationFeedHeadReceiptService } from './federation-feed-head-receipt.service.js';
@@ -203,6 +206,7 @@ import { FederationInboundMessageEffectsService } from './federation-inbound-mes
         FederationStateFeedPushService,
         FederationNamespaceService,
         GroupRelationshipMutationService,
+        GroupMetaFeedService,
       ],
       useFactory: (
         database: DatabaseService,
@@ -211,6 +215,7 @@ import { FederationInboundMessageEffectsService } from './federation-inbound-mes
         stateFeedPush: FederationStateFeedPushService,
         namespaces: FederationNamespaceService,
         relationshipMutations: GroupRelationshipMutationService,
+        groupMeta: GroupMetaFeedService,
       ) =>
         new RemoteMemberMembershipIntentService(
           database,
@@ -218,6 +223,7 @@ import { FederationInboundMessageEffectsService } from './federation-inbound-mes
           peerFeed,
           stateFeedPush,
           relationshipMutations,
+          groupMeta,
         ),
     },
     {
@@ -253,6 +259,7 @@ import { FederationInboundMessageEffectsService } from './federation-inbound-mes
     S2sVerifyService,
     S2sSignatureGuard,
     FederationPeerLifecycle,
+    FederationPeerRuntimeService,
     FederationHealthSchedulerService,
     FederationPeerHttp,
     ProfileEvidenceProjectionService,
@@ -276,6 +283,8 @@ import { FederationInboundMessageEffectsService } from './federation-inbound-mes
     FederationInboundMessageRouteService,
     FederationInboundMessageValidatorService,
     FederationInboundMessagePageService,
+    FederationInboundMessagePreparationService,
+    FederationInboundMessageReceiptService,
     FederationLocalSystemMessagePublisher,
     FederationStatePullService,
     FederationStateFeedHeadClient,
@@ -331,6 +340,7 @@ import { FederationInboundMessageEffectsService } from './federation-inbound-mes
     MirrorGroupMembershipIntentService,
     FederationThreadQueryDenialService,
     FederationPeerLifecycle,
+    FederationPeerRuntimeService,
     FederationCallBridgeService,
     FederationProfileService,
     FederationThreadAccessService,

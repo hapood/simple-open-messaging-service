@@ -55,6 +55,17 @@ export function PeerHealthPanel({ peer }: { peer: FederationPeerState }) {
         </CardHeader>
         <CardContent className="space-y-4">
           <PeerHealthFlags peer={peer} />
+          {peer.cooldown !== null ? (
+            <div className="space-y-2">
+              <PeerMeta label={t('federation.meta.cooldownUntil')}>
+                <PeerTime value={peer.cooldown.until} />
+              </PeerMeta>
+              <p className="break-all text-sm leading-[20px]">{peer.cooldown.reason}</p>
+              <p className="text-xs leading-[20px] text-muted-foreground">
+                {t('federation.inspect.cooldownHint')}
+              </p>
+            </div>
+          ) : null}
           <div className="grid gap-4 sm:grid-cols-3">
             <PeerMeta label={t('federation.meta.lastSuccessAt')}>
               <PeerTime value={peer.lastSuccessAt} />

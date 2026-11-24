@@ -285,9 +285,9 @@ describe('three-node group wire convergence', () => {
       expect(row.payloadDigest).toBe(replyA.payloadDigest);
       expect(JSON.parse(row.content).quote.digest).toBe(targetA.payloadDigest);
     }
-    expect(JSON.parse(replyA.content).quote).toMatchObject({
-      seq: targetA.seq,
-      namespaceId: 0,
+    expect(JSON.parse(replyA.content).quote).toEqual({
+      originSeq: targetA.seq,
+      digest: targetA.payloadDigest,
     });
     expect(JSON.parse(replyC.content).quote).toMatchObject({
       seq: targetA.seq,

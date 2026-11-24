@@ -226,7 +226,6 @@ data: <json>
 | `PUSH_SUBSCRIPTION_CHANGED`       | this session's push registration revision                             | HELLO session revision                       |
 | `PROFILE_NAMESPACE_UPDATED`       | profile namespace invalidation head                                   | profile namespace change feed                |
 | `SSE_REPLACED`                    | another stream took ownership of this session                         | explicit stream ownership recovery           |
-| `MEDIA_MESSAGE_DOWNLOAD_PROGRESS` | temporary message-level media download progress                       | terminal frame closes the temporary stream   |
 | `MEDIA_FILE_DOWNLOAD_PROGRESS`    | temporary file-level media byte progress                              | terminal frame closes the temporary stream   |
 | `CALL_EVENT`/`CALL_SIGNAL`        | ephemeral call lifecycle and WebRTC signaling                         | active-call snapshot/new negotiation         |
 | `FORCE_LOGOUT`                    | terminate a revoked session                                           | authentication state                         |

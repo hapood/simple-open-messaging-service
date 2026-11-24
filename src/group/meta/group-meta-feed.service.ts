@@ -9,6 +9,9 @@ import {
   groupStateFields,
 } from '../shared/group-state.js';
 import { upsertCurrentGroupMetaFactsInTx } from './current-group-meta-fact.js';
+import { reconcileClientMemberCountInTx } from './reconcile-client-member-count-in-tx.js';
+import { publishClientGroupFactInTx } from './publish-client-group-fact-in-tx.js';
+import { requireThreadContentLockInTx } from '../../common/locks/thread-content-lock.js';
 
 /** A member fact body in the new unified shape: the subject identity
  * (account + publisher-coordinate namespaceId) lives inside the body. */
@@ -147,6 +150,10 @@ export class GroupMetaFeedService {
     const metaEndId = allocation.rows[0]?.metaEndId;
     if (metaEndId === undefined)
       throw new Error('group meta member coordinate was not allocated');
+    await reconcileClientMemberCountInTx(
+      tx,
+      await requireThreadContentLockInTx(tx, groupId),
+    );
     return metaEndId;
   }
 
@@ -172,8 +179,16 @@ export class GroupMetaFeedService {
         ),
       )
       .limit(1);
-    if (current && current.body.text === text)
-      return { feedId: current.feedId, changed: false };
+    const threadLock = await requireThreadContentLockInTx(tx, groupId);
+    if (current && current.body.text === text) {
+      const published = await publishClientGroupFactInTx(tx, threadLock, {
+        operation: 'GROUP_ANNOUNCEMENT',
+        sourceFeedId: current.feedId,
+        originCreatedAt: null,
+        body: { text },
+      });
+      return { feedId: published.feedId, changed: published.changed };
+    }
     const feedId = feed.metaEndId + 1;
     await upsertCurrentGroupMetaFactsInTx(tx, [
       {
@@ -184,7 +199,13 @@ export class GroupMetaFeedService {
       },
     ]);
     await this.advanceFeedInTx(tx, groupId, feedId, feed.profileRev);
-    return { feedId, changed: true };
+    const published = await publishClientGroupFactInTx(tx, threadLock, {
+      operation: 'GROUP_ANNOUNCEMENT',
+      sourceFeedId: feedId,
+      originCreatedAt: null,
+      body: { text },
+    });
+    return { feedId: published.feedId, changed: published.changed };
   }
 
   async reconcileProfileInTx(

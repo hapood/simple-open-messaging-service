@@ -293,22 +293,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/message/media-message-progress": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["MessageController_mediaMessageProgress"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/v1/message/media-file-progress": {
         parameters: {
             query?: never;
@@ -3953,41 +3937,6 @@ export interface components {
              */
             fileCnt: number;
         };
-        MessageTombResponseDto: {
-            /**
-             * @description Per-thread local sequence. This is the client cache and timeline coordinate.
-             * @example 42
-             */
-            seq: number;
-            /**
-             * @description Immutable complete-profile revision selected when this message was authored
-             * @example 7
-             */
-            profileRev: number;
-            /**
-             * @description Owning thread id
-             * @example 12
-             */
-            threadId: number;
-            /**
-             * @description Sender address snapshot; SYSTEM notifications use $system at namespace 0.
-             * @example {
-             *       "account": "alice",
-             *       "namespaceId": 0
-             *     }
-             */
-            creator: components["schemas"]["MessageAuthorAddressResponseDto"];
-            /** @example 1700000000000 */
-            createdAt: number;
-            /** @example 1700000000000 */
-            updatedAt: number;
-            /** @enum {string} */
-            contentType: "TOMB";
-            /** @enum {boolean} */
-            isDeleted: true;
-            /** @enum {string} */
-            deletionType: "USER_RETRACTION" | "MODERATION_REMOVAL";
-        };
         MessageHistoryGapDto: {
             /**
              * @description First missing message sequence
@@ -4003,7 +3952,7 @@ export interface components {
             recoverable: boolean;
         };
         MessageQueryPageDto: {
-            messages: (components["schemas"]["MessageResponseDto"] | components["schemas"]["MessageTombResponseDto"])[];
+            messages: components["schemas"]["MessageResponseDto"][];
             resolvedAnchorSeq: number | null;
             gaps: components["schemas"]["MessageHistoryGapDto"][];
             /**
@@ -5756,28 +5705,6 @@ export interface operations {
                 "application/json": components["schemas"]["RelocalizeMediaDto"];
             };
         };
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    MessageController_mediaMessageProgress: {
-        parameters: {
-            query: {
-                /** @description Conversation (MessageThread) id */
-                threadId: number;
-                /** @description Per-thread message seq */
-                seq: number;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
         responses: {
             200: {
                 headers: {

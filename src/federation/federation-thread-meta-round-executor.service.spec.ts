@@ -77,10 +77,10 @@ describe('federation Group Meta round profile behavior', () => {
         rows: [
           {
             groupAccount: '!group',
-            metaEndId: 1,
+            metaEndId: 0,
             metaTargetId: 2,
             metaProcessedThroughId: 1,
-            metaRecoveryThroughId: null,
+            metaRecoveryThroughId: 0,
           },
         ],
       })
@@ -88,10 +88,10 @@ describe('federation Group Meta round profile behavior', () => {
         rows: [
           {
             groupAccount: '!group',
-            metaEndId: 2,
+            metaEndId: 0,
             metaTargetId: 2,
             metaProcessedThroughId: 2,
-            metaRecoveryThroughId: null,
+            metaRecoveryThroughId: 0,
           },
         ],
       });
@@ -108,7 +108,7 @@ describe('federation Group Meta round profile behavior', () => {
       },
       'runDeltaPages',
     ).mockResolvedValue(false);
-    expect(await round.run(7, 'origin.example', 9)).toBe(false);
+    expect(await round.run(7, 9, new AbortController().signal)).toBe(false);
     expect(execute).toHaveBeenCalledTimes(2);
     for (const [statement] of execute.mock.calls) {
       const query = new PgDialect().sqlToQuery(statement as SQL).sql;
@@ -122,10 +122,10 @@ describe('federation Group Meta round profile behavior', () => {
       rows: [
         {
           groupAccount: '!group',
-          metaEndId: 2,
+          metaEndId: 0,
           metaTargetId: 2,
           metaProcessedThroughId: 1,
-          metaRecoveryThroughId: null,
+          metaRecoveryThroughId: 0,
         },
       ],
     });
@@ -163,9 +163,58 @@ describe('federation Group Meta round profile behavior', () => {
       events as never,
     );
 
-    await expect(round.run(7, 'origin.example', 9)).rejects.toThrow(
+    await expect(round.run(7, 9, new AbortController().signal)).rejects.toThrow(
       'invalid group-meta member body',
     );
+    expect(transaction).not.toHaveBeenCalled();
+  });
+
+  it('does not commit a fetched delta page after the caller cancels', async () => {
+    const controller = new AbortController();
+    const execute = vi.fn().mockResolvedValue({
+      rows: [
+        {
+          groupAccount: '!group',
+          metaEndId: 0,
+          clientMetaEndId: 0,
+          metaTargetId: 2,
+          metaProcessedThroughId: 1,
+          metaRecoveryThroughId: 0,
+        },
+      ],
+    });
+    const transaction = vi.fn((callback: (tx: unknown) => unknown) =>
+      callback({ execute }),
+    );
+    const fetchPage = vi.fn().mockImplementation(async () => {
+      controller.abort();
+      return {
+        account: '!group',
+        mode: 'delta',
+        items: [
+          {
+            feedId: 2,
+            originCreatedAt: 0,
+            operation: 'GROUP_ANNOUNCEMENT',
+            body: { text: 'hello' },
+          },
+        ],
+        scannedThrough: 2,
+        groupMetaFeedEndId: 2,
+        hasMore: false,
+      };
+    });
+    const round = new FederationThreadMetaRoundExecutorService(
+      { db: { execute, transaction } } as never,
+      { fetchPage } as never,
+      {} as never,
+      { resolveDemand: vi.fn() } as never,
+      { emit: vi.fn() } as never,
+    );
+
+    await expect(round.run(7, 9, controller.signal)).rejects.toMatchObject({
+      name: 'AbortError',
+    });
     expect(transaction).not.toHaveBeenCalled();
   });
 });

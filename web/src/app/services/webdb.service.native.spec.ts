@@ -69,7 +69,7 @@ describe('WebdbService native SQLite routing', () => {
 
   it('routes pending intents through SQLite with original attachment identities and MIME', async () => {
     const task = { clientMessageId: 'cid', threadId: 7, item: {
-      type: 'FILE' as const, file: { path: 'file.bin', name: 'file.bin', partId: 'part', mimeType: 'application/x-custom' },
+      type: 'FILE' as const, file: { path: 'file.bin', name: 'file.bin', partId: 'part', mimeType: 'application/x-custom', size: 4 },
     } };
     await service.enqueuePendingSend(task);
     expect(calls).toContainEqual({ cmd: 'native_send_enqueue', args: { task } });
@@ -100,13 +100,20 @@ describe('WebdbService native SQLite routing', () => {
   });
 
   it('rejects browser attachment bytes before invoking native pending storage', async () => {
-    const file = { partId: 'part', name: 'image.png', mimeType: 'image/png', blob: new Blob(['image']) };
+    const file = {
+      partId: 'part',
+      path: '/attachments/image.png',
+      name: 'image.png',
+      mimeType: 'image/png',
+      size: 5,
+      blob: new Blob(['image']),
+    };
     await expect(service.enqueuePendingSend({ clientMessageId: 'file', threadId: 7,
       item: { type: 'IMAGE', file },
-    })).rejects.toThrow('native pending send requires path attachments');
+    })).rejects.toThrow('not file bytes');
     await expect(service.enqueuePendingSend({ clientMessageId: 'gallery', threadId: 7,
       item: { type: 'GALLERY', files: [{ ...file, intent: 'IMAGE' }] },
-    })).rejects.toThrow('native pending send requires path attachments');
+    })).rejects.toThrow('not file bytes');
     expect(calls.some(call => call.cmd === 'native_send_enqueue')).toBe(false);
   });
 

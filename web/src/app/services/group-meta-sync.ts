@@ -1,4 +1,3 @@
-import type { LocalThreadAttention } from '../../../../shared/thread-attention';
 import type { ConversationItem } from './model';
 import type {
   ClientGroupMetaApply,
@@ -10,7 +9,13 @@ const CLIENT_FEED_CURSOR_UNAVAILABLE = 30006;
 
 export interface GroupMetaSyncStorage {
   getThreads(): Promise<ConversationItem[]>;
-  getThreadStates(): Promise<LocalThreadAttention[]>;
+  getThreadResourceHeads(): Promise<
+    Array<{
+      threadId: number;
+      tombstoneEndSeq: number;
+      groupMetaFeedEndId: string | null;
+    }>
+  >;
   beginGroupMetaRecovery(threadId: number, through: string): Promise<void>;
   applyGroupMetaPage(
     update: ClientGroupMetaApply,
@@ -19,7 +24,6 @@ export interface GroupMetaSyncStorage {
 
 export interface GroupMetaRequest {
   threadId: number;
-  mode: 'full' | 'delta';
   after: string;
   through: string;
   take: number;
@@ -44,10 +48,25 @@ export class GroupMetaSyncError extends Error {
   }
 }
 
+function decimal(value: unknown): number | null {
+  if (typeof value !== 'string' || !/^(0|[1-9]\d*)$/.test(value)) return null;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) ? parsed : null;
+}
+
 function pageFrom(value: unknown): ClientGroupMetaFeedPage | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
-  const page = value as ClientGroupMetaFeedPage;
-  return Array.isArray(page.items) ? page : null;
+  const page = value as ClientGroupMetaFeedPage & {
+    items: Array<ClientGroupMetaFact & { feedId: unknown }>;
+  };
+  if (!Array.isArray(page.items)) return null;
+  const items: ClientGroupMetaFact[] = [];
+  for (const item of page.items) {
+    const feedId = decimal(item.feedId);
+    if (feedId === null || feedId < 1) return null;
+    items.push({ ...item, feedId });
+  }
+  return { ...page, items };
 }
 
 function recoveryWindow(value: unknown): string | null {
@@ -66,13 +85,11 @@ function validatePage(
   page: ClientGroupMetaFeedPage,
   expected: {
     account: string;
-    mode: 'full' | 'delta';
     after: string;
     through: string;
   },
 ): void {
   if (
-    page.mode !== expected.mode ||
     page.account !== expected.account ||
     !/^(0|[1-9]\d*)$/.test(page.scannedThrough) ||
     !/^(0|[1-9]\d*)$/.test(page.groupMetaFeedEndId) ||
@@ -83,29 +100,14 @@ function validatePage(
     (!page.hasMore && page.scannedThrough !== expected.through) ||
     page.items.some(
       (entry) =>
-        (entry.operation !== 'GROUP_PROFILE' &&
-          entry.operation !== 'GROUP_ANNOUNCEMENT' &&
-          entry.operation !== 'MEMBER_UPSERT' &&
-          entry.operation !== 'MEMBER_DEPART') ||
+        (entry.operation !== 'GROUP_ANNOUNCEMENT' &&
+          entry.operation !== 'GROUP_MEMBER_COUNT') ||
         typeof entry.body !== 'object' ||
         entry.body === null ||
         Array.isArray(entry.body) ||
-        ((entry.operation === 'MEMBER_UPSERT' ||
-          entry.operation === 'MEMBER_DEPART') &&
-          (!entry.body.account ||
-            !Number.isSafeInteger(entry.body.namespaceId) ||
-            entry.body.namespaceId < 0 ||
-            (entry.body.role !== 'OWNER' &&
-              entry.body.role !== 'ADMIN' &&
-              entry.body.role !== 'MEMBER') ||
-            !Number.isSafeInteger(entry.body.profileRev) ||
-            entry.body.profileRev < 0)) ||
-        (entry.operation === 'GROUP_PROFILE' &&
-          (!entry.body.account ||
-            !Number.isSafeInteger(entry.body.namespaceId) ||
-            entry.body.namespaceId < 0 ||
-            !Number.isSafeInteger(entry.body.profileRev) ||
-            entry.body.profileRev < 0)),
+        (entry.operation === 'GROUP_MEMBER_COUNT' &&
+          (!Number.isSafeInteger(entry.body.memberCount) ||
+            entry.body.memberCount < 0)),
     )
   )
     throw new Error('invalid group-meta page');
@@ -115,7 +117,8 @@ function validatePage(
     page.items.some(
       (entry) =>
         entry.operation === 'GROUP_ANNOUNCEMENT' &&
-        (!/^[1-9]\d*$/.test(entry.feedId) ||
+        (!Number.isSafeInteger(entry.feedId) ||
+          entry.feedId < 1 ||
           typeof entry.body !== 'object' ||
           entry.body === null ||
           Object.keys(entry.body).length !== 1 ||
@@ -128,9 +131,87 @@ function validatePage(
     throw new Error('invalid group announcement');
 }
 
-/** Catch the open thread's stored group projection up to its durable
- *  thread-head target, read fresh from storage on every call (the drain's
- *  trigger is a bare wake signal and carries no coordinates). */
+export interface GroupMetaPageResult {
+  status: 'DONE' | 'MORE';
+  changed: boolean;
+  patch: GroupMetaCommitPatch | null;
+}
+
+/** Execute one Group Meta page round for `threadId`. */
+export async function syncGroupMetaPage(
+  storage: GroupMetaSyncStorage,
+  request: GroupMetaRequester,
+  threadId: number,
+): Promise<GroupMetaPageResult> {
+  const [threads, heads] = await Promise.all([
+    storage.getThreads(),
+    storage.getThreadResourceHeads(),
+  ]);
+  const thread = threads.find((item) => item.threadId === threadId);
+  const head = heads.find((item) => item.threadId === threadId);
+  if (!thread || thread.type !== 'GROUP')
+    return { status: 'DONE', changed: false, patch: null };
+  const target = head?.groupMetaFeedEndId ?? thread.groupMetaFeedEndId;
+  if (target === null || target === undefined)
+    return { status: 'DONE', changed: false, patch: null };
+
+  let after = thread.meta.groupMetaFeedId;
+  const recoveryThrough = thread.meta.recoveryThrough ?? null;
+  if (recoveryThrough === null && BigInt(after) >= BigInt(target))
+    return { status: 'DONE', changed: false, patch: null };
+
+  let through: string;
+  let beganRecovery = false;
+  if (recoveryThrough !== null || after === '0') {
+    through = recoveryThrough ?? target;
+    if (recoveryThrough === null) {
+      await storage.beginGroupMetaRecovery(thread.threadId, through);
+      beganRecovery = true;
+      after = '0';
+    }
+  } else {
+    through = target;
+  }
+
+  const envelope = (await request({
+    threadId: thread.threadId,
+    after,
+    through,
+    take: 100,
+  })) as GroupMetaEnvelope;
+  if (envelope?.code === CLIENT_FEED_CURSOR_UNAVAILABLE) {
+    const resetThrough = recoveryWindow(envelope.data);
+    if (resetThrough === null || recoveryThrough !== null)
+      throw new Error('invalid group-meta recovery window');
+    await storage.beginGroupMetaRecovery(thread.threadId, resetThrough);
+    return { status: 'MORE', changed: true, patch: null };
+  }
+  const page = envelope?.code === 0 ? pageFrom(envelope.data) : null;
+  if (!page)
+    throw new Error(
+      `group-meta pull failed (code ${String(envelope?.code)})`,
+    );
+  validatePage(page, {
+    account: thread.account,
+    after,
+    through,
+  });
+  const patch = await storage.applyGroupMetaPage({
+    threadId: thread.threadId,
+    namespaceId: thread.publisherNamespaceId,
+    page,
+  });
+  const hasMore =
+    page.hasMore || BigInt(page.scannedThrough) < BigInt(target);
+  return {
+    status: hasMore ? 'MORE' : 'DONE',
+    changed: beganRecovery || patch !== null,
+    patch,
+  };
+}
+
+/** Catch the thread's stored group projection up to its durable
+ *  thread-head target, read fresh from storage on every call. */
 async function syncGroupMetaThreadUnchecked(
   storage: GroupMetaSyncStorage,
   request: GroupMetaRequester,
@@ -138,100 +219,17 @@ async function syncGroupMetaThreadUnchecked(
   changed: number[],
   committed: GroupMetaCommitPatch[],
   failures: string[],
-  guard?: () => boolean,
 ): Promise<void> {
-  const [threads, states] = await Promise.all([
-    storage.getThreads(),
-    storage.getThreadStates(),
-  ]);
+  const threads = await storage.getThreads();
   const thread = threads.find((item) => item.threadId === threadId);
-  const state = states.find((item) => item.threadId === threadId);
-  if (
-    !thread ||
-    thread.type !== 'GROUP' ||
-    thread.conversationState === 'READ_ONLY'
-  )
-    return;
-  const target =
-    state && state.threadFeedId !== null ? state.groupMetaFeedEndId : null;
-  if (target === null || target === undefined) return;
-
-  let after = thread.meta.groupMetaFeedId;
-  let recoveryThrough = thread.meta.recoveryThrough ?? null;
-  if (recoveryThrough === null && BigInt(after) >= BigInt(target)) return;
-
-  if (guard && !guard()) return;
+  if (!thread || thread.type !== 'GROUP') return;
   const context = `group ${thread.account} (namespace ${thread.publisherNamespaceId}, thread ${thread.threadId})`;
   try {
-    let mode: 'full' | 'delta';
-    let through: string;
-    if (recoveryThrough !== null || after === '0') {
-      through = recoveryThrough ?? target;
-      if (recoveryThrough === null) {
-        await storage.beginGroupMetaRecovery(thread.threadId, through);
-        changed.push(thread.threadId);
-        after = '0';
-        recoveryThrough = through;
-      }
-      mode = 'full';
-    } else {
-      mode = 'delta';
-      through = target;
-    }
-
-    // A persisted recovery window is resumable. `reopened` only guards the one
-    // server-directed replacement window allowed during this invocation.
-    let reopened = false;
     for (;;) {
-      if (guard && !guard()) return;
-      const envelope = (await request({
-        threadId: thread.threadId,
-        mode,
-        after,
-        through,
-        take: 100,
-      })) as GroupMetaEnvelope;
-      if (envelope?.code === CLIENT_FEED_CURSOR_UNAVAILABLE) {
-        const resetThrough = recoveryWindow(envelope.data);
-        if (resetThrough === null || reopened)
-          throw new Error('invalid group-meta recovery window');
-        await storage.beginGroupMetaRecovery(thread.threadId, resetThrough);
-        changed.push(thread.threadId);
-        mode = 'full';
-        after = '0';
-        through = resetThrough;
-        reopened = true;
-        continue;
-      }
-      const page = envelope?.code === 0 ? pageFrom(envelope.data) : null;
-      if (!page)
-        throw new Error(
-          `group-meta pull failed (code ${String(envelope?.code)})`,
-        );
-      validatePage(page, {
-        account: thread.account,
-        mode,
-        after,
-        through,
-      });
-      const patch = await storage.applyGroupMetaPage({
-        threadId: thread.threadId,
-        namespaceId: thread.publisherNamespaceId,
-        page,
-      });
-      if (patch) {
-        committed.push(patch);
-        changed.push(thread.threadId);
-      }
-      after = page.scannedThrough;
-      if (!page.hasMore) {
-        if (mode === 'full' && BigInt(after) < BigInt(target)) {
-          mode = 'delta';
-          through = target;
-          continue;
-        }
-        break;
-      }
+      const result = await syncGroupMetaPage(storage, request, threadId);
+      if (result.changed) changed.push(threadId);
+      if (result.patch) committed.push(result.patch);
+      if (result.status !== 'MORE') return;
     }
   } catch (error) {
     failures.push(
@@ -244,11 +242,8 @@ export async function syncGroupMetaThread(
   storage: GroupMetaSyncStorage,
   request: GroupMetaRequester,
   threadId: number,
-  guard?: () => boolean,
 ): Promise<{
-  /** Committed Group Meta facts, one per thread (latest wins). */
   patches: GroupMetaCommitPatch[];
-  /** Threads with any committed fact or recovery change. */
   threadIds: number[];
 }> {
   const changed: number[] = [];
@@ -261,7 +256,6 @@ export async function syncGroupMetaThread(
     changed,
     committed,
     failures,
-    guard,
   );
   if (failures.length) {
     const visible = failures.slice(0, 5);

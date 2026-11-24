@@ -25,11 +25,7 @@ import {
   type CbWindowRequest,
   type CbItem,
 } from '../../lib/chat-box/chat-box-scroller';
-import type {
-  ChatItemData,
-  ChatMsgData,
-  FileInfo,
-} from '../message-cards/chat-item';
+import type { ChatItemData, ChatMsgData } from '../message-cards/chat-item';
 import {
   computeRowFlags,
   createMsgCbElement,
@@ -40,7 +36,6 @@ import {
   mergeAlbumItemsAtBoundary,
 } from '../message-cards/merge-items';
 import { GalleryViewerService } from '../gallery-viewer/gallery-viewer.service';
-import { FileDetailService } from '../file-detail-viewer/file-detail-viewer.service';
 import { toDisplayText } from '../../lib/message-entity';
 import { requireTextMessageContent } from '../../../../../shared/text-message-content';
 import { deriveMessagePreview } from '../../../../../shared/message-preview';
@@ -54,14 +49,7 @@ import { forwardAvatarSource } from './forward-avatar-source';
 import { AppIconType, IconComponent } from '../icon/icon.component';
 import { jumpToMessage } from '../message-thread/message-jump';
 import { PageHeaderComponent } from '../page-header/page-header.component';
-import {
-  parseAudioContent,
-  parseFileContent,
-  parseGalleryContent,
-  parseImageContent,
-  parseVideoContent,
-  type MediaUrlResolver,
-} from '../message-cards/media-content';
+import { projectMessageContent } from '../message-cards/media-content';
 
 const CONTENT_TYPES = new Set<ChatMsgData['contentType']>([
   'PURE_TEXT',
@@ -96,7 +84,6 @@ export class ForwardDetailComponent implements OnInit, OnDestroy {
   private readonly route = inject(RouteService);
   private readonly envInjector = inject(EnvironmentInjector);
   private readonly gallery = inject(GalleryViewerService);
-  private readonly fileDetail = inject(FileDetailService);
   private scroller?: ChatBoxScroller<ChatItemData>;
   private snapshotInitialization?: Subscription;
   private snapshotSource?: ForwardSnapshotSource;
@@ -262,10 +249,8 @@ export class ForwardDetailComponent implements OnInit, OnDestroy {
       flags.isGroupStart,
       flags.showDate,
       this.envInjector,
-      undefined,
       (images, index) => this.gallery.open(images, index, 0),
-      (data) => this.fileDetail.open(data, 0),
-      undefined,
+      (data) => this.gallery.openFile(data, 0),
       undefined,
       undefined,
       (bundleId) => this.openChild(bundleId),
@@ -318,7 +303,6 @@ export class ForwardDetailComponent implements OnInit, OnDestroy {
     const contentType = hasKnownContentType
       ? (message.contentType as ChatMsgData['contentType'])
       : 'PURE_TEXT';
-    const media = parseMedia(snapshotMessage, id, this.snapshotMediaUrl);
     // A snapshot has no author identity. Never merge rows by display name or avatar.
     const creator = JSON.stringify([bundle.id, message.id]);
     const quoteTarget = message.quoteTargetId
@@ -356,15 +340,11 @@ export class ForwardDetailComponent implements OnInit, OnDestroy {
             )
           : this.snapshotContent(snapshotMessage),
       time: dayjs(message.sentAt).format('HH:mm'),
-      contentType,
-      images:
-        contentType === 'IMAGE' ||
-        contentType === 'VIDEO' ||
-        contentType === 'AUDIO' ||
-        contentType === 'GALLERY'
-          ? media.images
-          : null,
-      file: contentType === 'FILE' ? media.file : null,
+      ...projectMessageContent(contentType, snapshotMessage.content, {
+        msgId: id,
+        senderName: message.profile.displayName,
+        sentAt: message.sentAt,
+      }),
       createdAtMs: message.sentAt,
       quote: quoteTarget
         ? {
@@ -377,15 +357,6 @@ export class ForwardDetailComponent implements OnInit, OnDestroy {
           : undefined,
     };
   }
-
-  private readonly snapshotMediaUrl: MediaUrlResolver = (item) => {
-    const existing = typeof item['url'] === 'string' ? item['url'] : '';
-    if (existing) return existing;
-    const digest = typeof item['digest'] === 'string' ? item['digest'] : '';
-    const context = this.closure()?.accessContext;
-    if (!/^[a-f0-9]{64}$/.test(digest) || !context) return '';
-    return `/uploads/msg-assets/${digest.slice(0, 2)}/${digest.slice(2, 4)}/${digest}?threadId=${context.threadId}&seq=${context.seq}`;
-  };
 
   private snapshotContent(message: ForwardManifestMessage): string {
     if (message.contentType !== 'FORWARD' || !message.childBundleId) {
@@ -448,41 +419,6 @@ export class ForwardDetailComponent implements OnInit, OnDestroy {
   }
 }
 
-function parseMedia(
-  message: ForwardManifestMessage,
-  id: number,
-  resolveUrl: MediaUrlResolver,
-): {
-  images: ChatMsgData['images'];
-  file: FileInfo | null;
-} {
-  if (message.contentType === 'FILE')
-    return {
-      images: null,
-      file: parseFileContent(message.content, resolveUrl),
-    };
-  const parsed =
-    message.contentType === 'IMAGE'
-      ? [parseImageContent(message.content, resolveUrl)]
-      : message.contentType === 'VIDEO'
-        ? [parseVideoContent(message.content, resolveUrl)].filter(
-            (item): item is NonNullable<typeof item> => item !== null,
-          )
-        : message.contentType === 'AUDIO'
-          ? [parseAudioContent(message.content, resolveUrl)].filter(
-              (item): item is NonNullable<typeof item> => item !== null,
-            )
-          : message.contentType === 'GALLERY'
-            ? parseGalleryContent(message.content, resolveUrl)
-            : [];
-  if (parsed.length > 0)
-    return {
-      images: parsed.map((item) => ({ ...item, msgId: id })),
-      file: null,
-    };
-  return { images: null, file: null };
-}
-
 function snapshotPreview(message: ForwardManifestMessage): string {
   if (message.contentType === 'PURE_TEXT') {
     return toDisplayText(requireTextMessageContent(message.content).text);
@@ -506,7 +442,7 @@ function bindSnapshotCasUrls(
   seq: number,
 ): string {
   return content.replace(
-    /\/uploads\/(?:cas|msg-assets)\/[0-9a-f]{2}\/[0-9a-f]{2}\/[0-9a-f]{64}/g,
+    /\/uploads\/msg-assets\/[0-9a-f]{2}\/[0-9a-f]{2}\/[0-9a-f]{64}/g,
     (url) => `${url}?threadId=${threadId}&seq=${seq}`,
   );
 }

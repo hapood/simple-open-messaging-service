@@ -15,31 +15,37 @@ export const MEDIA_STATUS = {
 } as const;
 export type MediaStatus = (typeof MEDIA_STATUS)[keyof typeof MEDIA_STATUS];
 
-/**
- * A single media cell (image / video / audio). layoutAlbum lays out by {w,h}; `src` is used for
- * background-image (image) / <video> first-frame (video) / download anchor (audio). `kind` drives
- * the render branch; size/duration/name feed the bottom meta bar + overlay.
- */
-export interface AlbumMedia {
-  kind: 'image' | 'video' | 'audio' | 'file';
-  /** /uploads/... URL (image / video / audio). */
+/** Required attachment metadata; message attribution is separate from the observed download state. */
+interface MediaResourceBase {
   src: string;
+  size: number;
+  name: string;
+  mimeType: string;
+  senderName: string | null;
+  sentAt: number | null;
+  /** Owning message coordinate, independent of the resource's intrinsic metadata. */
+  msgId?: number;
+}
+
+export type ImageMedia = MediaResourceBase & {
+  kind: 'image';
   w: number;
   h: number;
-  /** Bytes — drives the meta bar (formatBytes). */
-  size?: number;
-  /** Seconds — drives the video/audio duration overlay (formatDuration). */
-  duration?: number;
-  /** Display name — video/audio meta bar (images usually omit). */
-  name?: string;
-  mimeType?: string;
-  /** Owning original msg id (differs across cells in a merged album); layout ignores it, used only
-   *  for the dev badge showing the aggregation range `[min-max]`. */
-  msgId?: number;
-  /** Federated localize status of this cell's owning message (the gallery shows a backend retry when
-   *  'failed'). Absent = 'ready'. */
-  status?: MediaStatus;
-}
+};
+export type VideoMedia = MediaResourceBase & {
+  kind: 'video';
+  w: number;
+  h: number;
+  duration: number;
+};
+export type AudioMedia = MediaResourceBase & {
+  kind: 'audio';
+  duration: number;
+};
+export type FileMedia = MediaResourceBase & { kind: 'file' };
+
+/** Nonvisual resources have no pixel dimensions; only playable media have a duration. */
+export type AlbumMedia = ImageMedia | VideoMedia | AudioMedia | FileMedia;
 
 /** FILE message attachment returned by the server's unified upload endpoint (stored as JSON inside Message.content). */
 export interface FileInfo {
@@ -85,9 +91,6 @@ interface ChatMessageBase {
   avatarIdentityId?: string;
   /** PURE_TEXT body / fallback text for unsupported types. */
   text: string;
-  /** Canonical inline-entity storage string for an optimistic PURE_TEXT send. The bubble renders `text`;
-   *  HTTP/retry sends this value. Real queried messages need no copy because their wire body is durable. */
-  wireText?: string;
   quote?: {
     /** Federated media localize status; NOT_FOUND renders the not-found fallback. */
     status?: 'PENDING' | 'NOT_FOUND';
@@ -103,32 +106,10 @@ interface ChatMessageBase {
     imageSize?: number;
     imageShape?: 'thumbnail' | 'avatar';
   };
-  /** Parsed PURE_TEXT body. Stable mention identity is retained for recipient-relative rendering. */
-  textSegments?: ChatTextSegment[];
-  /** `me` is a direct account match; `all` is the group-wide audience. */
-  mentionState?: 'none' | 'me' | 'all';
-  /** Whether the PURE_TEXT body is rich-text HTML (from the Tiptap editor: <strong>/<em>/<code>/@mention chip).
-   *  true = render via [innerHTML] (Angular sanitizes automatically); default/false = plain-text {{}} render
-   *  (auto-escaped). This split both surfaces the editor's rich text / atomic @chips AND keeps historical /
-   *  received plain text containing `<` safely escaped without breaking layout. */
-  rich?: boolean;
   /** HH:mm (the date context is handled by the date separator row). */
   time: string;
-  /** IMAGE/VIDEO/AUDIO: media cells (consecutive same-creator IMAGE/VIDEO merged into one album). null = non-media. */
-  images: AlbumMedia[] | null;
-  /** FILE: attachment metadata (url/name/size/mimeType). null = non-file. */
-  file: FileInfo | null;
-
-  /** Federated media localize status (IMAGE/FILE/VIDEO/AUDIO). Absent = 'ready' (local upload, or
-   *  already-localized federated media). 'downloading' = localize in flight (overlay spinner);
-   *  'failed' = localize failed (overlay icon + a retry in the detail view). */
-  mediaStatus?: MediaStatus;
   /** Raw epoch milliseconds (drives date-separator decisions). */
   createdAtMs: number;
-  /** Delivery state for self-sent messages. `sending` is still cancellable; `accepted` means the HTTP request
-   *  succeeded and keeps the spinner visible while awaiting the push echo; `sent` is the echoed server row and
-   *  renders the check; `failed` exposes retry. Absent on received messages. */
-  status?: 'sending' | 'accepted' | 'sent' | 'failed';
   /** Debug-only synthetic history row marker. Sending tasks never use a history row marker. */
   kind?: 'fake';
 }
@@ -144,17 +125,93 @@ export type AuthoredContentType =
   | 'CONTACT_CARD'
   | 'FORWARD';
 
-/** Authored content uses an explicit grouping key; forward snapshots use independent bundle-local keys. */
-export interface AuthoredMessageItem extends ChatMessageBase {
+/** Mixed visual albums retain the head message's content type. */
+export interface MediaMessageContent {
+  contentType: 'IMAGE' | 'VIDEO' | 'AUDIO' | 'GALLERY';
+  images: AlbumMedia[];
+  file: null;
+}
+
+export interface FileMessageContent {
+  contentType: 'FILE';
+  images: null;
+  file: FileInfo;
+}
+
+interface NoAttachments {
+  images: null;
+  file: null;
+}
+
+export interface TextMessageContent extends NoAttachments {
+  contentType: 'PURE_TEXT';
+  /** Parsed text with recipient-relative mention identity. Absent on display-only snapshots. */
+  textSegments?: ChatTextSegment[];
+  mentionState?: 'none' | 'me' | 'all';
+  /** HTML rendering is explicit; plain text remains escaped by default. */
+  rich?: boolean;
+}
+export interface LinkMessageContent extends NoAttachments {
+  contentType: 'LINK';
+}
+export interface ContactCardMessageContent extends NoAttachments {
+  contentType: 'CONTACT_CARD';
+}
+export interface ForwardMessageContent extends NoAttachments {
+  contentType: 'FORWARD';
+}
+export type NonAttachmentMessageContent =
+  | TextMessageContent
+  | LinkMessageContent
+  | ContactCardMessageContent
+  | ForwardMessageContent;
+
+export type AuthoredMessageContent =
+  | MediaMessageContent
+  | FileMessageContent
+  | NonAttachmentMessageContent;
+
+/** Authored content uses an explicit grouping key; snapshots use independent bundle-local keys. */
+interface AuthoredMessageBase extends ChatMessageBase {
   type: 'msg';
   creator: string;
-  contentType: AuthoredContentType;
 }
+
+export interface MediaMessageItem
+  extends AuthoredMessageBase,
+    MediaMessageContent {}
+export interface FileMessageItem
+  extends AuthoredMessageBase,
+    FileMessageContent {}
+export interface TextMessageItem
+  extends AuthoredMessageBase,
+    TextMessageContent {}
+export interface LinkMessageItem
+  extends AuthoredMessageBase,
+    LinkMessageContent {}
+export interface ContactCardMessageItem
+  extends AuthoredMessageBase,
+    ContactCardMessageContent {}
+export interface ForwardMessageItem
+  extends AuthoredMessageBase,
+    ForwardMessageContent {}
+export type NonAttachmentMessageItem =
+  | TextMessageItem
+  | LinkMessageItem
+  | ContactCardMessageItem
+  | ForwardMessageItem;
+
+export type AuthoredMessageItem =
+  | MediaMessageItem
+  | FileMessageItem
+  | NonAttachmentMessageItem;
 
 /** A $system@local notification; event participants live in its content. */
 export interface SystemMessageItem extends ChatMessageBase {
   type: 'system';
   contentType: 'SYSTEM';
+  images: null;
+  file: null;
   /** Local-only per-participant revision corrections from this cached message row. */
   localSystemProfileRevs?: Record<string, number>;
   /** Ephemeral replacement of a mounted message, never reconstructed from persisted deletion stubs. */

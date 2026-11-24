@@ -16,6 +16,7 @@ import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import type { FastifyRequest } from 'fastify';
 import {
   filter,
+  from,
   map,
   merge,
   of,
@@ -67,7 +68,6 @@ import {
   ThreadFeedQueryDto,
   MediaStatusDto,
   MediaFileProgressDto,
-  MediaMessageProgressDto,
   RelocalizeMediaDto,
   SetMutedDto,
   SetBlockedDto,
@@ -154,7 +154,10 @@ export class MessageController {
     summary: 'Query one conversation tombstone log by cursor',
   })
   @ApiResultResponse(MessageTombstoneQueryPageDto)
-  async queryDeletedMessages(@Body() dto: QueryDeletedMessagesDto) {
+  async queryDeletedMessages(
+    @Request() req: FastifyRequest,
+    @Body() dto: QueryDeletedMessagesDto,
+  ) {
     if ((dto.after === undefined) === (dto.before === undefined)) {
       if (dto.after !== undefined)
         throw new BusinessException(
@@ -185,6 +188,7 @@ export class MessageController {
         HttpStatus.BAD_REQUEST,
       );
     return this.deletedMessages.queryThread(
+      req.user.userId,
       dto.threadId,
       after,
       dto.take ?? 100,
@@ -296,6 +300,10 @@ export class MessageController {
     let contentQuote: ReturnType<typeof readMessageContentQuote>;
     try {
       contentQuote = readMessageContentQuote(dto.content);
+      // Local clients supply a local sequence, never a federation coordinate.
+      if (contentQuote?.originSeq !== undefined) {
+        throw new Error('invalid local message quote');
+      }
     } catch {
       throw new BusinessException(
         BusinessCode.VALIDATION_FAILED,
@@ -332,7 +340,7 @@ export class MessageController {
       dto.content = stringifyTextMessageContent({
         text: await this.canonicalizeMentions(req, textContent.text),
       });
-      if (contentQuote) {
+      if (contentQuote?.seq !== undefined) {
         dto.content = withMessageContentQuote(dto.content, {
           seq: contentQuote.seq,
         });
@@ -1026,22 +1034,6 @@ export class MessageController {
 
   @Raw()
   @ApiBearerAuth()
-  @Sse('message/media-message-progress')
-  async mediaMessageProgress(
-    @Request() req: FastifyRequest,
-    @Query() dto: MediaMessageProgressDto,
-  ): Promise<Observable<MessageEvent>> {
-    const { threadId, seq } = await this.authorizeMediaProgress(
-      req.user.userId,
-      dto,
-    );
-    return this.sse
-      .registerMediaMessageProgress(req.user.userId, threadId, seq)
-      .pipe(withSseHeartbeat());
-  }
-
-  @Raw()
-  @ApiBearerAuth()
   @Sse('message/media-file-progress')
   async mediaFileProgress(
     @Request() req: FastifyRequest,
@@ -1069,14 +1061,18 @@ export class MessageController {
     const runtime = this.downloadScheduler.observeDigest(digest).pipe(
       switchMap((progress) =>
         progress === null
-          ? this.mediaProgress.snapshot(threadId, seq, digest)
+          ? from(this.mediaProgress.snapshot(threadId, seq, digest)).pipe(
+              // Discard only an idle snapshot overtaken by a new execution.
+              filter(() => !this.downloadScheduler.hasDigest(digest)),
+            )
           : of({
               threadId,
               seq,
               file: { digest, name: '' },
-              status: 'downloading',
+              status: progress.status,
               loaded: progress.received,
               total: progress.total,
+              bytesPerSecond: progress.bytesPerSecond,
             }),
       ),
       map(
@@ -1085,22 +1081,13 @@ export class MessageController {
           data,
         }),
       ),
-      // A new execution may start during the database/filesystem read. Never
-      // publish that old idle snapshot over a live digest execution.
-      filter(
-        (event) =>
-          (event.data as { status: string }).status === 'downloading' ||
-          !this.downloadScheduler.hasDigest(digest),
-      ),
     );
-    const terminal = this.sse
-      .registerMediaFileProgress(req.user.userId, threadId, seq, digest)
-      .pipe(
-        filter(
-          (event) =>
-            (event.data as { status?: string }).status !== 'downloading',
-        ),
-      );
+    const terminal = this.sse.registerMediaFileProgress(
+      req.user.userId,
+      threadId,
+      seq,
+      digest,
+    );
     return merge(terminal, runtime).pipe(
       takeWhile(
         (event) =>
@@ -1115,7 +1102,7 @@ export class MessageController {
 
   private async authorizeMediaProgress(
     userId: number,
-    dto: MediaMessageProgressDto,
+    dto: MediaFileProgressDto,
   ): Promise<{ threadId: number; seq: number }> {
     const threadId = Number(dto.threadId);
     const seq = Number(dto.seq);

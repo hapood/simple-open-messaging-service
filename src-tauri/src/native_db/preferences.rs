@@ -16,7 +16,7 @@ pub(crate) fn read_notification_preference(key: &str) -> Result<Option<String>, 
     let preferences = preferences_connection()?;
     let value = preferences.with_database(|conn| {
         conn.query_row(
-            "SELECT value_json FROM client_preferences WHERE scope='device' AND key=?1",
+            "SELECT value_json FROM client_preferences WHERE key=?1",
             [key],
             |row| row.get::<_, String>(0),
         )
@@ -40,9 +40,9 @@ pub(crate) fn write_notification_preference(key: &str, value: &str) -> Result<()
     let value = json_text(&Value::String(value.to_owned()))?;
     preferences.with_database(|conn| {
         conn.execute(
-            "INSERT INTO client_preferences(scope,key,value_json,updated_at)
-             VALUES('device',?1,?2,?3)
-             ON CONFLICT(scope,key) DO UPDATE SET
+            "INSERT INTO client_preferences(key,value_json,updated_at)
+             VALUES(?1,?2,?3)
+             ON CONFLICT(key) DO UPDATE SET
                value_json=excluded.value_json, updated_at=excluded.updated_at",
             params![key, value, chrono_millis()],
         )
@@ -82,7 +82,7 @@ pub(crate) fn notification_language() -> Result<String, String> {
 
 fn read_notification_language(conn: &rusqlite::Connection) -> Result<String, String> {
     let raw: Option<String> = conn.query_row(
-        "SELECT value_json FROM client_preferences WHERE scope='global' AND key='language'",
+        "SELECT value_json FROM client_preferences WHERE key='language'",
         [], |row| row.get(0),
     ).optional().map_err(|e| e.to_string())?;
     match raw {
@@ -96,7 +96,7 @@ fn read_notification_language(conn: &rusqlite::Connection) -> Result<String, Str
 pub(crate) fn notification_preferences() -> Result<NotificationPreferences, String> {
     preferences_connection()?.with_database(|conn| {
         let mut statement = conn.prepare(
-            "SELECT key,value_json FROM client_preferences WHERE scope='device' AND key IN ('notificationEnabled','notificationSound','notificationPreviewMode')",
+            "SELECT key,value_json FROM client_preferences WHERE key IN ('notificationEnabled','notificationSound','notificationPreviewMode')",
         ).map_err(|e| e.to_string())?;
         let rows = statement.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
             .map_err(|e| e.to_string())?;
@@ -115,12 +115,10 @@ mod notification_tests {
     #[test]
     fn notification_language_reads_the_ui_global_setting() {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
-        conn.execute_batch("CREATE TABLE client_preferences(scope TEXT, key TEXT, value_json TEXT);
-            INSERT INTO client_preferences VALUES('device','language','\"en\"');").unwrap();
-        assert_eq!(read_notification_language(&conn).unwrap(), "en");
-        conn.execute("INSERT INTO client_preferences VALUES('global','language',?1)", ["\"zh-CN\""]).unwrap();
+        conn.execute_batch("CREATE TABLE client_preferences(key TEXT, value_json TEXT);
+            INSERT INTO client_preferences VALUES('language','\"zh-CN\"');").unwrap();
         assert_eq!(read_notification_language(&conn).unwrap(), "zh-CN");
-        conn.execute("UPDATE client_preferences SET value_json='false' WHERE scope='global'", []).unwrap();
+        conn.execute("UPDATE client_preferences SET value_json='false'", []).unwrap();
         assert!(read_notification_language(&conn).is_err());
         conn.execute("DROP TABLE client_preferences", []).unwrap();
         assert!(read_notification_language(&conn).is_err());
@@ -144,16 +142,13 @@ mod notification_tests {
 }
 
 #[tauri::command]
-pub(crate) async fn native_db_get_preference(
-    scope: String,
-    key: String,
-) -> Result<Option<Value>, String> {
+pub(crate) async fn native_db_get_preference(key: String) -> Result<Option<Value>, String> {
     let preferences = preferences_connection()?;
     tauri::async_runtime::spawn_blocking(move || {
         let value = preferences.with_database(|conn| {
             conn.query_row(
-                "SELECT value_json FROM client_preferences WHERE scope = ?1 AND key = ?2",
-                params![scope, key],
+                "SELECT value_json FROM client_preferences WHERE key = ?1",
+                params![key],
                 |row| row.get::<_, String>(0),
             )
             .optional()
@@ -166,22 +161,18 @@ pub(crate) async fn native_db_get_preference(
 }
 
 #[tauri::command]
-pub(crate) async fn native_db_put_preference(
-    scope: String,
-    key: String,
-    value: Value,
-) -> Result<(), String> {
+pub(crate) async fn native_db_put_preference(key: String, value: Value) -> Result<(), String> {
     let preferences = preferences_connection()?;
     tauri::async_runtime::spawn_blocking(move || {
         let value = json_text(&value)?;
         preferences.with_database(|conn| {
             conn.execute(
-                "INSERT INTO client_preferences(scope, key, value_json, updated_at)
-                 VALUES(?1, ?2, ?3, ?4)
-                 ON CONFLICT(scope, key) DO UPDATE SET
+                "INSERT INTO client_preferences(key, value_json, updated_at)
+                 VALUES(?1, ?2, ?3)
+                 ON CONFLICT(key) DO UPDATE SET
                    value_json = excluded.value_json,
                    updated_at = excluded.updated_at",
-                params![scope, key, value, chrono_millis()],
+                params![key, value, chrono_millis()],
             )
             .map_err(|e| format!("put preference: {e}"))?;
             Ok(())
@@ -192,13 +183,13 @@ pub(crate) async fn native_db_put_preference(
 }
 
 #[tauri::command]
-pub(crate) async fn native_db_delete_preference(scope: String, key: String) -> Result<(), String> {
+pub(crate) async fn native_db_delete_preference(key: String) -> Result<(), String> {
     let preferences = preferences_connection()?;
     tauri::async_runtime::spawn_blocking(move || {
         preferences.with_database(|conn| {
             conn.execute(
-                "DELETE FROM client_preferences WHERE scope = ?1 AND key = ?2",
-                params![scope, key],
+                "DELETE FROM client_preferences WHERE key = ?1",
+                params![key],
             )
             .map_err(|e| format!("delete preference: {e}"))?;
             Ok(())

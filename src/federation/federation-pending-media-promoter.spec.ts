@@ -137,7 +137,7 @@ describe('inbound message materialization retains transfer outcomes', () => {
     );
     expect(threadLock).toBeGreaterThan(-1);
     expect(identityLock).toBeGreaterThan(threadLock);
-    expect(queries[identityLock].params).toEqual(['1:peer.test:3:4']);
+    expect(queries[identityLock].params).toEqual(['1:3:4']);
     expect(execute.mock.invocationCallOrder[identityLock]).toBeLessThan(
       update.mock.invocationCallOrder[0],
     );

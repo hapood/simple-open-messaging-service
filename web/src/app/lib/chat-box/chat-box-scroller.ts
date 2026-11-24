@@ -39,16 +39,6 @@ import { MeasuredRegionView } from './measured-region-view';
 import { selectHistoryEdges } from './history-edge-slots';
 import { renderGhostState } from './ghost-renderer';
 
-import {
-  createEntryGapRenderer,
-  type EntryGapRenderer,
-  type EntryGapLabel,
-} from './entry-gap-renderer';
-import { EntryDemandOwner } from './entry-demand-owner';
-import {
-  planEntrySuffix,
-  planEntryGapReplacement,
-} from './entry-window-splice';
 import { EdgeDemandState } from './edge-demand-state';
 import {
   alignedItemOffset,
@@ -58,7 +48,6 @@ import {
 } from './viewport-anchor';
 
 import {
-  type CbDemand,
   type CbDemandResult,
   type CbSource,
   type CbSourceWindowRequest,
@@ -68,6 +57,8 @@ export interface CbItem<T = unknown> {
   /** Real data id (the msgId from the source). Only a source cursor + read by createItem for data; **takes no part in position arithmetic** (kernel position uses the array index). */
   id: number;
   data: T;
+  /** Display-only interval (left exclusive, right inclusive), never a stable message anchor. */
+  displayInterval?: { left: number; right: number };
   /** Window-local presentation boundary before this row. Keeps neighbor/date context,
    * but prevents compact sender grouping across an omitted-history interval. Never persisted. */
   groupingBreakBefore?: boolean;
@@ -175,9 +166,14 @@ export interface CbConfig {
   followBottom?: boolean;
 }
 
+export interface CommittedTombEvent {
+  threadId: number;
+  deletions: Array<{ seq: number; type: 'USER_RETRACTION' | 'MODERATION_REMOVAL' }>;
+}
+
 export interface CbOptions<T> {
-  /** Resolve accessible entry-gap labels in the host's active locale. */
-  entryGapLabel?: EntryGapLabel;
+  committedTombs$?: Observable<CommittedTombEvent>;
+  onMountedTomb?: (fact: CommittedTombEvent['deletions'][number]) => void;
   viewport: HTMLElement;
   content: HTMLElement;
   hooks: CbHooks<T>;
@@ -270,7 +266,6 @@ export function fullyVisibleIndexes(
 /** Explicit window presentation intent. Message IDs are coordinates, never mode flags. */
 export type CbWindowRequest<T> =
   | { kind: 'cached' }
-  | { kind: 'entry'; readSeq: number; request: (count: number) => CbDemand<T> }
   | { kind: 'start' }
   | CbWindowNavigation;
 
@@ -305,8 +300,8 @@ export interface ScrollerApi<T = unknown> {
   openWindow(request: CbWindowRequest<T>): Promise<void>;
   retryOlder?(): void;
   retryNewer?(): void;
-  /** A cached/live/durable ceiling advanced beyond the mounted tail; create a newer demand immediately. */
-  notifyNewerAvailable?(): void;
+  /** Load an arrival only if the pre-arrival latest real message is still mounted. */
+  notifyNewerAvailable?(previousLatestSeq?: number): void;
   /** Pin to the global newest edge. highlight flashes the newest message once it is reached. */
   /** Navigate through the window owner only when newest history is not mounted. */
   goToLatest(): Promise<boolean>;
@@ -449,18 +444,11 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     if (!this.boundSource) throw new Error('chat-box kernel is not bound');
     return this.boundSource;
   }
-  private entryDemand?: EntryDemandOwner<T>;
-  private entryReadSeq = 0;
-  private entryGap?: {
-    renderer: EntryGapRenderer;
-    el: HTMLElement;
-    before: Entry<T>;
-    height: number;
-    demand: EdgeDemandState<T>;
-  };
   private entrySeqs(item: CbItem<T>): readonly number[] {
-    return this.hooks.messageSeqs?.(item) ?? item.ids ?? [item.id];
+    return item.displayInterval ? [] : this.hooks.messageSeqs?.(item) ?? item.ids ?? [item.id];
   }
+
+  private readonly intervalSubscriptions = new Map<Entry<T>, Subscription>();
 
   private readonly cfg: Required<CbConfig>;
   private bindingAbort: AbortController | null = null;
@@ -472,6 +460,34 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
   private fullyVisibleIds = new Set<number>();
   private readonly isFrozen: () => boolean;
   private layoutSettleTimer?: ReturnType<typeof setTimeout>;
+  private readonly committedTombs$?: Observable<CommittedTombEvent>;
+  private readonly onMountedTomb?: CbOptions<T>['onMountedTomb'];
+  private tombSubscription?: Subscription;
+  // Retain facts for this binding: an already-read history result can mount later.
+  private readonly tombFacts = new Map<number, CommittedTombEvent['deletions'][number]>();
+  private tombApplied = new WeakMap<Entry<T>, Set<number>>();
+
+  private consumeMountedTombs(): void {
+    // Mount and measurement are synchronous. A subscribed newer edge can be
+    // parked waiting for future arrivals, so subscription presence is not a
+    // loading flag. Retained facts also cover results that have not mounted yet.
+    if (!this.steady || !this.onMountedTomb) return;
+    for (const [seq, fact] of this.tombFacts) {
+      const entry = this.mounted.find((row) => !row.leaving && this.entrySeqs(row.item).includes(seq));
+      if (!entry || this.tombApplied.get(entry)?.has(seq)) continue;
+      const applied = this.tombApplied.get(entry) ?? new Set<number>();
+      applied.add(seq);
+      this.tombApplied.set(entry, applied);
+      this.onMountedTomb(fact);
+      // A deletion may split an album or replace the entry itself.
+      for (const row of this.mounted) {
+        if (!this.entrySeqs(row.item).includes(seq)) continue;
+        const done = this.tombApplied.get(row) ?? new Set<number>();
+        done.add(seq);
+        this.tombApplied.set(row, done);
+      }
+    }
+  }
   private viewportWidth = 0;
 
   /** External CSS reflow: wait for quiet, then refresh geometry without moving the reader. */
@@ -504,6 +520,7 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
 
   private noOlder = false;
   private noNewer = false;
+  private arrivalDemand = false;
   /** The entry currently showing the skeleton (= mounted[0] when !noOlder); null = no skeleton. Compared by entry reference (immune to array shifts). */
   private ghostEntry: Entry<T> | null = null;
 
@@ -586,12 +603,10 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
   };
 
   private readonly mountedScroll: MountedMessageScroll;
-  private readonly entryGapLabel?: EntryGapLabel;
   private readonly onWindowJump?: CbOptions<T>['onWindowJump'];
 
   constructor(opts: CbOptions<T>) {
     this.viewport = opts.viewport;
-    this.entryGapLabel = opts.entryGapLabel;
     this.onWindowJump = opts.onWindowJump;
     this.mountedScroll = new MountedMessageScroll(opts.viewport);
     this.content = opts.content;
@@ -600,6 +615,8 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     this.onViewportPaint = opts.onViewportPaint;
     this.onFullyVisibleEnter = opts.onFullyVisibleEnter;
     this.onItemMounted = opts.onItemMounted;
+    this.committedTombs$ = opts.committedTombs$;
+    this.onMountedTomb = opts.onMountedTomb;
     this.isFrozen = opts.isFrozen ?? (() => false);
     this.cfg = { ...DEFAULTS, ...opts.config };
     this.viewportObs = new ResizeObserver(() => this.onViewportResize());
@@ -615,6 +632,11 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     this.bindingAbort = new AbortController();
     this.windowContext = { ...windowContext, signal: this.bindingAbort.signal };
     this.state = 'steady';
+    this.tombSubscription = this.committedTombs$?.subscribe((event) => {
+      if (event.threadId !== this.windowContext.chatId) return;
+      for (const fact of event.deletions) this.tombFacts.set(fact.seq, fact);
+      this.consumeMountedTombs();
+    });
     this.measureVh();
     this.viewportWidth = this.viewport.clientWidth;
     this.viewportObs.observe(this.viewport);
@@ -644,8 +666,6 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
 
   openWindow(request: CbWindowRequest<T>): Promise<void> {
     if (this.inactive) return Promise.resolve();
-    this.entryDemand?.retire();
-    this.entryDemand = undefined;
     this.cancelInitialization();
     this.cancelOlderDemand();
     this.cancelNewerDemand();
@@ -661,6 +681,7 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
           resolve();
           if (this.state === 'unavailable') return;
           this.state = 'steady';
+          this.consumeMountedTombs();
           this.onViewportStateChanged();
         },
         error: (error: unknown) => {
@@ -676,16 +697,6 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
       this.initializationSubscription = subscriber;
       let work: Observable<void>;
       switch (request.kind) {
-        case 'entry':
-          this.entryReadSeq = request.readSeq;
-          work = this.mountCachedWindow().pipe(
-            tap(() => {
-              this.entryDemand = new EntryDemandOwner(() =>
-                request.request(this.cfg.mountItem),
-              );
-            }),
-          );
-          break;
         case 'cached':
           work = this.mountCachedWindow();
           break;
@@ -964,23 +975,11 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
       case 'olderDelivery':
         return this.captureHistoryEdgeAnchor('older');
       case 'newerDelivery':
-      case 'entryDelivery':
         return this.captureHistoryEdgeAnchor('newer');
       case 'pendingUpdate':
         return this.hasBottomHistoryLoading
           ? this.captureHistoryEdgeAnchor('newer')
           : this.captureAnchor();
-      case 'gapReplacement': {
-        const index = this.indexOfId(scenario.suffixId);
-        return index < 0
-          ? this.captureAnchor()
-          : {
-              mode: 'item',
-              id: scenario.suffixId,
-              offset: this.viewport.scrollTop - this.topOf(index),
-              fallbackId: null,
-            };
-      }
       case 'viewportResize':
         return this.captureComposerAnchor();
       case 'preserveReading':
@@ -1040,7 +1039,7 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     const entry = this.mounted[selected];
     return { mode: 'item', id: entry.item.id,
       offset: this.viewport.scrollTop - this.topOf(selected),
-      fallbackId: this.mounted[selected + 1]?.item.id ?? this.mounted[selected - 1]?.item.id ?? null };
+      fallbackId: this.mounted.slice(selected + 1).find((entry) => this.entrySeqs(entry.item).length > 0)?.item.id ?? null };
   }
 
   private isFollowingBottom(): boolean {
@@ -1123,13 +1122,17 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
       )
         idx = next;
     }
+    if (idx >= 0 && !this.entrySeqs(this.mounted[idx].item).length) {
+      const newer = this.mounted.findIndex((entry, index) => index > idx && this.entrySeqs(entry.item).length > 0);
+      if (newer >= 0) idx = newer;
+      else while (idx >= 0 && !this.entrySeqs(this.mounted[idx].item).length) idx--;
+    }
     if (idx < 0) return { mode: 'offset', offset: this.viewport.scrollTop };
     return {
       mode: 'item',
       id: this.mounted[idx].item.id,
       offset: this.viewport.scrollTop - this.topOf(idx),
-      fallbackId:
-        idx + 1 < this.mounted.length ? this.mounted[idx + 1].item.id : null,
+      fallbackId: this.mounted.slice(idx + 1).find((entry) => this.entrySeqs(entry.item).length > 0)?.item.id ?? null,
     };
   }
 
@@ -1294,6 +1297,7 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
 
   /** Clear all mounted rows and load/boundary state before initializing the new window. */
   private resetWindowState(): void {
+    this.arrivalDemand = false;
     if (this.rafId) {
       cancelAnimationFrame(this.rafId);
       this.rafId = 0;
@@ -1330,11 +1334,8 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
       scrollTop: Math.round(this.viewport.scrollTop),
       scrollHeight: Math.round(this.content.scrollHeight),
       viewportHeight: this.vh,
-      oldestId: this.mounted[0]?.item.id ?? null,
-      newestId:
-        this.mounted.length > 0
-          ? this.mounted[this.mounted.length - 1].item.id
-          : null,
+      oldestId: this.mounted.find((entry) => this.entrySeqs(entry.item).length > 0)?.item.id ?? null,
+      newestId: [...this.mounted].reverse().find((entry) => this.entrySeqs(entry.item).length > 0)?.item.id ?? null,
       mounted: this.mounted.length,
       atTop: this.mounted.length > 0 && this.viewport.scrollTop <= 0,
       atBottom: this.mounted.length > 0 && this.isAtBottom(),
@@ -1432,6 +1433,10 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
 
   /** Release a conversation while retaining reusable kernel infrastructure. */
   unbind(): void {
+    this.tombSubscription?.unsubscribe();
+    this.tombSubscription = undefined;
+    this.tombFacts.clear();
+    this.tombApplied = new WeakMap();
     if (this.layoutSettleTimer !== undefined) clearTimeout(this.layoutSettleTimer);
     this.layoutSettleTimer = undefined;
     if (this.inactive) return;
@@ -1503,7 +1508,6 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     const p = [0];
     let acc = 0;
     for (const e of this.mounted) {
-      if (this.entryGap?.before === e) acc += this.entryGap.height;
       p[p.length - 1] = acc;
       acc += e.height;
       p.push(acc);
@@ -1641,7 +1645,7 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     if (!older && !newer) return { kind: 'message' };
     const failed =
       (older && this.olderDemand.error !== null) ||
-      (newer && (this.entryDemand?.error ?? this.newerDemand.error) !== null);
+      (newer && this.newerDemand.error !== null);
     return {
       kind: failed ? 'retry' : 'loading',
       edge: older && newer ? 'both' : older ? 'older' : 'newer',
@@ -1690,7 +1694,7 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
   }
 
   private notifyItemMounted(entry: Entry<T>): void {
-    if (!this.onItemMounted) return;
+    if (!entry.item.displayInterval && !this.onItemMounted) return;
     const element = entry.vs;
     queueMicrotask(() => {
       if (
@@ -1699,8 +1703,70 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
         !this.mounted.includes(entry)
       )
         return;
+      if (entry.item.displayInterval && this.source.watchInterval) {
+        const subscription = new Subscription();
+        this.intervalSubscriptions.set(entry, subscription);
+        subscription.add(this.source.watchInterval(entry.item).subscribe({
+          next: (items) => {
+            if (this.intervalSubscriptions.get(entry) !== subscription) return;
+            this.replaceDisplayInterval(entry, items);
+            this.consumeMountedTombs();
+          },
+          // Transport owns reconnect. An exhausted stream leaves the gap visible;
+          // remounting it creates a fresh consumer rather than erasing history.
+          error: () => {},
+        }));
+      }
       this.onItemMounted?.(entry.item, element);
     });
+  }
+
+  private releaseInterval(entry: Entry<T>): void {
+    this.intervalSubscriptions.get(entry)?.unsubscribe();
+    this.intervalSubscriptions.delete(entry);
+  }
+
+  /** Splice only the subscribed interval. Outside renderers remain mounted and
+   * the current real viewport anchor is captured at delivery, not request time. */
+  private replaceDisplayInterval(entry: Entry<T>, items: CbItem<T>[]): void {
+    const index = this.mounted.indexOf(entry);
+    const interval = entry.item.displayInterval;
+    if (this.inactive || index < 0 || !interval) return;
+    if (items.length === 1 && items[0].id === entry.item.id) return;
+    const anchor = this.captureAnchor();
+    const successor = this.mounted[index + 1];
+    this.releaseInterval(entry);
+    this.cancelEntryAnim(entry);
+    entry.vs.destroy();
+    entry.el.remove();
+    this.mounted.splice(index, 1);
+    const replacements = this.mergeBatch(items);
+    if (!replacements.length) {
+      if (entry.item.boundary === 'oldest' || entry.item.boundary === 'both') this.noOlder = true;
+      if (entry.item.boundary === 'newest' || entry.item.boundary === 'both') this.noNewer = true;
+    }
+    let previous = this.mounted[index - 1]?.item ?? null;
+    for (let offset = 0; offset < replacements.length; offset++) {
+      const item = replacements[offset];
+      const next = replacements[offset + 1] ?? successor?.item ?? null;
+      const replacement = this.createEntry(item, previous, next, successor?.el ?? null, false);
+      this.mounted.splice(index + offset, 0, replacement);
+      previous = item;
+    }
+    this.mounted[index - 1]?.vs.updateNext?.(this.mounted[index]?.item ?? null);
+    if (successor) {
+      successor.vs.update(successor.item, previous);
+      this.pendingMeasure.push(successor);
+    }
+    this.dirtyPrefix = true;
+    this.measurePending();
+    this.applyAnchor(anchor);
+    this.trimOlder();
+    this.trimNewer();
+    this.updateHistoryEdges();
+    this.applyAnchor(anchor);
+    this.emit();
+    this.onViewportStateChanged();
   }
 
   /**
@@ -1728,8 +1794,6 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
   ): void {
     const idx = this.mounted.indexOf(entry);
     if (idx < 0) return;
-    if (this.entryGap?.before === entry)
-      newItem = { ...newItem, groupingBreakBefore: true };
     const newPrev = idx > 0 ? this.mounted[idx - 1].item : null;
     const newNext = this.mounted[idx + 1]?.item ?? null;
     const newVs = this.renderRow(newItem, newPrev, presentation);
@@ -1738,6 +1802,7 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     newEl.dataset['cbId'] = String(newItem.id);
     this.content.insertBefore(newEl, entry.el);
     this.content.removeChild(entry.el);
+    this.releaseInterval(entry);
     entry.vs.destroy();
     entry.vs = newVs;
     entry.el = newEl;
@@ -1756,8 +1821,8 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
   private unmountTop(): boolean {
     if (this.mounted.length === 0) return false;
     const e = this.mounted[0];
-    if (this.entryGap?.before === e) this.retireEntryGap();
     if (e.el.parentNode === this.content) this.content.removeChild(e.el);
+    this.releaseInterval(e);
     e.vs.destroy();
     this.mounted.shift();
     this.dirtyPrefix = true;
@@ -1768,9 +1833,8 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
   private unmountBot(): boolean {
     if (this.mounted.length === 0) return false;
     const e = this.mounted[this.mounted.length - 1];
-    this.entryDemand?.retire();
-    if (this.entryGap?.before === e) this.retireEntryGap();
     if (e.el.parentNode === this.content) this.content.removeChild(e.el);
+    this.releaseInterval(e);
     e.vs.destroy();
     this.mounted.pop();
     this.mounted[this.mounted.length - 1]?.vs.updateNext?.(null);
@@ -1783,8 +1847,8 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
   private unmountAt(i: number): boolean {
     if (i < 0 || i >= this.mounted.length) return false;
     const e = this.mounted[i];
-    if (this.entryGap?.before === e) this.retireEntryGap();
     if (e.el.parentNode === this.content) this.content.removeChild(e.el);
+    this.releaseInterval(e);
     e.vs.destroy();
     this.mounted.splice(i, 1);
     this.mounted[i - 1]?.vs.updateNext?.(this.mounted[i]?.item ?? null);
@@ -1841,12 +1905,11 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
   }
 
   private unmountAll(): void {
-    this.entryDemand?.retire();
-    this.retireEntryGap();
     for (const e of this.mounted) {
       this.cancelEntryAnim(e);
 
       if (e.el.parentNode === this.content) this.content.removeChild(e.el);
+      this.releaseInterval(e);
       e.vs.destroy();
     }
     this.mounted = [];
@@ -1873,7 +1936,7 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
 
   /** History is not yet connected to its known newest edge. A parked live subscription is not loading. */
   private get hasBottomHistoryLoading(): boolean {
-    return this.entryDemand?.ownsLocation === true || !this.noNewer;
+    return !this.noNewer;
   }
 
   /** Both boundaries select presentation in one pass, including a shared sole row. */
@@ -1882,11 +1945,11 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
       this.mounted,
       (entry) => this.entrySeqs(entry.item).length > 0,
     );
-    const older = this.noOlder ? null : edges.older;
-    const newer =
+    const older = this.noOlder || this.mounted[0]?.item.displayInterval ? null : edges.older;
+    const newer = !this.mounted[this.mounted.length - 1]?.item.displayInterval && (
       this.hasBottomHistoryLoading ||
       this.newerDemand.retrying ||
-      this.newerDemand.error !== null
+      this.newerDemand.error !== null)
         ? edges.newer
         : null;
     const previous = new Set([this.ghostEntry, this.newerGhostEntry]);
@@ -1907,7 +1970,7 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
       const atNewer = entry === newer;
       const olderFailed = atOlder && this.olderDemand.error !== null;
       const newerFailed =
-        atNewer && (this.entryDemand?.error ?? this.newerDemand.error) !== null;
+        atNewer && this.newerDemand.error !== null;
       const edge = atOlder && atNewer ? 'both' : atOlder ? 'older' : 'newer';
       const failed = olderFailed || newerFailed;
       this.syncRowPresentation(
@@ -2023,11 +2086,10 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     if (!this.steady) return;
     const atBottom =
       this.totalH() - this.vh - this.viewport.scrollTop < this.cfg.edge;
-    if (atBottom) this.startNewerDemand();
-    else {
-      this.entryDemand?.retire();
-      this.cancelNewerDemand();
-    }
+    // Ordinary newer paging remains viewport-driven while browsing history.
+    // At the live tail, demand stays mounted even when the viewport is far away.
+    if (this.arrivalDemand || this.noNewer || atBottom || !this.mounted.length) this.startNewerDemand();
+    else this.cancelNewerDemand();
   }
 
   /** Animation completion drain (called from every enter/exit animationend). When the last one finishes, fire the
@@ -2105,7 +2167,9 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
         this.source.requestOlder(this.olderCursorId(), this.cfg.mountItem),
       ),
       (result) => {
-        if (!this.applyOlderResult(result)) return;
+        const applied = this.applyOlderResult(result);
+        this.consumeMountedTombs();
+        if (!applied) return;
         this.trimNewer();
         this.emit();
         this.onViewportStateChanged();
@@ -2115,11 +2179,6 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
 
   private startNewerDemand(): void {
     if (this.layoutSettleTimer !== undefined) return;
-    if (this.entryDemand?.ownsLocation) {
-      this.entryDemand.start((result) => this.deliverEntry(result));
-      this.updateHistoryEdges();
-      return;
-    }
     const edge = this.newerDemand;
     if (edge.active || edge.error !== null) return;
     edge.subscribe(
@@ -2147,7 +2206,10 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
         const attached = this.isFollowingBottom();
         const loaded = this.applyNewerResult(result);
         this.updateHistoryEdges();
-        if (loaded <= 0) return;
+        if (loaded <= 0) {
+          this.consumeMountedTombs();
+          return;
+        }
         this.reconcileOptimistic();
         const arrivals = this.mounted.flatMap((entry) => {
           const seqs = this.entrySeqs(entry.item).filter((seq) => !known.has(seq));
@@ -2167,6 +2229,7 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
           for (const { entry, seqs } of arrivals)
             this.hooks.onArrivalPinned?.(entry.item, entry.el, seqs);
         }
+        this.consumeMountedTombs();
         this.emit();
         this.onViewportStateChanged();
       },
@@ -2247,13 +2310,12 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     // falsely believing it was at the newest — stranding the remaining newer messages off-window and blocking further
     // loads (revalidateBottom is gated on !noNewer).
     this.noNewer = reachesNewest;
+    if (reachesNewest) this.arrivalDemand = false;
 
     const count0 = this.mounted.length;
 
     // Merge historical arrivals before mounting; absorbed album members do not allocate new rows.
-    const absorbed = this.mountNewerReals(this.mergeBatch(batch), {
-      kind: 'arrival',
-    }); // items folded into existing albums (no new mount)
+    const absorbed = this.mountNewerReals(this.mergeBatch(batch)); // items folded into existing albums (no new mount)
 
     // Pending presentation survives incomplete history pages; only confirmation,
     // explicit discard, or window teardown removes an optimistic entry.
@@ -2265,135 +2327,6 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     // mounted delta + absorbed: an absorbed item changes the view (album grew) and may need reconcile (its optimistic is
     // still mounted), so it counts as progress and the demand callback still reconciles its optimistic bubble.
     return this.mounted.length - count0 + absorbed;
-  }
-
-  private retireEntryGap(): void {
-    if (!this.entryGap) return;
-    this.entryGap.demand.cancel();
-    const { groupingBreakBefore: _boundary, ...item } =
-      this.entryGap.before.item;
-    this.entryGap.before.item = item;
-    this.entryGap.renderer.destroy();
-    this.entryGap = undefined;
-    this.dirtyPrefix = true;
-  }
-
-  private deliverEntry(result: CbDemandResult<T>): void {
-    if (!this.steady) return;
-    if (result.kind === 'error') {
-      this.updateHistoryEdges();
-      return;
-    }
-    const anchor = this.selectPosition({ kind: 'entryDelivery' });
-    const rows = this.mounted.filter(
-      (e) => !e.optimistic && !e.transient && !e.leaving,
-    );
-    const response = result.kind === 'items' ? result.items : [];
-    const plan = planEntrySuffix(
-      rows.map((e) => e.item),
-      response,
-      this.entryReadSeq,
-      (item) => item.id,
-      (item) => this.entrySeqs(item),
-    );
-    const additions = this.mergeBatch([...plan.additions]);
-    this.mountNewerReals(additions, {
-      kind: 'entry',
-      separated: plan.skipped !== undefined,
-    });
-    const firstAddition =
-      additions.length > 0
-        ? this.mounted.find((entry) =>
-            this.itemHasId(entry.item, additions[0].id),
-          )
-        : undefined;
-    if (plan.skipped && firstAddition) {
-      const renderer = createEntryGapRenderer(
-        () => this.loadEntryGap(),
-        this.entryGapLabel,
-      );
-      const el = renderer.el;
-      const before = firstAddition;
-      const beforeCount = this.mounted.indexOf(before);
-      this.content.insertBefore(el, before.el);
-      this.entryGap = {
-        renderer,
-        el,
-        before,
-        height: el.offsetHeight,
-        demand: new EdgeDemandState<T>(),
-      };
-      before.item = { ...before.item, groupingBreakBefore: true };
-      before.vs.update(
-        before.item,
-        this.mounted[beforeCount - 1]?.item ?? null,
-      );
-      this.pendingMeasure.push(before);
-      this.mounted[beforeCount - 1]?.vs.updateNext?.(before.item);
-      this.dirtyPrefix = true;
-    }
-    this.reconcileOptimistic();
-    this.noNewer = response.some(
-      (item) => item.boundary === 'newest' || item.boundary === 'both',
-    );
-    this.measurePending();
-    this.updateHistoryEdges();
-    this.applyAnchor(anchor);
-    this.onViewportStateChanged();
-  }
-
-  private loadEntryGap(): void {
-    const gap = this.entryGap;
-    if (!gap || gap.demand.active) return;
-    gap.demand.error = null;
-    gap.renderer.update('loading');
-    gap.demand.subscribe(
-      defer(() =>
-        this.source.requestOlder(gap.before.item.id, this.cfg.mountItem),
-      ),
-      (result) => {
-        if (this.entryGap !== gap || !this.steady) return;
-        if (result.kind === 'error') {
-          gap.demand.error = result.error;
-          gap.renderer.update('failed');
-          return;
-        }
-        const index = this.mounted.indexOf(gap.before);
-        if (index < 0) {
-          this.retireEntryGap();
-          return;
-        }
-        const anchor = this.selectPosition({
-          kind: 'gapReplacement',
-          suffixId: gap.before.item.id,
-        });
-        const plan = planEntryGapReplacement(
-          this.mounted.slice(index).map((e) => e.item),
-          result.kind === 'items' ? result.items : [],
-          (item) => item.id,
-          (item) => this.entrySeqs(item),
-        );
-        this.retireEntryGap();
-        // The old top request addresses a prefix that this transaction removes.
-        this.cancelOlderDemand();
-        this.olderDemand.error = null;
-        for (let i = 0; i < index; i++) this.unmountTop();
-        this.noOlder = result.kind === 'boundary';
-        const merged = this.mergeBatch([...plan.prepend]);
-        this.absorbBoundary(merged);
-        this.mountBatch(merged, 'older');
-        const suffixIndex = this.mounted.indexOf(gap.before);
-        gap.before.vs.update(
-          gap.before.item,
-          this.mounted[suffixIndex - 1]?.item ?? null,
-        );
-        this.pendingMeasure.push(gap.before);
-        this.measurePending();
-        this.updateHistoryEdges();
-        this.applyAnchor(anchor);
-        this.onViewportStateChanged();
-      },
-    );
   }
 
   private cancelOlderDemand(): void {
@@ -2416,11 +2349,6 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
   }
 
   retryNewer(): void {
-    if (this.entryDemand?.ownsLocation) {
-      this.entryDemand.retry((result) => this.deliverEntry(result));
-      this.updateHistoryEdges();
-      return;
-    }
     if (this.newerDemand.error === null || this.inactive) return;
     this.newerDemand.error = null;
     this.newerDemand.retrying = true;
@@ -2428,8 +2356,14 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     this.startNewerDemand();
   }
 
-  notifyNewerAvailable(): void {
+  notifyNewerAvailable(previousLatestSeq?: number): void {
     if (!this.steady) return;
+    const mountedLatest = previousLatestSeq === undefined
+      ? this.noNewer
+      : this.mounted.some((entry) => !entry.leaving && !entry.optimistic &&
+          !entry.transient && this.entrySeqs(entry.item).includes(previousLatestSeq));
+    if (!mountedLatest) return;
+    this.arrivalDemand = true;
     this.noNewer = false;
     this.updateHistoryEdges();
     this.startNewerDemand();
@@ -2447,7 +2381,6 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
    */
   private mountNewerReals(
     reals: CbItem<T>[],
-    delivery: { kind: 'arrival' } | { kind: 'entry'; separated: boolean },
   ): number {
     if (reals.length === 0) return 0;
     // Insertion point = right after the last real entry (the cursor). When NO real is mounted — the window is entirely
@@ -2468,10 +2401,7 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     // down in layout. Without a tail (plain incoming at the
     // bottom), cb-enter (from below) is the natural "message arrives" motion.
     const enterAbove = insertIdx < this.mounted.length;
-    const absorb =
-      delivery.kind === 'entry' && delivery.separated
-        ? undefined
-        : this.hooks.absorbTail;
+    const absorb = this.hooks.absorbTail;
     let absorbed = 0; // items folded into an existing entry (no new mount) — reported up so callers count them as progress
     for (const item of reals) {
       // Confirm: an in-flight optimistic/transient send whose clientMessageId matches this real. The real carries a
@@ -2595,9 +2525,7 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
       // sends sit at the tail, no bottom trim runs at all, so currently-displayed messages are never cut.
       if (last.transient || last.optimistic || last.leaving) break;
       this.flushPrefix();
-      const h =
-        last.height +
-        (this.entryGap?.before === last ? this.entryGap.height : 0);
+      const h = last.height;
       if (
         this.totalH() - h > this.threshold &&
         this.totalH() - h - (this.viewport.scrollTop + this.vh) > this.cfg.edge
@@ -2607,6 +2535,8 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
       } else break;
     }
     if (trimmed) {
+      this.arrivalDemand = false;
+      this.cancelNewerDemand();
       this.noNewer = false;
       this.updateHistoryEdges();
     }
@@ -2634,9 +2564,7 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
         first.item.boundary === 'both'
       )
         break;
-      const h =
-        first.height +
-        (this.entryGap?.before === first ? this.entryGap.height : 0);
+      const h = first.height;
       if (
         this.totalH() - h > this.threshold &&
         this.viewport.scrollTop - cumH - h > this.cfg.edge
@@ -2961,7 +2889,7 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     });
     return indexes.flatMap((index) => {
       const entry = this.mounted[index];
-      return entry && !entry.leaving && !entry.el.classList.contains('cb-ghost')
+      return entry && !entry.leaving && this.entrySeqs(entry.item).length > 0 && !entry.el.classList.contains('cb-ghost')
         ? [{ item: entry.item, el: entry.el }]
         : [];
     });

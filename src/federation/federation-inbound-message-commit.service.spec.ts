@@ -7,12 +7,72 @@ vi.mock('../common/locks/thread-content-lock.js', () => ({
   ),
 }));
 import { FederationInboundMessageCommitService } from './federation-inbound-message-commit.service.js';
+import { enqueueMessageFanoutsInTx } from '../message/thread-fanout-task.js';
+vi.mock('../message/thread-fanout-task.js', () => ({
+  enqueueMessageFanoutsInTx: vi.fn(),
+}));
 
 const dialect = new PgDialect();
 
 afterEach(() => vi.restoreAllMocks());
 
 describe('FederationInboundMessageCommitService', () => {
+  it.each([true, false])(
+    'fans out only a page advancing the visible tail (tail=%s)',
+    async (tail) => {
+      vi.mocked(enqueueMessageFanoutsInTx).mockClear();
+      const writtenSeq = tail ? 99 : 40;
+      const tx = {
+        execute: vi
+          .fn()
+          .mockResolvedValueOnce({ rows: [{ seq: tail ? 40 : 99 }] })
+          .mockResolvedValueOnce({ rows: [{ seq: writtenSeq }] })
+          .mockResolvedValueOnce({ rows: [] })
+          .mockResolvedValueOnce({ rows: [{ seq: 99, tombstoneEndSeq: 7 }] }),
+      };
+      const service = new FederationInboundMessageCommitService(
+        {} as never,
+        {
+          applyPrepared: vi.fn().mockResolvedValue([
+            {
+              kind: 'message',
+              historical: true,
+              threadId: 31,
+              originSeq: 70,
+              recipients: [],
+              toAccount: 'alice',
+              author: { account: 'bob', namespaceId: 22 },
+              message: { seq: writtenSeq, localState: 'STUB' },
+            },
+          ]),
+        } as never,
+        {} as never,
+        {} as never,
+      );
+      const effects = await service.commitMessagePageInTx(tx as never, {
+        threadLock: { threadId: 31 } as never,
+        processedInterval: { left: 69, right: 70 },
+        peerToken: { namespaceId: 22 } as never,
+        messages: [{ item: { seq: 70 } }] as never,
+      });
+      expect(effects).toHaveLength(1);
+      expect(effects[0]).toMatchObject({
+        kind: 'message',
+        message: { seq: writtenSeq, localState: 'READY' },
+      });
+      expect(enqueueMessageFanoutsInTx).toHaveBeenCalledTimes(tail ? 1 : 0);
+      if (tail)
+        expect(enqueueMessageFanoutsInTx).toHaveBeenCalledWith(
+          tx,
+          expect.anything(),
+          {
+            threadId: 31,
+            messageEndSeq: 99,
+            tombstoneEndSeq: 7,
+          },
+        );
+    },
+  );
   it.each(['USER_RETRACTION', 'MODERATION_REMOVAL'] as const)(
     'authorizes member deletion type %s before publishing an authority fact',
     async (type) => {
@@ -71,19 +131,42 @@ describe('FederationInboundMessageCommitService', () => {
   );
 
   it('finalizes materialization within the immutable publisher namespace', async () => {
-    const service = Object.create(
-      FederationInboundMessageCommitService.prototype,
-    ) as FederationInboundMessageCommitService;
-    const tx = { execute: vi.fn().mockResolvedValue({ rowCount: 1 }) };
+    const tx = {
+      execute: vi
+        .fn()
+        .mockResolvedValueOnce({ rows: [{ seq: 0 }] })
+        .mockResolvedValueOnce({ rows: [{ seq: 40 }] })
+        .mockResolvedValueOnce({ rows: [] })
+        .mockResolvedValueOnce({ rows: [{ seq: 40, tombstoneEndSeq: 0 }] }),
+    };
+    const service = new FederationInboundMessageCommitService(
+      {} as never,
+      {
+        applyPrepared: vi.fn().mockResolvedValue([
+          {
+            kind: 'message',
+            historical: true,
+            threadId: 9,
+            originSeq: 40,
+            recipients: [],
+            toAccount: 'alice',
+            author: { account: 'bob', namespaceId: 22 },
+            message: { seq: 40, localState: 'STUB' },
+          },
+        ]),
+      } as never,
+      {} as never,
+      {} as never,
+    );
 
-    await service.finalizeReverseWindowInTransaction(tx as never, {
-      threadId: 9,
-      namespaceId: 22,
-      beforeSeq: 100,
-      throughSeq: 40,
+    await service.commitMessagePageInTx(tx as never, {
+      threadLock: { threadId: 9 } as never,
+      processedInterval: { left: 39, right: 40 },
+      peerToken: { namespaceId: 22 } as never,
+      messages: [{ item: { seq: 40 } }] as never,
     });
 
-    const query = dialect.sqlToQuery(tx.execute.mock.calls[0]![0] as SQL);
+    const query = dialect.sqlToQuery(tx.execute.mock.calls[1]![0] as SQL);
     expect(query.sql).toContain('staged."publisherNamespaceId"');
     expect(query.params).toContain(22);
   });

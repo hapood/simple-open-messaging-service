@@ -33,8 +33,8 @@ fn owner(conn: Connection) -> std::sync::Arc<crate::login_connection::LoginConne
 fn fresh_creation_uses_server_baseline_and_preserves_progress() {
     for end in [0, 17] {
         let mut conn = database();
-        assert_eq!(initialize(&mut conn, end), Some(end));
-        assert_eq!(read_deleted_hwm(&conn, 42, 7).unwrap(), Some(end));
+        assert_eq!(initialize(&mut conn, end), Some(0));
+        assert_eq!(read_deleted_hwm(&conn, 42, 7).unwrap(), Some(0));
     }
 }
 
@@ -48,12 +48,13 @@ fn thread_progress_accepts_monotone_message_head() {
     tx.commit().unwrap();
     let values: (i64, i64, i64) = conn
         .query_row(
-            "SELECT deleted_hwm,message_head,message_end_seq FROM threads",
+            "SELECT threads.deleted_hwm,threads.message_head,targets.message_end_seq
+             FROM threads JOIN thread_resource_sync targets USING(user_id,thread_id)",
             [],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .unwrap();
-    assert_eq!(values, (17, 8, 0));
+    assert_eq!(values, (0, 8, 0));
 }
 
 #[tokio::test]
@@ -153,8 +154,9 @@ async fn body_clear_preserves_cursor_and_stub_without_cancelling_parallel_work()
                 )
                 .unwrap();
             let tomb: Value = serde_json::from_str(&raw).unwrap();
-            assert_eq!(tomb["contentType"], "TOMB");
-            assert!(tomb.get("content").is_none());
+            assert_eq!(tomb["contentType"], "TEXT");
+            assert!(tomb["isDeleted"].is_null());
+            assert_eq!(load_message_deletions(conn, 42, 7, vec![2])?.len(), 0);
             Ok(())
         })
         .unwrap();

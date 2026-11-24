@@ -80,6 +80,8 @@ export class DurableTaskSchedulerService implements OnApplicationShutdown {
             DurableTaskType.REVOKE_FORBIDDEN_GROUP,
             DurableTaskType.FORCE_REVOKE_GROUP_MEMBER,
             DurableTaskType.FAN_OUT_THREAD_CONTENT,
+            DurableTaskType.FAN_OUT_THREAD_TOMB,
+            DurableTaskType.FAN_OUT_THREAD_META,
             DurableTaskType.FAN_OUT_ACCOUNT_THREAD_CONTENT,
             DurableTaskType.FAN_OUT_FEDERATION_THREAD_CONTENT,
           ]),

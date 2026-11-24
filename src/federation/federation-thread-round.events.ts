@@ -3,7 +3,8 @@ export const FEDERATION_THREAD_ROUND_WAKE =
 
 export interface FederationThreadRoundWake {
   threadId: number;
-  peerDomain: string;
   namespaceId: number;
-  direction: 'forward' | 'reverse' | 'meta' | 'both';
+  /** Callers do not choose a message cursor. `thread` starts the scheduler's
+   * own message direction plus tombstone drain. `meta` is not a message pull. */
+  mode: 'thread' | 'meta';
 }

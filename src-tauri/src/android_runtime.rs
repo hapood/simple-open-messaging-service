@@ -225,6 +225,7 @@ pub extern "system" fn Java_com_soms_client_RustRuntimeBridge_initializeRuntime(
             .map_err(|e| format!("read database directory: {e}"))?
             .into();
         crate::android_notifications::initialize(&mut env)?;
+        crate::logout_platform::initialize(&mut env)?;
         let path = crate::native_db::location::initialize(std::path::Path::new(&directory))?;
         crate::native_db::initialize_preferences()?;
         if let Err(error) = crate::native_db::initialize_login_cache() {
@@ -241,11 +242,7 @@ pub extern "system" fn Java_com_soms_client_RustRuntimeBridge_initializeRuntime(
         let _ = tauri::async_runtime::handle();
         // Only a credential-activated owner may inherit platform notification state.
         if let Some(owner) = crate::native_db::reconcile_cold_start_credential(token.as_deref())? {
-            let cards = crate::android_notifications::restore_cards()?;
-            let mut state = owner.notification_delivery.lock().map_err(|_| "notification state poisoned")?;
-            state.import_cards(cards).map_err(str::to_owned)?;
-            let candidates = state.reconstruction_candidates();
-            *owner.notification_reconstruction.try_lock().map_err(|_| "notification restoration already running")? = Some(candidates);
+            crate::native_db::notifications::restoration::restore(&owner, None)?;
         }
         *state
             .config_path

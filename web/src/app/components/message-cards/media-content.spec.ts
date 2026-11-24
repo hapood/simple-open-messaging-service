@@ -3,6 +3,10 @@ import {
   contextualLinkContent,
   contextualMediaUrl,
   parseGalleryContent,
+  parseAudioContent,
+  parseFileContent,
+  parseImageContent,
+  parseVideoContent,
 } from './media-content';
 
 describe('message media content', () => {
@@ -22,7 +26,11 @@ describe('message media content', () => {
     expect(
       JSON.parse(
         contextualLinkContent(
-          JSON.stringify({ url: 'https://example.test', image, favicon: image }),
+          JSON.stringify({
+            url: 'https://example.test',
+            image,
+            favicon: image,
+          }),
           3,
           8,
         ),
@@ -76,9 +84,47 @@ describe('message media content', () => {
     ]);
   });
 
-  it('keeps malformed gallery entries isolated', () => {
+  it('projects only the metadata owned by each resource kind', () => {
+    const base = {
+      url: '/uploads/resource',
+      name: 'resource',
+      size: 1024,
+      mimeType: 'application/octet-stream',
+    };
+    const metadata = {
+      src: base.url,
+      name: base.name,
+      size: base.size,
+      mimeType: base.mimeType,
+      senderName: null,
+      sentAt: null,
+    };
     expect(
-      parseGalleryContent(JSON.stringify({ items: [null, { kind: 'IMAGE' }] })),
-    ).toEqual([]);
+      parseImageContent(JSON.stringify({ ...base, w: 640, h: 480 })),
+    ).toEqual({ ...metadata, kind: 'image', w: 640, h: 480 });
+    expect(
+      parseVideoContent(
+        JSON.stringify({ ...base, w: 640, h: 480, duration: 12 }),
+      ),
+    ).toEqual({ ...metadata, kind: 'video', w: 640, h: 480, duration: 12 });
+    expect(
+      parseAudioContent(JSON.stringify({ ...base, duration: 12 })),
+    ).toEqual({ ...metadata, kind: 'audio', duration: 12 });
+    expect(parseFileContent(JSON.stringify(base))).toEqual(base);
+    expect(
+      parseGalleryContent(
+        JSON.stringify({ items: [{ ...base, kind: 'FILE' }] }),
+      ),
+    ).toEqual([{ ...metadata, kind: 'file' }]);
+  });
+
+  it('surfaces malformed content instead of returning an empty gallery', () => {
+    expect(() => parseGalleryContent('{')).toThrow();
+    expect(() =>
+      parseGalleryContent(JSON.stringify({ items: [null] })),
+    ).toThrow();
+    expect(() =>
+      parseGalleryContent(JSON.stringify({ items: [{ kind: 'UNKNOWN' }] })),
+    ).toThrow('Unsupported gallery resource');
   });
 });

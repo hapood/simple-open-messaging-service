@@ -10,14 +10,6 @@ export class ForwardSnapshotSource implements CbSource<ChatItemData> {
     return this.items;
   }
 
-  async getOlder(): Promise<CbItem<ChatItemData>[]> {
-    return [];
-  }
-
-  async getNewer(): Promise<CbItem<ChatItemData>[]> {
-    return [];
-  }
-
   requestOlder(): CbDemand<ChatItemData> {
     return of({ kind: 'boundary' });
   }
@@ -28,10 +20,6 @@ export class ForwardSnapshotSource implements CbSource<ChatItemData> {
 
   requestMessagesForEmptyWindow(): CbDemand<ChatItemData> {
     return NEVER;
-  }
-
-  getPending(): CbItem<ChatItemData>[] {
-    return [];
   }
 
   pushLive(): void {}

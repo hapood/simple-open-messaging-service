@@ -129,7 +129,6 @@ describe('FederationMessageTombstoneFeedService query', () => {
         messageSeq: 1,
         type: MessageDeleteType.USER_RETRACTION,
         createdAt: now,
-        updatedAt: now,
       })
       .returning();
     await database.db.insert(peerStateFeed).values({
@@ -139,7 +138,7 @@ describe('FederationMessageTombstoneFeedService query', () => {
       subjectAccount: bob.account,
       subjectNamespaceId: namespaceId,
       feedId: 1n,
-      body: { messageEndSeq: 1, tombstoneEndSeq: deletion.deletionSeq },
+      body: { messageEndSeq: 1, tombstoneEndSeq: deletion.deletionSeq! },
     });
     return { deletion, namespaceId, target, thread };
   }
@@ -152,15 +151,15 @@ describe('FederationMessageTombstoneFeedService query', () => {
       { type: 'P2P', account: 'alice', peerAccount: 'bob' },
       0,
       undefined,
-      deletion.deletionSeq,
+      deletion.deletionSeq!,
     );
     assertFederationWireSchema('urn:somfp:v1:message-tombstone-query', page);
     expect(page).toMatchObject({
-      scannedThrough: deletion.deletionSeq,
+      scannedThrough: deletion.deletionSeq!,
       hasMore: false,
       tombstones: [
         {
-          deletionSeq: deletion.deletionSeq,
+          deletionSeq: deletion.deletionSeq!,
           type: MessageDeleteType.USER_RETRACTION,
           messageSeq: 1,
         },
@@ -182,7 +181,7 @@ describe('FederationMessageTombstoneFeedService query', () => {
       { type: 'P2P', account: 'alice', peerAccount: 'bob' },
       0,
       undefined,
-      deletion.deletionSeq,
+      deletion.deletionSeq!,
       true,
     );
     expect(page).toMatchObject({ tombstones: [], scannedThrough: 1 });
@@ -195,7 +194,7 @@ describe('FederationMessageTombstoneFeedService query', () => {
       { type: 'P2P', account: 'alice', peerAccount: 'bob' },
       0,
       undefined,
-      deletion.deletionSeq,
+      deletion.deletionSeq!,
       false,
     );
     expect(page.tombstones).toHaveLength(1);
@@ -209,12 +208,12 @@ describe('FederationMessageTombstoneFeedService query', () => {
       { type: 'P2P', account: 'alice', peerAccount: 'bob' },
       0,
       undefined,
-      deletion.deletionSeq,
+      deletion.deletionSeq!,
       false,
     );
     expect(filtered).toMatchObject({
       tombstones: [],
-      scannedThrough: deletion.deletionSeq,
+      scannedThrough: deletion.deletionSeq!,
       hasMore: false,
     });
   });
@@ -247,7 +246,6 @@ describe('FederationMessageTombstoneFeedService query', () => {
         messageSeq: 2,
         type: MessageDeleteType.USER_RETRACTION,
         createdAt: now,
-        updatedAt: now,
       })
       .returning();
     await database.db
@@ -257,7 +255,7 @@ describe('FederationMessageTombstoneFeedService query', () => {
     await database.db
       .update(peerStateFeed)
       .set({
-        body: { messageEndSeq: 2, tombstoneEndSeq: laterDeletion.deletionSeq },
+        body: { messageEndSeq: 2, tombstoneEndSeq: laterDeletion.deletionSeq! },
       })
       .where(eq(peerStateFeed.namespaceId, namespaceId));
 
@@ -266,17 +264,17 @@ describe('FederationMessageTombstoneFeedService query', () => {
       { type: 'P2P', account: 'alice', peerAccount: 'bob' },
       0,
       undefined,
-      laterDeletion.deletionSeq,
+      laterDeletion.deletionSeq!,
       true,
       2,
     );
 
     expect(page).toMatchObject({
       tombstones: [
-        { deletionSeq: deletion.deletionSeq, messageSeq: 1 },
-        { deletionSeq: laterDeletion.deletionSeq, messageSeq: 2 },
+        { deletionSeq: deletion.deletionSeq!, messageSeq: 1 },
+        { deletionSeq: laterDeletion.deletionSeq!, messageSeq: 2 },
       ],
-      scannedThrough: laterDeletion.deletionSeq,
+      scannedThrough: laterDeletion.deletionSeq!,
       hasMore: false,
     });
   });
@@ -312,7 +310,6 @@ describe('FederationMessageTombstoneFeedService query', () => {
         messageSeq: deletionSeq,
         type: MessageDeleteType.USER_RETRACTION,
         createdAt: now,
-        updatedAt: now,
       })),
     );
     await database.db
@@ -380,11 +377,11 @@ describe('FederationMessageTombstoneFeedService query', () => {
         { type: 'P2P', account: 'alice', peerAccount: 'bob' },
         0,
         Number.MAX_SAFE_INTEGER,
-        deletion.deletionSeq,
+        deletion.deletionSeq!,
       ),
     ).resolves.toMatchObject({
       tombstones: [{ messageSeq: 1 }],
-      scannedThrough: deletion.deletionSeq,
+      scannedThrough: deletion.deletionSeq!,
       hasMore: false,
     });
   });
@@ -416,17 +413,17 @@ describe('FederationMessageTombstoneFeedService query', () => {
       { type: 'P2P', account: 'alice', peerAccount: 'bob' },
       0,
       undefined,
-      deletion.deletionSeq,
+      deletion.deletionSeq!,
       true,
       1,
     );
     expect(page.tombstones).toEqual([
       expect.objectContaining({
-        deletionSeq: deletion.deletionSeq,
+        deletionSeq: deletion.deletionSeq!,
         messageSeq: 1,
       }),
     ]);
-    expect(page.scannedThrough).toBe(deletion.deletionSeq);
+    expect(page.scannedThrough).toBe(deletion.deletionSeq!);
   });
 
   it('uses 0 as the missing-after bootstrap for the thread query', async () => {

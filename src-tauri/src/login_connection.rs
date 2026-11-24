@@ -276,6 +276,12 @@ pub(crate) struct DatabaseWork {
 }
 
 impl DatabaseWork {
+    /// Consumer-local cancellation also fences queued database work without
+    /// invalidating siblings or the session's cache generation.
+    pub(crate) fn child(&self) -> Self {
+        Self { owner: self.owner.clone(), cancellation: self.cancellation.child_token() }
+    }
+
     pub(crate) fn owner(&self) -> &Arc<LoginConnection> {
         &self.owner
     }

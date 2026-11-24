@@ -109,7 +109,7 @@ fn dispatch(
                 log::error!("launch presentation failed: {error}");
             }
         }
-        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+        #[cfg(any(target_os = "linux", target_os = "android", target_os = "ios"))]
         let _ = (handle, presentation);
     })
     .map_err(|error| error.to_string())

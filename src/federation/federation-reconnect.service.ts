@@ -3,7 +3,7 @@ import { EventEmitter2, OnEvent } from '@nestjs/event-emitter';
 import { Interval } from '@nestjs/schedule';
 import { FederationPeerLifecycle } from './federation-peer-lifecycle.js';
 import { FederationStateFeedPushService } from './federation-state-feed-push.service.js';
-import { FederationStatePullService } from './federation-state-pull.service.js';
+import { FederationThreadRoundSchedulerService } from './federation-thread-round-scheduler.service.js';
 import { FederationProfileNamespacePullService } from './federation-profile-namespace-pull.service.js';
 import { KeypairService } from './keypair.service.js';
 import {
@@ -37,7 +37,7 @@ export class FederationReconnectService implements OnApplicationBootstrap {
   constructor(
     private readonly peerLifecycle: FederationPeerLifecycle,
     private readonly stateFeedPush: FederationStateFeedPushService,
-    private readonly statePull: FederationStatePullService,
+    private readonly rounds: FederationThreadRoundSchedulerService,
     private readonly profileNamespacePull: FederationProfileNamespacePullService,
     private readonly events: EventEmitter2,
     private readonly keypair: KeypairService,
@@ -88,7 +88,8 @@ export class FederationReconnectService implements OnApplicationBootstrap {
 
   private async reconcile(domain: string): Promise<void> {
     await this.stateFeedPush.pushDomains([domain]);
-    await this.statePull.pullStateFromPeer(domain);
+    const namespaceId = await this.peerLifecycle.checkOutboundReady(domain);
+    await this.rounds.wakeStateFeed(namespaceId, 0n);
     // Recognition recovery also converges the Profile Namespace Feed: the
     // initial pull after a fresh handshake seeds the cursor from 0.
     await this.profileNamespacePull.pullFromPeer(domain);
@@ -116,6 +117,7 @@ export class FederationReconnectService implements OnApplicationBootstrap {
   private async recover(domain: string): Promise<void> {
     await this.peerLifecycle.recoverPeerRecognition(domain);
     await this.stateFeedPush.pushDomains([domain]);
-    await this.statePull.pullStateFromPeer(domain);
+    const namespaceId = await this.peerLifecycle.checkOutboundReady(domain);
+    await this.rounds.wakeStateFeed(namespaceId, 0n);
   }
 }

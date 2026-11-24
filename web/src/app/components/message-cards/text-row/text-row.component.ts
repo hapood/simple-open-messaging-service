@@ -7,7 +7,7 @@ import {
   ChangeDetectionStrategy,
 } from '@angular/core';
 import { TranslocoPipe } from '@jsverse/transloco';
-import type { ChatMsgData } from '../chat-item';
+import type { TextMessageItem } from '../chat-item';
 import { DateRowComponent } from '../date-row/date-row.component';
 import { AvatarComponent } from '../../user-avatar/avatar.component';
 import type { AvatarView } from '../../user-avatar/avatar-view';
@@ -44,7 +44,7 @@ export class TextRowComponent {
   private readonly linkCards = inject(LinkCardService);
   private readonly externalLinks = inject(ExternalLinkService);
   readonly senderView = input<AvatarView>();
-  readonly data = input.required<ChatMsgData>();
+  readonly data = input.required<TextMessageItem>();
   /** Group head (shows avatar + other party's name) / mid-group. */
   readonly isShowHead = input(false);
   /** New group head on a sender change (inter-group padding-top). */
@@ -62,22 +62,6 @@ export class TextRowComponent {
   readonly showName = this.sender.showName;
   readonly pos = computed(() => (this.isShowHead() ? 'head' : 'body'));
 
-  /** Render a status tick (clock/check/retry) only for self-sent messages that carry a delivery status. */
-  readonly statusTick = computed(
-    () => this.data().isSelf && !!this.data().status,
-  );
-  /** Dim the bubble while a self message is still in flight (status === 'sending'); clears on confirm. */
-  readonly isSending = computed(
-    () => this.data().isSelf && this.data().status === 'sending',
-  );
-  /** Whether this row shows the failed retry affordance (drives the click binding + a11y on the status span). */
-  readonly isFailed = computed(
-    () => this.data().isSelf && this.data().status === 'failed',
-  );
-  /** Emitted (with the numeric msgId) when the user clicks the failed retry glyph; the parent re-sends by
-   *  clientMessageId (the emitted value is a click signal — createMsgCbElement maps it to item.clientMessageId). */
-  readonly retry = output<number>();
-  readonly cancel = output<number>();
   readonly quoteJump = output<HistoryAnchor>();
 
   readonly linkCard = computed(() =>

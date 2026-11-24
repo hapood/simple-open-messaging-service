@@ -46,7 +46,7 @@ describe('FederationInboundMessageRouteService', () => {
       originCreatedAt: 1_700_000_000_000,
     };
 
-    expect(service().messageAuthor(message, 'peer.test', 1)).toEqual({
+    expect(service().messageAuthor(message, 1)).toEqual({
       account: 'carol',
       namespaceId: 0,
     });
@@ -61,7 +61,7 @@ describe('FederationInboundMessageRouteService', () => {
       originCreatedAt: 1_700_000_000_000,
     };
 
-    expect(() => service().messageAuthor(message, 'peer.test', 12)).toThrow(
+    expect(() => service().messageAuthor(message, 12)).toThrow(
       'P2P author reference conflicts with namespaceId',
     );
   });
@@ -73,7 +73,7 @@ describe('FederationInboundMessageRouteService', () => {
       author: { ref: 'THREAD_ACCOUNT', namespaceId: 0 },
     };
 
-    expect(service().messageAuthor(message, 'peer.test', 12)).toEqual({
+    expect(service().messageAuthor(message, 12)).toEqual({
       account: 'bob',
       namespaceId: 0,
     });
@@ -95,7 +95,6 @@ describe('FederationInboundMessageRouteService', () => {
       routes.resolveTombstone(
         {} as DatabaseTransaction,
         { account: 'bob', peerAccount: 'alice' },
-        'peer.test',
         9,
         7,
       ),
@@ -121,7 +120,6 @@ describe('FederationInboundMessageRouteService', () => {
       routes.resolveTombstone(
         { execute } as never,
         { account: '!group' },
-        'peer.test',
         9,
         7,
         7,
@@ -136,7 +134,6 @@ describe('FederationInboundMessageRouteService', () => {
         thread: { account: '!group' },
         author: { account: 'alice', namespaceId: 0 },
       },
-      'peer.test',
       9,
       7,
     );
@@ -144,18 +141,44 @@ describe('FederationInboundMessageRouteService', () => {
     expect(query.sql).toContain('m."profileNamespaceId" IN (0, $5)');
     expect(query.sql).toContain('m."publisherNamespaceId" = $3');
     expect(query.sql).toContain('m."originSeq" = $4');
-    expect(query.sql).toContain('m."originServerTime" IS NOT NULL');
-    expect(query.params).toEqual(['GROUP', '!group', 9, 7, 9, 7]);
+    expect(query.sql).not.toContain('m."publisherNamespaceId" = 0');
+    expect(query.params).toEqual(['GROUP', '!group', 9, 7, 9]);
   });
 
-  it('rejects unknown or foreign-authored member retractions without inventing pending facts', async () => {
+  it('admits an absent-message tombstone only for an active member home', async () => {
+    const execute = vi
+      .fn()
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [{ threadId: 11 }] });
+    await expect(
+      service().resolveTombstone(
+        { execute } as never,
+        { account: '!group' },
+        9,
+        7,
+        7,
+      ),
+    ).resolves.toEqual({
+      threadId: 11,
+      authority: 'GROUP_MEMBER',
+      recipients: [],
+    });
+    const query = dialect.sqlToQuery(execute.mock.calls[2]![0] as SQL);
+    expect(query.sql).toContain('pair.active = true');
+    expect(query.sql).toContain('AND NOT EXISTS');
+    expect(query.sql).toContain('m."publisherNamespaceId"');
+    expect(query.sql).toContain('m."originSeq"');
+    expect(query.sql).toContain('pair."endpointBNamespaceId"');
+  });
+
+  it('rejects an absent or foreign-author target without an eligible member route', async () => {
     const routes = service();
     const resolveMessage = vi.spyOn(routes, 'resolveMessage');
     await expect(
       routes.resolveTombstone(
         { execute: vi.fn().mockResolvedValue({ rows: [] }) } as never,
         { account: '!group' },
-        'peer.test',
         9,
         7,
         7,
@@ -175,7 +198,7 @@ describe('FederationInboundMessageRouteService', () => {
     const tx = { execute } as unknown as DatabaseTransaction;
 
     await expect(
-      service().resolveMessage(tx, groupMessage(), 'peer.test', 9, 7),
+      service().resolveMessage(tx, groupMessage(), 9, 7),
     ).resolves.toEqual({
       threadId: 11,
       toAccount: '!group',
@@ -211,7 +234,6 @@ describe('FederationInboundMessageRouteService', () => {
               ? { originSeq: 3, originCreatedAt: 1_700_000_000_000 }
               : {}),
           },
-          'peer.test',
           9,
           12,
         ),
@@ -244,7 +266,6 @@ describe('FederationInboundMessageRouteService', () => {
             ...groupReceipt(),
             author: { account: 'alice', namespaceId: authorNamespaceId },
           },
-          'group.test',
           9,
           12,
         ),
@@ -257,7 +278,7 @@ describe('FederationInboundMessageRouteService', () => {
     const tx = { execute } as unknown as DatabaseTransaction;
 
     await expect(
-      service().resolveMessage(tx, groupMessage(13), 'peer.test', 9, 7),
+      service().resolveMessage(tx, groupMessage(13), 9, 7),
     ).rejects.toThrow(
       'group mirror may only submit its locally managed authors',
     );
@@ -270,13 +291,7 @@ describe('FederationInboundMessageRouteService', () => {
     const tx = { execute } as unknown as DatabaseTransaction;
 
     await expect(
-      service().resolveTombstone(
-        tx,
-        { account: '!group' },
-        'origin.test',
-        9,
-        7,
-      ),
+      service().resolveTombstone(tx, { account: '!group' }, 9, 7),
     ).rejects.toThrow('tombstone has no retained local group thread');
 
     const query = dialect.sqlToQuery(execute.mock.calls[0]![0] as SQL);

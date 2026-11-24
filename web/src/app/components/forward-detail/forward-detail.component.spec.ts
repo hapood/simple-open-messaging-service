@@ -88,6 +88,64 @@ describe('forward snapshot window ownership', () => {
   });
 });
 
+describe('forward attachment projection', () => {
+  it.each(['IMAGE', 'VIDEO', 'AUDIO', 'FILE', 'GALLERY'])(
+    'binds %s to the carrier while retaining snapshot attribution',
+    (contentType) => {
+      const digest = 'a'.repeat(64);
+      const item = {
+        url: `/uploads/msg-assets/aa/aa/${digest}`,
+        name: 'attachment',
+        size: 100,
+        mimeType: 'application/octet-stream',
+        w: 640,
+        h: 480,
+        duration: 12,
+      };
+      const message: ForwardManifestMessage = {
+        id: 1,
+        profile: { displayName: 'Alice' },
+        contentType,
+        content: JSON.stringify(
+          contentType === 'GALLERY'
+            ? { items: [{ ...item, kind: 'IMAGE' }] }
+            : item,
+        ),
+        sentAt: 1700000000000,
+      };
+      const closure: ForwardWireBundle = {
+        id: 'root',
+        messages: [message],
+        children: [],
+        assets: [{ digest, bytes: 100 }],
+        accessContext: { threadId: 42, seq: 7 },
+      };
+      const component = Object.create(
+        ForwardDetailComponent.prototype,
+      ) as ForwardDetailComponent;
+      Object.assign(component, { closure: signal(closure) });
+      const data = component['toMsgData'](message, 999, closure);
+      const expectedUrl = `${item.url}?threadId=42&seq=7`;
+      if (contentType === 'FILE') {
+        expect(data.file).toEqual({
+          url: expectedUrl,
+          name: item.name,
+          size: item.size,
+          mimeType: item.mimeType,
+        });
+      } else {
+        expect(data.images).toHaveLength(1);
+        expect(data.images![0]).toMatchObject({
+          src: expectedUrl,
+          msgId: 999,
+          senderName: 'Alice',
+          sentAt: message.sentAt,
+        });
+      }
+    },
+  );
+});
+
 // Exercise the display projection without mounting the modal or its injected services.
 describe('forward reply display', () => {
   const original: ForwardManifestMessage = {

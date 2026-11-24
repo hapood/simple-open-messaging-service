@@ -241,23 +241,26 @@ describe('FederationMessageFeedService group origin coordinates', () => {
     expect(reply.quoteTarget).toEqual({ seq: 42 });
   });
 
-  it('preserves a known authority coordinate even when its target body is absent', async () => {
-    const [reply] = await service().serializeMessagesInTx(
-      transaction(),
-      [
-        groupRow({
-          authorityNamespaceId: 0,
-          content: JSON.stringify({
-            text: 'reply',
-            quote: { seq: 42, namespaceId: 0, digest: 'd'.repeat(64) },
+  it.each([{ seq: 42, namespaceId: 0 }, { originSeq: 42 }])(
+    'preserves a known authority coordinate %j even when its target body is absent',
+    async (coordinate) => {
+      const [reply] = await service().serializeMessagesInTx(
+        transaction(),
+        [
+          groupRow({
+            authorityNamespaceId: 0,
+            content: JSON.stringify({
+              text: 'reply',
+              quote: { ...coordinate, digest: 'd'.repeat(64) },
+            }),
           }),
-        }),
-      ],
-      19,
-      { account: '!group' },
-    );
-    expect(reply.quoteTarget).toEqual({ seq: 42 });
-  });
+        ],
+        19,
+        { account: '!group' },
+      );
+      expect(reply.quoteTarget).toEqual({ seq: 42 });
+    },
+  );
 
   it.each(['PENDING', 'NOT_FOUND'] as const)(
     'retains an unavailable receiver target coordinate and digest with status %s',

@@ -1,4 +1,4 @@
-import type { ChatMsgData } from '../message-cards/chat-item';
+import type { ChatMsgData, TextMessageItem } from '../message-cards/chat-item';
 import { formatDuration } from '../message-cards/file-meta.util';
 import { parseForwardCard } from '../message-cards/forward-row/forward-card';
 
@@ -25,8 +25,9 @@ export function messageCopyBody(
 ): string {
   switch (message.contentType) {
     case 'PURE_TEXT':
-    case 'LINK':
       return visibleMessageText(message);
+    case 'LINK':
+      return message.text.trim();
     case 'CONTACT_CARD': {
       try {
         const card = JSON.parse(message.text) as {
@@ -54,9 +55,9 @@ export function messageCopyBody(
             ? labels.video
             : labels.voice;
       const detail =
-        message.contentType === 'AUDIO'
-          ? formatDuration(media?.duration ?? 0)
-          : media?.name;
+        media?.kind === 'audio'
+          ? formatDuration(media.duration)
+          : media?.name ?? undefined;
       return joinLabel(label, detail);
     }
     case 'GALLERY':
@@ -94,7 +95,7 @@ function formatCopyTimestamp(ms: number): string {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
-function visibleMessageText(message: ChatMsgData): string {
+function visibleMessageText(message: TextMessageItem): string {
   if (message.textSegments?.length) {
     return message.textSegments
       .map((segment) => segment.text)

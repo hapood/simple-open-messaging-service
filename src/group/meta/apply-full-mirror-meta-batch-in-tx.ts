@@ -10,6 +10,8 @@ import { requireGroupThreadContentLockUnderGroupInTx } from '../../common/locks/
 import type { ProfilePrefetchDemand } from '../../profile-resolution/profile-resolution-demand.js';
 import { selectMirrorMetaProfileDemand } from './select-mirror-meta-profile-demand.js';
 import { upsertCurrentGroupMetaFactsInTx } from './current-group-meta-fact.js';
+import { reconcileClientMemberCountInTx } from './reconcile-client-member-count-in-tx.js';
+import { publishClientGroupFactInTx } from './publish-client-group-fact-in-tx.js';
 import type {
   MirrorGroupAddress,
   MirrorMetaReplicatedItem,
@@ -46,7 +48,7 @@ export async function applyFullMirrorMetaBatchInTx(
 }> {
   await lockMirrorGroupInTx(tx, input.group);
   const mirror = await requireMirrorMetaInTx(tx, input.group);
-  if (mirror.metaRecoveryThroughId === null)
+  if (mirror.metaRecoveryThroughId === 0)
     throw new Error('the meta recovery drain closed during this round');
   if (mirror.metaRecoveryThroughId !== input.through)
     throw new Error('the meta recovery drain changed during this round');
@@ -113,6 +115,17 @@ export async function applyFullMirrorMetaBatchInTx(
     ];
   });
   await upsertCurrentGroupMetaFactsInTx(tx, facts);
+  await reconcileClientMemberCountInTx(tx, threadLock);
+  for (const item of input.items) {
+    if (item.operation === 'GROUP_ANNOUNCEMENT') {
+      await publishClientGroupFactInTx(tx, threadLock, {
+        operation: 'GROUP_ANNOUNCEMENT',
+        sourceFeedId: item.feedId,
+        originCreatedAt: new Date(item.originCreatedAt),
+        body: { text: item.text },
+      });
+    }
+  }
   const profile = input.items.find(
     (item) => item.operation === 'GROUP_PROFILE',
   );
@@ -121,20 +134,15 @@ export async function applyFullMirrorMetaBatchInTx(
       .update(groupMeta)
       .set({ profileRev: profile.profileRev, updatedAt: new Date() })
       .where(eq(groupMeta.threadId, mirror.threadId));
-  const [thread] = await tx
-    .select({ tombstoneEndSeq: messageThread.tombstoneEndSeq })
-    .from(messageThread)
-    .where(eq(messageThread.id, mirror.threadId))
-    .limit(1);
-  if (!thread) throw new Error('group-meta mirror thread is missing');
   const messageEnd = await tx.execute<{ head: number }>(sql`
     SELECT COALESCE(max(seq), 0)::integer AS head FROM "Message"
     WHERE "threadId" = ${mirror.threadId}`);
-  await enqueueThreadFanoutInTx(tx, threadLock, {
-    threadId: mirror.threadId,
-    messageEndSeq: messageEnd.rows[0]!.head,
-    tombstoneEndSeq: thread.tombstoneEndSeq,
-  });
+  if (profile?.operation === 'GROUP_PROFILE') {
+    await enqueueThreadFanoutInTx(tx, threadLock, {
+      threadId: mirror.threadId,
+      messageEndSeq: messageEnd.rows[0]!.head,
+    });
+  }
   await finalizeMirrorMetaRecoveryInTx(tx, {
     threadId: mirror.threadId,
     through: input.through,

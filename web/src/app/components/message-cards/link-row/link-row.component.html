@@ -14,32 +14,6 @@
     </div>
   }
 
-  @if (isFailed() || isSending()) {
-    <div class="msg-failed-actions">
-      @if (isFailed()) {
-        <button
-          type="button"
-          class="msg-action--retry"
-          (click)="retry.emit(data().msgId)"
-          [attr.aria-label]="'transfer.retry' | transloco"
-        >
-          <svg viewBox="0 0 24 24" aria-hidden="true">
-            <path d="M20 11a8 8 0 10-2.34 5.66M20 4v7h-7" />
-          </svg>
-        </button>
-      }
-      <button
-        type="button"
-        class="msg-action--cancel"
-        (click)="cancel.emit(data().msgId)"
-        [attr.aria-label]="'transfer.cancel' | transloco"
-      >
-        <svg viewBox="0 0 24 24" aria-hidden="true">
-          <path d="M6 6l12 12M18 6L6 18" />
-        </svg>
-      </button>
-    </div>
-  }
   <div class="msg-col msg-{{ side() }}">
     @if (showName()) {
       <div class="msg-name msg-{{ side() }}">
@@ -53,7 +27,7 @@
         (quoteJump)="quoteJump.emit($event)"
       />
     }
-    <div class="link-shell" [class.msg-sending]="isSending()">
+    <div class="link-shell">
       <button
         type="button"
         class="msg-bubble msg-card msg-{{ side() }} msg-{{
@@ -63,14 +37,6 @@
       >
         <app-link-card-content [content]="link()" />
       </button>
-      @if (statusTick()) {
-        @if (!isFailed()) {
-          <span
-            class="msg-status msg-status--{{ data().status }}"
-            aria-hidden="true"
-          ></span>
-        }
-      }
     </div>
     <div class="link-meta msg-card-meta msg-{{ side() }}">
       <span class="link-host">

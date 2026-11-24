@@ -123,6 +123,11 @@ export const messageDeleteType = pgEnum('MessageDeleteType', [
   'USER_RETRACTION',
   'MODERATION_REMOVAL',
 ]);
+export const clientStateFeedType = pgEnum('ClientStateFeedType', [
+  'REQUEST_HEAD',
+  'THREAD_TOMB_HEAD',
+  'THREAD_META_HEAD',
+]);
 export const fileSyncDirection = pgEnum('FileSyncDirection', [
   'OUTBOUND',
   'INBOUND',
@@ -617,10 +622,14 @@ export const accountThreadState = pgTable(
     announcementReadFeedId: integer().default(0).notNull(),
     threadFeedId: integer().notNull().default(0),
     messageEndSeq: integer().notNull().default(0),
-    tombstoneEndSeq: integer().notNull().default(0),
     unreadCount: integer().default(0).notNull(),
     /** Latest eligible local message sequences, descending; includes tomb slots. */
     previewSeqs: integer()
+      .array()
+      .notNull()
+      .default(sql`'{}'::integer[]`),
+    /** Subset of previewSeqs currently soft-deleted; bumps threadFeedId when a preview becomes deleted. */
+    previewDeletedSeqs: integer()
       .array()
       .notNull()
       .default(sql`'{}'::integer[]`),
@@ -633,11 +642,6 @@ export const accountThreadState = pgTable(
     /** Manager read watermark for join applications. -1 disables manager-only
      * attention for ordinary members; zero is a valid pre-first-request read position. */
     joinRequestReadFeedId: integer().default(-1).notNull(),
-    /** Last group meta feed end id published to this member on the thread feed.
-     * Null for P2P conversations; the thread fan-out keeps it at the canonical
-     * GroupMeta coordinate. Client-visible: any writer must let the allocation
-     * trigger see the change. */
-    groupMetaFeedEndId: integer(),
     /** Profile revision of this conversation's counterpart (P2P peer or group)
      * last published to this member on the thread feed. Client-visible: any
      * writer must let the allocation trigger see the change. */
@@ -652,6 +656,10 @@ export const accountThreadState = pgTable(
     pinnedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' }),
     /** Inclusive upper message sequence visible after this local participant leaves the relationship. */
     messageVisibleThroughSeq: bigint({ mode: 'number' }),
+    /** Inclusive upper deletion sequence visible after this local participant leaves the relationship. */
+    tombstoneVisibleThroughSeq: integer(),
+    /** Inclusive upper client group-meta feed ID visible after this local participant leaves the group. */
+    groupMetaVisibleThroughId: integer(),
     /** Private label published through the thread feed; null restores the profile name. */
     alias: varchar({ length: 64 }),
     createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
@@ -701,10 +709,6 @@ export const accountThreadState = pgTable(
       sql`${table.messageEndSeq} >= 0`,
     ),
     check(
-      'AccountThreadState_tombstoneEndSeq_check',
-      sql`${table.tombstoneEndSeq} >= 0`,
-    ),
-    check(
       'AccountThreadState_unreadCount_check',
       sql`${table.unreadCount} >= 0`,
     ),
@@ -728,10 +732,6 @@ export const accountThreadState = pgTable(
       'AccountThreadState_lastMentionSeq_check',
       sql`${table.lastMentionSeq} IS NULL OR ${table.lastMentionSeq} > 0`,
     ),
-    check(
-      'AccountThreadState_groupMetaFeedEndId_check',
-      sql`${table.groupMetaFeedEndId} IS NULL OR ${table.groupMetaFeedEndId} >= 0`,
-    ),
     foreignKey({
       columns: [table.accountId],
       foreignColumns: [account.id],
@@ -745,6 +745,14 @@ export const accountThreadState = pgTable(
     check(
       'AccountThreadState_messageVisibleThroughSeq_check',
       sql`${table.messageVisibleThroughSeq} IS NULL OR ${table.messageVisibleThroughSeq} >= 0`,
+    ),
+    check(
+      'AccountThreadState_tombstoneVisibleThroughSeq_check',
+      sql`${table.tombstoneVisibleThroughSeq} IS NULL OR ${table.tombstoneVisibleThroughSeq} >= 0`,
+    ),
+    check(
+      'AccountThreadState_groupMetaVisibleThroughId_check',
+      sql`${table.groupMetaVisibleThroughId} IS NULL OR ${table.groupMetaVisibleThroughId} >= 0`,
     ),
   ],
 );
@@ -1159,6 +1167,8 @@ export const federatedMessageTombstone = pgTable(
     publisherNamespaceId: integer().notNull(),
     remoteDeletionSeq: integer().notNull(),
     type: messageDeleteType().notNull(),
+    /** False while the target message is not yet applied. Consumption keeps the row. */
+    consumed: boolean().default(false).notNull(),
     authorityDeletedAt: timestamp({
       precision: 3,
       withTimezone: true,
@@ -1624,6 +1634,8 @@ export const clientStateFeed = pgTable(
   {
     userId: integer().notNull(),
     feedId: integer().notNull(),
+    type: clientStateFeedType().default('REQUEST_HEAD').notNull(),
+    threadId: integer().default(0).notNull(),
     body: jsonb().notNull(),
     createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
@@ -1639,8 +1651,20 @@ export const clientStateFeed = pgTable(
       foreignColumns: [account.id],
       name: 'ClientStateFeed_userId_fkey',
     }).onDelete('cascade'),
-    primaryKey({ columns: [table.userId, table.feedId] }),
+    primaryKey({
+      columns: [table.userId, table.type, table.threadId],
+      name: 'ClientStateFeed_pkey',
+    }),
+    uniqueIndex('ClientStateFeed_userId_feedId_key').on(
+      table.userId,
+      table.feedId,
+    ),
     check('ClientStateFeed_feedId_check', sql`${table.feedId} > 0`),
+    check(
+      'ClientStateFeed_type_thread_check',
+      sql`(${table.type} = 'REQUEST_HEAD' AND ${table.threadId} = 0)
+        OR (${table.type} IN ('THREAD_TOMB_HEAD', 'THREAD_META_HEAD') AND ${table.threadId} > 0)`,
+    ),
   ],
 );
 
@@ -2169,6 +2193,8 @@ export const groupMeta = pgTable(
     threadId: integer().primaryKey().notNull(),
     /** Origin allocation end or mirror's last completely applied round cursor. */
     metaEndId: integer().default(0).notNull(),
+    /** Independent local allocator for client-facing group projections on origins and mirrors. */
+    clientMetaEndId: integer().default(0).notNull(),
     /** Profile revision carried by the GROUP_PROFILE item at the end coordinate.
      * Zero while the group has no profile revision yet. */
     profileRev: integer().default(0).notNull(),
@@ -2176,10 +2202,8 @@ export const groupMeta = pgTable(
     metaTargetId: integer().default(0).notNull(),
     /** Greatest source meta feed id durably scanned by meta rounds. */
     metaProcessedThroughId: integer().default(0).notNull(),
-    /** Fixed through of the currently open full-snapshot recovery drain. NULL
-     * selects delta rounds; only writers that also zero the processed cursor
-     * reopen the drain, and the drain's final transaction closes it. */
-    metaRecoveryThroughId: integer(),
+    /** Fixed source through of the open full recovery. Zero means closed and selects delta. */
+    metaRecoveryThroughId: integer().default(0).notNull(),
     /** Group-scoped request number streams. Applications and invitations
      * advance independently, so every manager copies the same event number and
      * GC deletions can never reuse one. */
@@ -2197,6 +2221,7 @@ export const groupMeta = pgTable(
       name: 'GroupMeta_threadId_fkey',
     }).onDelete('cascade'),
     check('GroupMeta_metaEndId_check', sql`${table.metaEndId} >= 0`),
+    check('GroupMeta_clientMetaEndId_check', sql`${table.clientMetaEndId} >= 0`),
     check('GroupMeta_profileRev_check', sql`${table.profileRev} >= 0`),
     check('GroupMeta_metaTargetId_check', sql`${table.metaTargetId} >= 0`),
     check(
@@ -2206,9 +2231,10 @@ export const groupMeta = pgTable(
     ),
     check(
       'GroupMeta_metaRecovery_check',
-      sql`${table.metaRecoveryThroughId} IS NULL OR (
+      sql`${table.metaRecoveryThroughId} >= 0 AND (
+        ${table.metaRecoveryThroughId} = 0 OR (
         ${table.metaProcessedThroughId} < ${table.metaRecoveryThroughId}
-        AND ${table.metaRecoveryThroughId} <= ${table.metaTargetId})`,
+        AND ${table.metaRecoveryThroughId} <= ${table.metaTargetId}))`,
     ),
     check(
       'GroupMeta_applicationEndId_check',
@@ -2218,6 +2244,48 @@ export const groupMeta = pgTable(
       'GroupMeta_invitationEndId_check',
       sql`${table.invitationEndId} >= 0`,
     ),
+  ],
+);
+
+/** Compact client-only group projections; never stores individual member facts. */
+export const clientGroupMetaFeed = pgTable(
+  'ClientGroupMetaFeed',
+  {
+    threadId: integer().notNull(),
+    feedId: integer().notNull(),
+    operation: varchar({ length: 31 })
+      .$type<import('../../shared/client-group-meta.js').ClientGroupMetaFact['operation']>()
+      .notNull(),
+    body: jsonb()
+      .$type<import('../../shared/client-group-meta.js').ClientGroupMetaFact['body']>()
+      .notNull(),
+    createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
+      .default(sql`CURRENT_TIMESTAMP`)
+      .notNull(),
+    /** Optional source version for profile/announcement replay detection, not a client cursor. */
+    sourceFeedId: integer(),
+    originCreatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' }),
+  },
+  (table) => [
+    primaryKey({ columns: [table.threadId, table.operation] }),
+    uniqueIndex('ClientGroupMetaFeed_thread_feed_key').on(table.threadId, table.feedId),
+    foreignKey({
+      columns: [table.threadId],
+      foreignColumns: [groupMeta.threadId],
+      name: 'ClientGroupMetaFeed_threadId_fkey',
+    }).onDelete('cascade'),
+    check('ClientGroupMetaFeed_feedId_check', sql`${table.feedId} > 0`),
+    check('ClientGroupMetaFeed_sourceFeedId_check', sql`${table.sourceFeedId} IS NULL OR ${table.sourceFeedId} > 0`),
+    check('ClientGroupMetaFeed_operation_check', sql`${table.operation} IN ('GROUP_MEMBER_COUNT', 'GROUP_PROFILE', 'GROUP_ANNOUNCEMENT')`),
+    check('ClientGroupMetaFeed_body_check', sql`jsonb_typeof(${table.body}) = 'object' AND ${table.body} <> '{}'::jsonb`),
+    check('ClientGroupMetaFeed_count_check', sql`${table.operation} <> 'GROUP_MEMBER_COUNT' OR COALESCE(
+      jsonb_typeof(${table.body} -> 'memberCount') = 'number'
+      AND (${table.body} - 'memberCount') = '{}'::jsonb
+      AND (${table.body} ->> 'memberCount')::numeric BETWEEN 0 AND 2147483647
+      AND trunc((${table.body} ->> 'memberCount')::numeric) = (${table.body} ->> 'memberCount')::numeric
+      AND ${table.sourceFeedId} IS NULL AND ${table.originCreatedAt} IS NULL, false)`),
+    check('ClientGroupMetaFeed_time_check', sql`${table.createdAt} >= '1970-01-01'::timestamptz AND
+      (${table.originCreatedAt} IS NULL OR ${table.originCreatedAt} >= '1970-01-01'::timestamptz)`),
   ],
 );
 
@@ -2761,18 +2829,12 @@ export const federationThreadSyncState = pgTable(
     messageTargetSeq: integer().default(0).notNull(),
     /** Greatest deletion-query target merged from committed State Feed items. */
     deletionTargetSeq: integer().default(0).notNull(),
-    /** Greatest source message seq durably scanned by forward message queries. */
+    /** Forward member submissions: processed publisher seq. Reverse authority timelines: unused (0). */
     messageProcessedThroughSeq: integer().default(0).notNull(),
     /** Greatest source deletion seq durably scanned by forward tombstone queries. */
     deletionProcessedThroughSeq: integer().default(0).notNull(),
-    /** Frozen deletion target for a reauthorization recovery drain. */
-    deletionRecoveryThroughSeq: integer(),
-    /** Frozen message cutoff paired with deletionRecoveryThroughSeq. */
-    deletionRecoveryMaxMessageSeq: integer(),
     /** MessageThread authorization epoch under which this state was initialized. */
     authorizationEpoch: integer().default(0).notNull(),
-    /** Recoverable historical interval currently selected for reverse reconstruction. */
-    activeGapId: bigint({ mode: 'bigint' }),
     updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull()
@@ -2793,37 +2855,14 @@ export const federationThreadSyncState = pgTable(
       foreignColumns: [messageThread.id],
       name: 'FederationThreadSyncState_threadId_fkey',
     }).onDelete('cascade'),
-    foreignKey({
-      columns: [table.threadId, table.namespaceId, table.activeGapId],
-      foreignColumns: [
-        federationThreadHistoryGap.threadId,
-        federationThreadHistoryGap.namespaceId,
-        federationThreadHistoryGap.id,
-      ],
-      name: 'FederationThreadSyncState_activeGap_fkey',
-    }).onDelete('restrict'),
     check(
       'FederationThreadSyncState_messageSeqs_check',
       sql`${table.messageTargetSeq} >= 0
         AND ${table.deletionTargetSeq} >= 0
         AND ${table.messageProcessedThroughSeq} >= 0
         AND ${table.deletionProcessedThroughSeq} >= 0
-        AND ${table.messageProcessedThroughSeq} <= ${table.messageTargetSeq}
         AND ${table.deletionProcessedThroughSeq} <= ${table.deletionTargetSeq}
         AND ${table.authorizationEpoch} >= 0`,
-    ),
-    check(
-      'FederationThreadSyncState_deletionRecovery_check',
-      sql`(
-          ${table.deletionRecoveryThroughSeq} IS NULL
-          AND ${table.deletionRecoveryMaxMessageSeq} IS NULL
-        ) OR (
-          ${table.deletionRecoveryThroughSeq} IS NOT NULL
-          AND ${table.deletionRecoveryMaxMessageSeq} IS NOT NULL
-          AND ${table.deletionRecoveryThroughSeq} > ${table.deletionProcessedThroughSeq}
-          AND ${table.deletionRecoveryThroughSeq} <= ${table.deletionTargetSeq}
-          AND ${table.deletionRecoveryMaxMessageSeq} >= 0
-        )`,
     ),
   ],
 );

@@ -8,6 +8,7 @@ export interface AccountState {
   threadFeedCursor: number | null;
   stateFeedId: number | null;
   stateFeedFullThrough: number | null;
+  stateFeedTarget: number;
   profileNamespaceChangeEndId: number | null;
   intentRequestEndId: string | null;
   intentRequestReadId: string | null;

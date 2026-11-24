@@ -2,7 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { BusinessCode } from '../common/business-code.js';
 import { RemoteGroupMetaCursorUnavailableError } from './federation-feed-cursor-error.js';
 import { S2sResponseError } from './federation-errors.js';
-import { FederationHttpScheduler } from './federation-http-scheduler.js';
+import { FederationNamespaceService } from './federation-namespace.service.js';
 import { FederationTrustedPeerClient } from './federation-trusted-peer-client.service.js';
 import type { GroupMetaFeedPage } from './group-meta-feed.service.js';
 
@@ -22,13 +22,15 @@ export interface FederationGroupMetaPageRequest {
 export class FederationGroupMetaClient {
   constructor(
     private readonly trustedPeers: FederationTrustedPeerClient,
-    private readonly httpScheduler: FederationHttpScheduler,
+    private readonly namespaces: FederationNamespaceService,
   ) {}
 
   async fetchPage(
-    peerDomain: string,
+    namespaceId: number,
     request: FederationGroupMetaPageRequest,
+    signal: AbortSignal,
   ): Promise<GroupMetaFeedPage> {
+    signal.throwIfAborted();
     if (
       !Number.isSafeInteger(request.after) ||
       !Number.isSafeInteger(request.through) ||
@@ -43,21 +45,21 @@ export class FederationGroupMetaClient {
       take: PAGE_TAKE.toString(),
       through: request.through.toString(),
     });
+    const peer = await this.namespaces.captureActiveById(namespaceId);
+    signal.throwIfAborted();
     let page: GroupMetaFeedPage;
     try {
-      page = await this.httpScheduler.runWithRetry(
-        peerDomain,
-        `group-meta ${request.account}`,
-        () =>
-          this.trustedPeers.get<GroupMetaFeedPage>(
-            `/somfp/v1/group-meta?${query.toString()}`,
-            peerDomain,
-            MAX_RESPONSE_BYTES,
-          ),
+      page = await this.trustedPeers.get<GroupMetaFeedPage>(
+        `/somfp/v1/group-meta?${query.toString()}`,
+        peer.domain,
+        MAX_RESPONSE_BYTES,
+        signal,
       );
     } catch (error) {
+      signal.throwIfAborted();
       throw mapCursorUnavailable(error);
     }
+    signal.throwIfAborted();
     validatePage(request, page);
     return page;
   }

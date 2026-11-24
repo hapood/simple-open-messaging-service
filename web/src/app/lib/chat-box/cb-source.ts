@@ -40,6 +40,9 @@ export type CbDemandResult<T> =
   | { readonly kind: 'error'; readonly error: unknown };
 
 export interface CbSource<T = unknown> {
+  /** A display interval owns this subscription only while mounted. Each delivery
+   * replaces that interval, never the surrounding message window. */
+  watchInterval?(item: CbItem<T>): Observable<CbItem<T>[]>;
   /** Load one explicitly selected window; return chronological raw items with boundaries. */
   loadWindow(
     request: CbSourceWindowRequest,

@@ -3,6 +3,12 @@ import { PgDialect } from 'drizzle-orm/pg-core';
 import { BusinessCode } from '../common/business-code.js';
 import { FederationTransportError } from './federation-errors.js';
 import { FederationPeerLifecycle } from './federation-peer-lifecycle.js';
+import { FederationPeerRuntimeService } from './federation-peer-runtime.service.js';
+import { EventEmitter2 } from '@nestjs/event-emitter';
+
+function runtime() {
+  return new FederationPeerRuntimeService(new EventEmitter2());
+}
 
 process.env.SOMS_DOMAIN ??= 'local.example';
 
@@ -24,6 +30,7 @@ function subject(peer: Record<string, unknown> | undefined) {
       database as never,
       recognition as never,
       {} as never,
+      runtime(),
     ),
     recognition,
   };
@@ -62,6 +69,7 @@ describe('FederationPeerLifecycle recognition and reachability gates', () => {
       } as never,
       {} as never,
       {} as never,
+      runtime(),
     );
     const detail = await lifecycle.detail(peer.domain);
     expect(detail.feedProgress).toEqual(progress);
@@ -83,6 +91,7 @@ describe('FederationPeerLifecycle recognition and reachability gates', () => {
       database as never,
       {} as never,
       {} as never,
+      runtime(),
     );
     await expect(
       lifecycle.list({

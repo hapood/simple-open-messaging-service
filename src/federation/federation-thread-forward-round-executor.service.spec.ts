@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { BusinessCode } from '../common/business-code.js';
+import { S2sResponseError } from './federation-errors.js';
 import { FederationThreadForwardRoundExecutorService } from './federation-thread-forward-round-executor.service.js';
 import type {
   FederationThreadForwardMessageRoundDriver,
@@ -34,21 +35,21 @@ function harness(localGroupAuthority = false, kind: 'GROUP' | 'P2P' = 'GROUP') {
     runMessages: vi.fn(
       async (
         threadId: number,
-        peerDomain: string,
         _namespaceId: number,
         driver: FederationThreadForwardMessageRoundDriver,
+        signal: AbortSignal,
         take: number,
       ) => {
+        signal.throwIfAborted();
         await driver.process({
           threadId,
-          peerDomain,
           after: 10,
           through: 100,
           take,
         });
+        signal.throwIfAborted();
         await driver.complete({
           threadId,
-          peerDomain,
           authorizationEpoch: 4,
           targetSeq: 100,
         });
@@ -58,29 +59,27 @@ function harness(localGroupAuthority = false, kind: 'GROUP' | 'P2P' = 'GROUP') {
     runTombstones: vi.fn(
       async (
         threadId: number,
-        peerDomain: string,
         _namespaceId: number,
         driver: FederationThreadForwardTombstoneRoundDriver,
+        signal: AbortSignal,
         take: number,
       ) => {
+        signal.throwIfAborted();
         const targetSeq = 9;
         const maxMessageSeq = 42;
         await driver.process({
           threadId,
-          peerDomain,
           after: 4,
           through: targetSeq,
           maxMessageSeq,
           take,
         });
+        signal.throwIfAborted();
         await driver.complete({
           threadId,
-          peerDomain,
           authorizationEpoch: 4,
           targetSeq,
         });
-        // maxMessageSeq is optional in the real round result; the fake keeps
-        // the optional form so the "omits maxMessageSeq" test can drop it.
         return { targetSeq, maxMessageSeq, processed: true } as {
           targetSeq: number;
           maxMessageSeq?: number;
@@ -131,6 +130,7 @@ function harness(localGroupAuthority = false, kind: 'GROUP' | 'P2P' = 'GROUP') {
       }),
     } as never,
     database as never,
+    { prepare: vi.fn().mockResolvedValue([]) } as never,
   );
   return {
     executor,
@@ -161,8 +161,8 @@ describe('FederationThreadForwardRoundExecutorService', () => {
       );
       const run =
         kind === 'message'
-          ? h.executor.runMessages(31, 'origin.test', 7, 50)
-          : h.executor.runTombstones(31, 'origin.test', 7, 50);
+          ? h.executor.runMessages(31, 7, new AbortController().signal, 50)
+          : h.executor.runTombstones(31, 7, new AbortController().signal, 50);
       await expect(run).rejects.toThrow('no longer has an audience');
       expect(h.epochLock.mock.invocationCallOrder[0]).toBeLessThan(
         h.tx.execute.mock.invocationCallOrder[0],
@@ -192,11 +192,12 @@ describe('FederationThreadForwardRoundExecutorService', () => {
       h.threadResources.fetch.mockResolvedValueOnce(
         response({ messages: [], scannedThrough: 100, hasMore: false }),
       );
-      await h.executor.runMessages(31, 'origin.test', 7, 50);
+      await h.executor.runMessages(31, 7, new AbortController().signal, 50);
       expect(h.threadResources.fetch).toHaveBeenCalledWith(
         31,
         `/somfp/v1/messages?${demand}&after=10&through=100&take=50&includeSelf=${includeSelf}`,
-        'origin.test',
+        7,
+        expect.any(AbortSignal),
         16 * 1024 * 1024,
       );
       expect(h.messageAdvance).toHaveBeenCalledWith(h.tx, 31, 100, 100, 7);
@@ -208,18 +209,19 @@ describe('FederationThreadForwardRoundExecutorService', () => {
       response({ messages: [], scannedThrough: 60, hasMore: true }),
     );
 
-    await h.executor.runMessages(31, 'origin.test', 7, 50);
+    await h.executor.runMessages(31, 7, new AbortController().signal, 50);
 
     expect(h.threadResources.fetch).toHaveBeenCalledWith(
       31,
       '/somfp/v1/messages?account=%21group&after=10&through=100&take=50&includeSelf=true',
-      'origin.test',
+      7,
+      expect.any(AbortSignal),
       16 * 1024 * 1024,
     );
     expect(h.messageAdvance).toHaveBeenCalledWith(h.tx, 31, 60, 100, 7);
     expect(h.deletionAdvance).not.toHaveBeenCalled();
     expect(h.epochLock).toHaveBeenCalledWith(h.tx, 31, 4);
-    expect(h.publishMessage).toHaveBeenCalledOnce();
+    expect(h.publishMessage).not.toHaveBeenCalled();
     expect(
       h.inboundMessageCommits.applyTombstonesInTransaction,
     ).not.toHaveBeenCalled();
@@ -231,15 +233,16 @@ describe('FederationThreadForwardRoundExecutorService', () => {
       response({ tombstones: [], scannedThrough: 9, hasMore: false }),
     );
 
-    await h.executor.runTombstones(31, 'origin.test', 7, 50);
+    await h.executor.runTombstones(31, 7, new AbortController().signal, 50);
 
     expect(h.threadResources.fetch).toHaveBeenCalledWith(
       31,
       '/somfp/v1/message-tombstones?account=%21group&after=4&through=9&take=50&includeSelf=true&maxMessageSeq=42',
-      'origin.test',
+      7,
+      expect.any(AbortSignal),
       4 * 1024 * 1024,
     );
-    expect(h.deletionAdvance).toHaveBeenCalledWith(h.tx, 31, 9, 9, 7);
+    expect(h.deletionAdvance).toHaveBeenCalledWith(h.tx, 31, 4, 9, 7);
     expect(h.messageAdvance).not.toHaveBeenCalled();
     expect(h.epochLock).toHaveBeenCalledWith(h.tx, 31, 4);
     expect(
@@ -248,23 +251,22 @@ describe('FederationThreadForwardRoundExecutorService', () => {
     expect(h.publishMessage).not.toHaveBeenCalled();
   });
 
-  it('omits maxMessageSeq after the recovery drain is complete', async () => {
+  it('continues sending maxMessageSeq after the recovery drain is complete', async () => {
     const h = harness();
     h.rounds.runTombstones.mockImplementationOnce(
-      // The real 5th parameter is optional (requestedTake?) — a mock that
-      // requires it would not be assignable under strictFunctionTypes.
       async (
         threadId: number,
-        peerDomain: string,
         _namespaceId: number,
         driver: FederationThreadForwardTombstoneRoundDriver,
+        signal: AbortSignal,
         take?: number,
       ) => {
+        signal.throwIfAborted();
         await driver.process({
           threadId,
-          peerDomain,
           after: 9,
           through: 12,
+          maxMessageSeq: 60,
           take: take!,
         });
         return { targetSeq: 12, processed: true };
@@ -274,17 +276,106 @@ describe('FederationThreadForwardRoundExecutorService', () => {
       response({ tombstones: [], scannedThrough: 12, hasMore: false }),
     );
 
-    await h.executor.runTombstones(31, 'origin.test', 7, 50);
+    await h.executor.runTombstones(31, 7, new AbortController().signal, 50);
 
     expect(h.threadResources.fetch).toHaveBeenCalledWith(
       31,
-      '/somfp/v1/message-tombstones?account=%21group&after=9&through=12&take=50&includeSelf=true',
-      'origin.test',
+      '/somfp/v1/message-tombstones?account=%21group&after=9&through=12&take=50&includeSelf=true&maxMessageSeq=60',
+      7,
+      expect.any(AbortSignal),
       4 * 1024 * 1024,
     );
   });
 
-  it('rejects a tombstone above the frozen recovery cutoff', async () => {
+  it.each([true, false])(
+    'advances only applied facts, not scannedThrough (hasMore=%s)',
+    async (hasMore) => {
+      const h = harness();
+      h.threadResources.fetch.mockResolvedValueOnce(
+        response({
+          tombstones: [
+            {
+              deletionSeq: 5,
+              thread: { account: '!group' },
+              messageSeq: 40,
+              type: 'USER_RETRACTION',
+              deletedAt: 1,
+            },
+          ],
+          scannedThrough: hasMore ? 8 : 9,
+          hasMore,
+        }),
+      );
+      await expect(
+        h.executor.runTombstones(31, 7, new AbortController().signal, 50),
+      ).resolves.toMatchObject({ hasMore });
+      expect(h.deletionAdvance).toHaveBeenCalledWith(h.tx, 31, 5, 9, 7);
+    },
+  );
+
+  it('waits after an empty cutoff page without adopting source progress', async () => {
+    const h = harness();
+    h.threadResources.fetch.mockResolvedValueOnce(
+      response({
+        tombstones: [],
+        scannedThrough: 9,
+        hasMore: false,
+      }),
+    );
+    await expect(
+      h.executor.runTombstones(31, 7, new AbortController().signal, 50),
+    ).resolves.toMatchObject({ hasMore: false });
+    expect(h.deletionAdvance).toHaveBeenCalledWith(h.tx, 31, 4, 9, 7);
+  });
+
+  it('recovers a retained source boundary without treating it as applied deletion progress', async () => {
+    const h = harness();
+    h.threadResources.fetch
+      .mockRejectedValueOnce(
+        new S2sResponseError(
+          'cursor unavailable',
+          409,
+          BusinessCode.FEDERATION_FEED_CURSOR_UNAVAILABLE,
+          { resumeAfter: 6, resumeBefore: 10 },
+        ),
+      )
+      .mockResolvedValueOnce(
+        response({ tombstones: [], scannedThrough: 9, hasMore: false }),
+      );
+    await expect(
+      h.executor.runTombstones(31, 7, new AbortController().signal, 50),
+    ).resolves.toMatchObject({ hasMore: false });
+    expect(h.threadResources.fetch.mock.calls[1][1]).toContain('after=6');
+    expect(h.deletionAdvance).toHaveBeenCalledWith(h.tx, 31, 4, 9, 7);
+  });
+
+  it('does not advance applied progress when the tombstone transaction fails', async () => {
+    const h = harness();
+    h.threadResources.fetch.mockResolvedValueOnce(
+      response({
+        tombstones: [
+          {
+            deletionSeq: 5,
+            thread: { account: '!group' },
+            messageSeq: 40,
+            type: 'USER_RETRACTION',
+            deletedAt: 1,
+          },
+        ],
+        scannedThrough: 9,
+        hasMore: false,
+      }),
+    );
+    h.inboundMessageCommits.applyTombstonesInTransaction.mockRejectedValueOnce(
+      new Error('failed to apply fact'),
+    );
+    await expect(
+      h.executor.runTombstones(31, 7, new AbortController().signal, 50),
+    ).rejects.toThrow('failed to apply fact');
+    expect(h.deletionAdvance).not.toHaveBeenCalled();
+  });
+
+  it('rejects a tombstone above the current message cutoff', async () => {
     const h = harness();
     h.threadResources.fetch.mockResolvedValueOnce(
       response({
@@ -303,10 +394,25 @@ describe('FederationThreadForwardRoundExecutorService', () => {
     );
 
     await expect(
-      h.executor.runTombstones(31, 'origin.test', 7, 50),
+      h.executor.runTombstones(31, 7, new AbortController().signal, 50),
     ).rejects.toMatchObject({
       bizCode: BusinessCode.FEDERATION_MALFORMED,
     });
     expect(h.deletionAdvance).not.toHaveBeenCalled();
+  });
+
+  it('does not commit a fetched forward message page after the caller cancels', async () => {
+    const h = harness();
+    const controller = new AbortController();
+    h.threadResources.fetch.mockImplementationOnce(async () => {
+      controller.abort();
+      return response({ messages: [], scannedThrough: 60, hasMore: true });
+    });
+
+    await expect(
+      h.executor.runMessages(31, 7, controller.signal, 50),
+    ).rejects.toMatchObject({ name: 'AbortError' });
+    expect(h.database.db.transaction).not.toHaveBeenCalled();
+    expect(h.messageAdvance).not.toHaveBeenCalled();
   });
 });

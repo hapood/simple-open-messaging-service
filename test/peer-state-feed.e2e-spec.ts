@@ -6,7 +6,7 @@ import { DatabaseModule } from '../src/database/database.module.js';
 import { DatabaseService } from '../src/database/database.service.js';
 import { MessageThreadType } from '../src/database/enums.js';
 import {
-  deletedMessage,
+  messageTombstone,
   groupAccount,
   message,
   threadAudience,
@@ -126,11 +126,14 @@ describe('per-peer state feed', () => {
           updatedAt: new Date(),
         }),
       );
-      await tx.insert(deletedMessage).values({
+      await tx.insert(messageTombstone).values({
         threadId: thread.id,
-        messageSeq: 1,
+        provenance: 'LOCAL',
+        publisherNamespaceId: 0,
+        localMessageSeq: 1,
         deletionSeq: 1,
         type: 'USER_RETRACTION',
+        consumed: true,
       });
       await feed.writeManyInTx(tx, [
         {

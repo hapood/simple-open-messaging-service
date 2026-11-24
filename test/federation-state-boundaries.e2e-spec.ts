@@ -191,9 +191,9 @@ describe('federation directed-state boundaries', () => {
         });
         expect(state).toMatchObject({
           messageTargetSeq: end,
-          messageProcessedThroughSeq: Math.max(0, end - 1),
+          messageProcessedThroughSeq: 0,
           deletionTargetSeq: end === 0 ? 0 : 4,
-          deletionProcessedThroughSeq: end === 0 ? 0 : 4,
+          deletionProcessedThroughSeq: 0,
         });
       };
       await expect(
@@ -232,7 +232,6 @@ describe('federation directed-state boundaries', () => {
           deletionTargetSeq: 1,
           messageProcessedThroughSeq: 0,
           deletionProcessedThroughSeq: 0,
-          activeGapId: null,
         });
         await FederationThreadSyncStateService.advanceMessageProcessedThroughInTx(
           tx,
@@ -257,7 +256,6 @@ describe('federation directed-state boundaries', () => {
       expect(state).toMatchObject({
         messageProcessedThroughSeq: 3,
         deletionProcessedThroughSeq: 1,
-        activeGapId: null,
       });
       expect(
         await database.db

@@ -1,18 +1,10 @@
-#[cfg(any(not(desktop), test))]
-use std::collections::HashMap;
 use std::sync::Arc;
-#[cfg(any(not(desktop), test))]
-use std::sync::Mutex;
 use std::time::Duration;
-
-#[cfg(any(not(desktop), test))]
-use log::warn;
 use tokio::task::JoinHandle;
 
 const LOGOUT_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Detached revocation owns the ended credential and origin, never the mutable session state.
-/// A ticket identifies only this bounded operation; it is not a login identity or credential.
+/// Result of one bounded revocation attempt using the coordinator's captured credential.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 #[serde(tag = "status", rename_all = "camelCase")]
 pub(crate) enum LogoutOutcome {
@@ -21,7 +13,6 @@ pub(crate) enum LogoutOutcome {
     TransportFailure,
     TimedOut,
     TaskFailure,
-    UnknownTicket,
 }
 
 /// One logout owns admission and its captured credential across all user-triggered attempts.
@@ -188,10 +179,9 @@ impl LogoutCoordinator {
         current.as_mut().unwrap().prepare().await
     }
 
-    /// Desktop cleanup belongs to Rust, including the OS credential adapter. The
-    /// stored operation supplies the descriptor; the renderer supplies only its decision.
-    #[cfg(desktop)]
-    pub(crate) async fn finish_desktop(&self, app: tauri::AppHandle, local_only: bool) -> Result<(), String> {
+    /// Cleanup belongs to Rust; OS adapters execute only the captured session's cleanup.
+    /// The renderer supplies a decision, never a deletion identity.
+    pub(crate) async fn finish_native(&self, app: tauri::AppHandle, local_only: bool) -> Result<(), String> {
         let mut current = self.0.lock().await;
         let operation = current.as_mut().ok_or("no logout is in progress")?;
         operation.prepare().await?;
@@ -208,13 +198,12 @@ impl LogoutCoordinator {
             operation.cleanup_task = Some(tokio::task::spawn_blocking(move || {
                 // Keep notification removal inside the retained task: an abandoned IPC
                 // must not allow delayed removal to erase a successor login's cards.
-                crate::native_db::desktop_notifications::clear_notifications(&app, true)?;
                 let preferences = crate::native_db::preferences_connection()?;
                 preferences.with_database(|conn| {
                     crate::login_session_store::SessionStore::end(conn, Some(&id))?;
                     Ok(())
                 })?;
-                crate::secure_storage::secure_clear_token_internal()?;
+                crate::logout_platform::cleanup(&app, &String::from(id.clone()))?;
                 preferences.with_database(|conn| {
                     crate::login_session_store::SessionStore::finish_ending(conn, Some(&id))
                 })
@@ -236,6 +225,7 @@ impl LogoutCoordinator {
         }
     }
 
+    #[cfg(test)]
     pub(crate) async fn begin(&self, operation: LogoutOperation) -> Result<(), String> {
         let mut current = self.0.lock().await;
         if current.is_some() {
@@ -252,6 +242,7 @@ impl LogoutCoordinator {
         Ok(operation.revoke().await)
     }
 
+    #[cfg(test)]
     pub(crate) async fn finish<F>(&self, local_only: bool, cleanup: F) -> Result<(), String>
     where
         F: std::future::Future<Output = Result<(), String>>,
@@ -262,66 +253,6 @@ impl LogoutCoordinator {
         operation.finish(local_only, cleanup).await?;
         *current = None;
         Ok(())
-    }
-}
-
-#[cfg(any(not(desktop), test))]
-#[derive(Clone, Default)]
-pub(crate) struct LogoutTasks(Arc<Mutex<HashMap<String, JoinHandle<LogoutOutcome>>>>);
-
-#[cfg(any(not(desktop), test))]
-impl LogoutTasks {
-    pub(crate) fn start(&self, client: reqwest::Client, origin: String, token: String) -> String {
-        self.start_with_timeout(client, origin, token, LOGOUT_TIMEOUT, None)
-    }
-
-    pub(crate) fn start_in_transition(
-        &self,
-        client: reqwest::Client,
-        origin: String,
-        token: String,
-        transition: crate::auth_lifecycle::TransitionGuard,
-    ) -> String {
-        self.start_with_timeout(client, origin, token, LOGOUT_TIMEOUT, Some(transition))
-    }
-
-    fn start_with_timeout(
-        &self,
-        client: reqwest::Client,
-        origin: String,
-        token: String,
-        deadline: Duration,
-        transition: Option<crate::auth_lifecycle::TransitionGuard>,
-    ) -> String {
-        let ticket = uuid::Uuid::new_v4().to_string();
-        let task = tokio::spawn(async move {
-            // The worker, not the IPC waiter, owns admission until transport completion.
-            let _transition = transition;
-            revoke_once(&client, &origin, &token, deadline).await
-        });
-        let mut pending = self.0.lock().expect("logout tasks lock");
-        // Bound abandoned tickets without routinely dropping completed results before their waiter.
-        // Eviction is reported as UnknownTicket, never mistaken for successful revocation.
-        if pending.len() >= 64 {
-            pending.retain(|_, task| !task.is_finished());
-        }
-        pending.insert(ticket.clone(), task);
-        ticket
-    }
-
-    pub(crate) async fn wait(&self, ticket: &str) -> LogoutOutcome {
-        let task = self.0.lock().expect("logout tasks lock").remove(ticket);
-        // Never hold the task registry lock over network I/O. Tickets are consumed once.
-        match task {
-            Some(task) => match task.await {
-                Ok(outcome) => outcome,
-                Err(error) => {
-                    warn!("logout task failed: {error}");
-                    LogoutOutcome::TaskFailure
-                }
-            },
-            None => LogoutOutcome::UnknownTicket,
-        }
     }
 }
 
@@ -343,7 +274,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn captures_the_ended_credential_and_consumes_the_ticket_once() {
+    async fn revocation_uses_captured_credential_without_automatic_retry() {
         let server = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let origin = format!("http://{}", server.local_addr().unwrap());
         let accept = tokio::spawn(async move {
@@ -366,10 +297,8 @@ mod tests {
             .default_headers(headers)
             .build()
             .unwrap();
-        let tasks = LogoutTasks::default();
-        let ticket = tasks.start(client, origin, "ended-token".into());
-        assert_eq!(tasks.wait(&ticket).await, LogoutOutcome::HttpFailure { status_code: 503 });
-        assert_eq!(tasks.wait(&ticket).await, LogoutOutcome::UnknownTicket);
+        assert_eq!(revoke_once(&client, &origin, "ended-token", LOGOUT_TIMEOUT).await,
+            LogoutOutcome::HttpFailure { status_code: 503 });
         accept.await.unwrap();
     }
 
@@ -388,12 +317,16 @@ mod tests {
         });
         let lifecycle = Arc::new(crate::auth_lifecycle::AuthLifecycle::default());
         let transition = lifecycle.enter(crate::auth_lifecycle::Phase::Logout).unwrap();
-        let tasks = LogoutTasks::default();
-        let ticket = tasks.start_in_transition(reqwest::Client::new(), origin, "token".into(), transition);
+        let coordinator = Arc::new(LogoutCoordinator::default());
+        coordinator.begin(LogoutOperation::new(reqwest::Client::new(), origin, "token".into(), transition)).await.unwrap();
+        let worker = coordinator.clone();
+        let attempt = tokio::spawn(async move { worker.revoke().await });
         request_received.await.unwrap();
         assert!(lifecycle.enter(crate::auth_lifecycle::Phase::Login).is_err());
         respond.send(()).unwrap();
-        assert_eq!(tasks.wait(&ticket).await, LogoutOutcome::Revoked);
+        assert_eq!(attempt.await.unwrap().unwrap(), LogoutOutcome::Revoked);
+        assert!(lifecycle.enter(crate::auth_lifecycle::Phase::Login).is_err());
+        coordinator.finish(false, async { Ok(()) }).await.unwrap();
         assert!(lifecycle.enter(crate::auth_lifecycle::Phase::Login).is_ok());
         accept.await.unwrap();
     }
@@ -619,9 +552,7 @@ mod tests {
             read_request(&mut socket).await;
             socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await.unwrap();
         });
-        let tasks = LogoutTasks::default();
-        let ticket = tasks.start(reqwest::Client::new(), origin, "ended".into());
-        assert_eq!(tasks.wait(&ticket).await, LogoutOutcome::Revoked);
+        assert_eq!(revoke_once(&reqwest::Client::new(), &origin, "ended", LOGOUT_TIMEOUT).await, LogoutOutcome::Revoked);
         accept.await.unwrap();
     }
 
@@ -638,15 +569,9 @@ mod tests {
                 .expect("timed-out request must close its socket")
                 .unwrap();
         });
-        let tasks = LogoutTasks::default();
-        let ticket = tasks.start_with_timeout(
-            reqwest::Client::new(),
-            origin,
-            "ended".into(),
-            Duration::from_millis(100),
-            None,
-        );
-        assert_eq!(tokio::time::timeout(Duration::from_secs(2), tasks.wait(&ticket))
+        let client = reqwest::Client::new();
+        let attempt = revoke_once(&client, &origin, "ended", Duration::from_millis(100));
+        assert_eq!(tokio::time::timeout(Duration::from_secs(2), attempt)
             .await
             .unwrap(), LogoutOutcome::TimedOut);
         accept.await.unwrap();

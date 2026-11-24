@@ -197,7 +197,7 @@ describe('thread-query FORBIDDEN convergence', () => {
     const harness = forbiddenHarness(7);
 
     await expect(
-      harness.service.handleThreadQueryForbidden(31, 'peer.test', 5, 7),
+      harness.service.handleThreadQueryForbidden(31, 5, 7),
     ).resolves.toBe('P2P_REVOKED');
     expect(harness.userIntents.execute).toHaveBeenCalledExactlyOnceWith(
       {
@@ -222,7 +222,7 @@ describe('thread-query FORBIDDEN convergence', () => {
     const harness = forbiddenHarness(8);
 
     await expect(
-      harness.service.handleThreadQueryForbidden(31, 'peer.test', 5, 7),
+      harness.service.handleThreadQueryForbidden(31, 5, 7),
     ).resolves.toBe('STALE');
     expect(harness.tasks.enqueueTaskInTx).not.toHaveBeenCalled();
     expect(harness.userIntents.execute).toHaveBeenCalledOnce();
@@ -239,7 +239,7 @@ describe('thread-query FORBIDDEN convergence', () => {
     );
 
     await expect(
-      harness.service.handleThreadQueryForbidden(31, 'peer.test', 5, 7),
+      harness.service.handleThreadQueryForbidden(31, 5, 7),
     ).resolves.toBe('MIRROR_WAITING_FOR_PUSH');
     expect(
       harness.relationshipMutations.lockGroupMutationInTx,
@@ -273,7 +273,7 @@ describe('thread-query FORBIDDEN convergence', () => {
     ]);
 
     await expect(
-      harness.service.handleThreadQueryForbidden(31, 'peer.test', 5, 7),
+      harness.service.handleThreadQueryForbidden(31, 5, 7),
     ).resolves.toBe('GROUP_REVOKE_QUEUED');
     expect(
       harness.relationshipMutations.writeGroupRelationshipIntentInTx,
@@ -287,7 +287,6 @@ describe('thread-query FORBIDDEN convergence', () => {
       actorUserId: 99,
       payload: {
         threadId: 31,
-        peerDomain: 'peer.test',
         namespaceId: 5,
         expectedAuthorizationEpoch: 7,
       },
@@ -308,7 +307,7 @@ describe('thread-query FORBIDDEN convergence', () => {
     ]);
 
     await expect(
-      harness.service.handleThreadQueryForbidden(31, 'peer.test', 5, 7),
+      harness.service.handleThreadQueryForbidden(31, 5, 7),
     ).resolves.toBe('STALE');
     expect(
       harness.relationshipMutations.writeMemberRelationshipIntentInTx,
@@ -787,6 +786,7 @@ function makeStubs() {
     database as never,
     recognition as never,
     discovery as never,
+    {} as never,
   );
   const peerHttp = new FederationPeerHttp(
     signature as never,
@@ -802,12 +802,11 @@ function makeStubs() {
     transportConfig as never,
     peerLifecycle,
   );
-  const inboundMediaBatches = new FederationInboundMediaBatchService(
+  new FederationInboundMediaBatchService(
     database as never,
     {} as never,
     {} as never,
     mediaRangeClient,
-    sse as never,
   );
   const users = new FederationUserDirectoryService(database as never);
   const participantService = {};
@@ -827,6 +826,11 @@ function makeStubs() {
       namespaceId: 1,
       rootKeyFingerprint: 'peer-root',
     })),
+    captureActiveById: vi.fn(async (namespaceId: number) => ({
+      domain: 'peer.test',
+      namespaceId,
+      rootKeyFingerprint: 'peer-root',
+    })),
     captureActiveInTx: vi.fn(async (_tx: unknown, domain: string) => ({
       domain,
       namespaceId: 1,
@@ -838,10 +842,15 @@ function makeStubs() {
     database as never,
     namespaces as never,
   );
-  const trustedPeers = new FederationTrustedPeerClient(peerHttp, peerLifecycle);
+  const trustedPeers = new FederationTrustedPeerClient(
+    peerHttp,
+    peerLifecycle,
+    {} as never,
+  );
   const threadResources = new FederationThreadResourceClient(
     trustedPeers,
     threadAccess,
+    namespaces as never,
   );
   const upload = {};
   const PINNED_ROOT = Buffer.from(
@@ -875,6 +884,7 @@ function makeStubs() {
     inboundMessageValidator,
     inboundMessageRoutes,
     inboundMessageStore,
+    forwardBundles as never,
   );
   const peerResources = new FederationPeerResourceService(
     database as never,
@@ -1286,21 +1296,27 @@ describe('FederationThreadResourceClient preflight', () => {
     const { target, getSigned, select, transaction } = installPreflight({
       id: 10,
     });
+    const signal = new AbortController().signal;
 
     await expect(
-      target.read<{ messages: unknown[] }>(10, '/messages', 'peer.test'),
-    ).resolves.toEqual({ data: { messages: [] } });
+      target.fetch<{ messages: unknown[] }>(10, '/messages', 1, signal),
+    ).resolves.toMatchObject({ data: { messages: [] } });
     expect(transaction).toHaveBeenCalledOnce();
     expect(select).toHaveBeenCalledOnce();
-    expect(getSigned).toHaveBeenCalledWith('/messages', 'peer.test', undefined);
+    expect(getSigned).toHaveBeenCalledWith(
+      '/messages',
+      'peer.test',
+      undefined,
+      signal,
+    );
   });
 
   it('does not send when the thread is missing', async () => {
     const { target, getSigned } = installPreflight();
 
-    await expect(target.read(10, '/messages', 'peer.test')).rejects.toThrow(
-      'stale federation response for thread 10 from peer.test',
-    );
+    await expect(
+      target.fetch(10, '/messages', 1, new AbortController().signal),
+    ).rejects.toThrow('stale federation response for thread 10 from peer.test');
     expect(getSigned).not.toHaveBeenCalled();
   });
 
@@ -1311,7 +1327,7 @@ describe('FederationThreadResourceClient preflight', () => {
     );
 
     await expect(
-      target.read(10, '/messages', 'peer.test'),
+      target.fetch(10, '/messages', 1, new AbortController().signal),
     ).rejects.toMatchObject({
       status: 200,
       code: BusinessCode.GROUP_DISSOLVED,
@@ -1322,7 +1338,12 @@ describe('FederationThreadResourceClient preflight', () => {
     const { target } = installPreflight({ id: 10 });
 
     await expect(
-      target.fetch<{ messages: unknown[] }>(10, '/messages', 'peer.test'),
+      target.fetch<{ messages: unknown[] }>(
+        10,
+        '/messages',
+        1,
+        new AbortController().signal,
+      ),
     ).resolves.toEqual({
       data: { messages: [] },
       threadId: 10,
@@ -1357,7 +1378,6 @@ describe('FederationInboundMessageRouteService global missed transport', () => {
         resolveMessage: (
           tx: unknown,
           item: unknown,
-          sourceDomain: string,
           namespaceId: number,
           peerAssignedLocalNamespaceId: number,
         ) => Promise<unknown>;
@@ -1371,7 +1391,6 @@ describe('FederationInboundMessageRouteService global missed transport', () => {
           thread: { account: 'bob', peerAccount: 'alice' },
           author: { ref: 'THREAD_ACCOUNT', namespaceId: 0 },
         },
-        'peer.test',
         7,
         44,
       ),

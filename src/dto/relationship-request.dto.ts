@@ -4,7 +4,9 @@ import {
   IsIn,
   IsInt,
   IsOptional,
+  IsString,
   Max,
+  MaxLength,
   Min,
   registerDecorator,
 } from 'class-validator';
@@ -64,4 +66,13 @@ export class RequestDecisionDto {
   })
   @IsRequestId()
   requestId!: string;
+
+  @ApiPropertyOptional({
+    example: 'See you there',
+    description: 'Optional decision note (≤255 chars)',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(255)
+  note?: string;
 }

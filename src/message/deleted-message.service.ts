@@ -17,17 +17,18 @@ import {
 } from '../database/database.service.js';
 import { ContentType, MessageDeleteType } from '../database/enums.js';
 import {
+  accountThreadState,
   deletedMessage,
   federatedMessageTombstone,
   fileSyncProgress,
   message,
-  messageThread,
   messageReport,
+  messageThread,
   pendingMedia,
 } from '../database/schema.js';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
-import { enqueueMessageFanoutsInTx } from './thread-fanout-task.js';
+import { enqueueDeletionFanoutsInTx } from './thread-fanout-task.js';
 import {
   acquireThreadContentLockInTx,
   requireThreadContentLockInTx,
@@ -75,22 +76,83 @@ export class DeletedMessageService {
         deletionSeq: messageThread.tombstoneEndSeq,
       });
     if (!allocated) throw new Error('deletion sequence allocation failed');
+    const now = params.updatedAt ?? new Date();
     await tx.insert(deletedMessage).values({
       threadId: params.threadId,
       deletionSeq: allocated.deletionSeq,
       messageSeq: params.messageSeq,
       type: params.type,
       publisherNamespaceId: params.publisherNamespaceId ?? 0,
-      updatedAt: params.updatedAt ?? new Date(),
+      updatedAt: now,
     });
     return { deletionSeq: allocated.deletionSeq, created: true };
+  }
+
+  /** Mark an already stored federated fact consumed. createdAt stays at first receipt. */
+  static async markFederatedTombstoneConsumedInTx(
+    tx: DatabaseTransaction,
+    params: {
+      threadId: number;
+      publisherNamespaceId: number;
+      messageSeq: number;
+    },
+  ): Promise<boolean> {
+    const updated = await tx
+      .update(federatedMessageTombstone)
+      .set({ consumed: true, updatedAt: new Date() })
+      .where(
+        and(
+          eq(federatedMessageTombstone.threadId, params.threadId),
+          eq(
+            federatedMessageTombstone.publisherNamespaceId,
+            params.publisherNamespaceId,
+          ),
+          eq(federatedMessageTombstone.messageSeq, params.messageSeq),
+        ),
+      )
+      .returning({ id: federatedMessageTombstone.id });
+    return updated.length > 0;
+  }
+
+  /** Retain a federated fact that is consumed on arrival without allocating a local coordinate. */
+  static async retainConsumedFederatedTombstoneInTx(
+    tx: DatabaseTransaction,
+    params: {
+      threadId: number;
+      publisherNamespaceId: number;
+      messageSeq: number;
+      remoteDeletionSeq: number;
+      type: MessageDeleteType;
+      authorityDeletedAt?: Date;
+    },
+  ): Promise<void> {
+    if (await this.markFederatedTombstoneConsumedInTx(tx, params)) return;
+    const now = new Date();
+    await tx
+      .insert(federatedMessageTombstone)
+      .values({
+        threadId: params.threadId,
+        publisherNamespaceId: params.publisherNamespaceId,
+        messageSeq: params.messageSeq,
+        remoteDeletionSeq: params.remoteDeletionSeq,
+        type: params.type,
+        authorityDeletedAt: params.authorityDeletedAt ?? now,
+        consumed: true,
+        updatedAt: now,
+      })
+      .onConflictDoUpdate({
+        target: [
+          federatedMessageTombstone.threadId,
+          federatedMessageTombstone.publisherNamespaceId,
+          federatedMessageTombstone.messageSeq,
+        ],
+        set: { consumed: true, updatedAt: now },
+      });
   }
 
   private async assertFederatedResponseWritable(
     tx: DatabaseTransaction,
     threadId: number,
-    _peerDomain: string,
-    _namespaceId: number,
   ): Promise<void> {
     const [state] = await tx
       .select({ id: messageThread.id })
@@ -106,6 +168,7 @@ export class DeletedMessageService {
   }
 
   async queryThread(
+    userId: number,
     threadId: number,
     after: number | undefined,
     take: number,
@@ -113,79 +176,97 @@ export class DeletedMessageService {
     before?: number,
     maxMessageSeq?: number,
   ) {
-    const tail = await this.database.db.query.messageThread.findFirst({
-      where: eq(messageThread.id, threadId),
-      columns: { tombstoneEndSeq: true },
-    });
-    const end = tail?.tombstoneEndSeq ?? 0;
-    const cursorData = {
-      resumeAfter: 0,
-      resumeBefore: end + 1,
-    };
-    if (after === undefined && before === undefined)
-      throw new BusinessException(
-        BusinessCode.CLIENT_FEED_CURSOR_UNAVAILABLE,
-        'after or before is required; initialize the tombstone query cursor',
-        HttpStatus.OK,
-        cursorData,
-      );
-    if (
-      (after !== undefined && (after < 0 || after > end)) ||
-      (before !== undefined && (before <= 1 || before > end + 1))
-    )
-      throw new BusinessException(
-        BusinessCode.CLIENT_FEED_CURSOR_UNAVAILABLE,
-        'tombstone query cursor is outside the available coordinate space',
-        HttpStatus.OK,
-        cursorData,
-      );
-    const forward = after !== undefined;
-    const queryEnd = forward
-      ? through === undefined || through > end
-        ? end
-        : through
-      : 0;
-    const queryStart = forward ? 0 : (through ?? 1);
-    const queryBefore = forward ? 0 : before! < end + 1 ? before! : end + 1;
-    const rows = await this.database.db.query.deletedMessage.findMany({
-      where: and(
-        eq(deletedMessage.threadId, threadId),
-        forward
-          ? gt(deletedMessage.deletionSeq, after!)
-          : gte(deletedMessage.deletionSeq, queryStart),
-        forward
-          ? lte(deletedMessage.deletionSeq, queryEnd)
-          : lt(deletedMessage.deletionSeq, queryBefore),
-      ),
-      orderBy: forward
-        ? asc(deletedMessage.deletionSeq)
-        : desc(deletedMessage.deletionSeq),
-      limit: take + 1,
-    });
-    const selected = rows.slice(0, take);
-    const scannedThrough =
-      rows.length > take
-        ? selected.at(-1)!.deletionSeq
-        : forward
-          ? queryEnd
-          : queryStart;
-    return {
-      tombstones: selected
-        .filter(
-          (row) =>
-            maxMessageSeq === undefined || row.messageSeq <= maxMessageSeq,
+    return this.database.db.transaction(
+      async (tx) => {
+        const [scope] = await tx
+          .select({
+            tombstoneEndSeq: messageThread.tombstoneEndSeq,
+            tombstoneVisibleThroughSeq:
+              accountThreadState.tombstoneVisibleThroughSeq,
+          })
+          .from(accountThreadState)
+          .innerJoin(
+            messageThread,
+            eq(messageThread.id, accountThreadState.threadId),
+          )
+          .where(
+            and(
+              eq(accountThreadState.accountId, userId),
+              eq(accountThreadState.threadId, threadId),
+            ),
+          )
+          .limit(1);
+        if (!scope)
+          throw new BusinessException(
+            BusinessCode.THREAD_NOT_FOUND,
+            `no thread [${threadId}]`,
+          );
+        const end =
+          scope.tombstoneVisibleThroughSeq === null
+            ? scope.tombstoneEndSeq
+            : Math.min(scope.tombstoneEndSeq, scope.tombstoneVisibleThroughSeq);
+        const cursorData = {
+          resumeAfter: 0,
+          resumeBefore: end + 1,
+        };
+        if (after === undefined && before === undefined)
+          throw new BusinessException(
+            BusinessCode.CLIENT_FEED_CURSOR_UNAVAILABLE,
+            'after or before is required; initialize the tombstone query cursor',
+            HttpStatus.OK,
+            cursorData,
+          );
+        if (
+          (after !== undefined && (after < 0 || after > end)) ||
+          (before !== undefined && (before <= 1 || before > end + 1))
         )
-        .map((row) => ({
-          deletionSeq: row.deletionSeq,
-          threadId: row.threadId,
-          messageSeq: row.messageSeq,
-          type: row.type,
-          createdAt: row.createdAt,
-          updatedAt: row.updatedAt,
-        })),
-      scannedThrough,
-      hasMore: rows.length > take,
-    };
+          throw new BusinessException(
+            BusinessCode.CLIENT_FEED_CURSOR_UNAVAILABLE,
+            'tombstone query cursor is outside the available coordinate space',
+            HttpStatus.OK,
+            cursorData,
+          );
+        const forward = after !== undefined;
+        const queryEnd = forward
+          ? through === undefined || through > end
+            ? end
+            : through
+          : 0;
+        const queryStart = forward ? 0 : (through ?? 1);
+        const queryBefore = forward ? 0 : before! < end + 1 ? before! : end + 1;
+        const rows = await tx.query.deletedMessage.findMany({
+          where: and(
+            eq(deletedMessage.threadId, threadId),
+            maxMessageSeq === undefined
+              ? undefined
+              : lte(deletedMessage.messageSeq, maxMessageSeq),
+            forward
+              ? gt(deletedMessage.deletionSeq, after!)
+              : gte(deletedMessage.deletionSeq, queryStart),
+            forward
+              ? lte(deletedMessage.deletionSeq, queryEnd)
+              : lt(deletedMessage.deletionSeq, queryBefore),
+          ),
+          orderBy: forward
+            ? asc(deletedMessage.deletionSeq)
+            : desc(deletedMessage.deletionSeq),
+          limit: take + 1,
+        });
+        const selected = rows.slice(0, take);
+        const scannedThrough =
+          rows.length > take
+            ? selected.at(-1)!.deletionSeq
+            : forward
+              ? queryEnd
+              : queryStart;
+        return {
+          tombstones: selected,
+          scannedThrough,
+          hasMore: rows.length > take,
+        };
+      },
+      { isolationLevel: 'repeatable read', accessMode: 'read only' },
+    );
   }
 
   async withdraw(
@@ -315,7 +396,7 @@ export class DeletedMessageService {
         columns: { curSeq: true, tombstoneEndSeq: true },
       });
       if (!head) throw new Error('Deletion thread disappeared');
-      await enqueueMessageFanoutsInTx(tx, threadLock, {
+      await enqueueDeletionFanoutsInTx(tx, threadLock, {
         threadId,
         messageEndSeq: head.curSeq,
         tombstoneEndSeq: head.tombstoneEndSeq,
@@ -339,13 +420,12 @@ export class DeletedMessageService {
   static async lockFederatedIdentity(
     tx: DatabaseTransaction,
     threadId: number,
-    sourceDomain: string,
     namespaceId: number,
     messageSeq: number,
     held?: ThreadContentLock,
   ) {
     const threadLock = await requireThreadContentLockInTx(tx, threadId, held);
-    const identity = `${threadId}:${sourceDomain}:${namespaceId}:${messageSeq}`;
+    const identity = `${threadId}:${namespaceId}:${messageSeq}`;
     await tx.execute(
       sql`SELECT pg_advisory_xact_lock(hashtextextended(${identity}, 0))`,
     );
@@ -355,7 +435,6 @@ export class DeletedMessageService {
   async applyFederated(params: {
     threadId: number;
     messageSeq: number;
-    sourceDomain: string;
     publisherNamespaceId: number;
     remoteDeletionSeq: number;
     type: MessageDeleteType;
@@ -372,7 +451,6 @@ export class DeletedMessageService {
     params: {
       threadId: number;
       peerSeq: number;
-      peerDomain: string;
       namespaceId: number;
       authority: 'P2P_HOME' | 'GROUP_ORIGIN';
       threadLock?: ThreadContentLock;
@@ -382,7 +460,6 @@ export class DeletedMessageService {
     const threadLock = await DeletedMessageService.lockFederatedIdentity(
       tx,
       params.threadId,
-      params.peerDomain,
       params.namespaceId,
       params.peerSeq,
       params.threadLock,
@@ -399,22 +476,12 @@ export class DeletedMessageService {
       // A P2P publisher cannot delete a message authored by this server.
       await tx
         .delete(federatedMessageTombstone)
-        .where(
-          and(
-            eq(federatedMessageTombstone.threadId, params.threadId),
-            eq(
-              federatedMessageTombstone.publisherNamespaceId,
-              params.namespaceId,
-            ),
-            eq(federatedMessageTombstone.messageSeq, params.peerSeq),
-          ),
-        );
+        .where(eq(federatedMessageTombstone.id, pending.id));
       return;
     }
     await this.applyFederatedInTx(tx, {
       threadId: params.threadId,
       messageSeq: params.peerSeq,
-      sourceDomain: params.peerDomain,
       publisherNamespaceId: params.namespaceId,
       remoteDeletionSeq: pending.remoteDeletionSeq,
       type: pending.type,
@@ -430,7 +497,6 @@ export class DeletedMessageService {
     params: {
       threadId: number;
       messageSeq: number;
-      sourceDomain: string;
       publisherNamespaceId: number;
       remoteDeletionSeq: number;
       type: MessageDeleteType;
@@ -440,16 +506,10 @@ export class DeletedMessageService {
       resolvedMessage?: typeof message.$inferSelect;
     },
   ) {
-    await this.assertFederatedResponseWritable(
-      tx,
-      params.threadId,
-      params.sourceDomain,
-      params.publisherNamespaceId,
-    );
+    await this.assertFederatedResponseWritable(tx, params.threadId);
     const threadLock = await DeletedMessageService.lockFederatedIdentity(
       tx,
       params.threadId,
-      params.sourceDomain,
       params.publisherNamespaceId,
       params.messageSeq,
       params.threadLock,
@@ -553,7 +613,7 @@ export class DeletedMessageService {
         ),
         eq(federatedMessageTombstone.messageSeq, params.messageSeq),
       ),
-      columns: { type: true },
+      columns: { id: true, type: true },
     });
     // An earlier pending fact wins over later, differently typed tombstones.
     const effectiveType = pending?.type ?? params.type;
@@ -562,13 +622,8 @@ export class DeletedMessageService {
       params.authority === 'GROUP_ORIGIN' &&
       effectiveType === MessageDeleteType.USER_RETRACTION;
 
+    const now = new Date();
     if (!target) {
-      if (params.authority === 'GROUP_MEMBER')
-        throw new BusinessException(
-          BusinessCode.FEDERATION_BINDING_VIOLATION,
-          'group origin cannot accept a deletion for an unknown message',
-          HttpStatus.BAD_REQUEST,
-        );
       if (!pending)
         await tx
           .insert(federatedMessageTombstone)
@@ -578,8 +633,9 @@ export class DeletedMessageService {
             publisherNamespaceId: params.publisherNamespaceId,
             remoteDeletionSeq: params.remoteDeletionSeq,
             type: params.type,
-            authorityDeletedAt: params.authorityDeletedAt ?? new Date(),
-            updatedAt: new Date(),
+            authorityDeletedAt: params.authorityDeletedAt ?? now,
+            consumed: false,
+            updatedAt: now,
           })
           .onConflictDoNothing();
     }
@@ -590,7 +646,6 @@ export class DeletedMessageService {
         target.creatorAccount === null
       )
         throw new Error('SYSTEM messages cannot enter deletion processing');
-      const now = new Date();
       await tx
         .update(message)
         .set({ isDeleted: true, updatedAt: now })
@@ -607,32 +662,31 @@ export class DeletedMessageService {
       localDeletionSeq = localDeletion.created
         ? localDeletion.deletionSeq
         : null;
+      await DeletedMessageService.retainConsumedFederatedTombstoneInTx(tx, {
+        threadId: params.threadId,
+        publisherNamespaceId: params.publisherNamespaceId,
+        messageSeq: params.messageSeq,
+        remoteDeletionSeq: params.remoteDeletionSeq,
+        type: effectiveType,
+        authorityDeletedAt: params.authorityDeletedAt,
+      });
       if (localDeletion.created) {
         const head = await tx.query.messageThread.findFirst({
           where: eq(messageThread.id, params.threadId),
           columns: { curSeq: true, tombstoneEndSeq: true },
         });
         if (!head) throw new Error('Deletion thread disappeared');
-        await enqueueMessageFanoutsInTx(tx, threadLock, {
+        await enqueueDeletionFanoutsInTx(tx, threadLock, {
           threadId: params.threadId,
           messageEndSeq: head.curSeq,
           tombstoneEndSeq: head.tombstoneEndSeq,
         });
       }
-    }
-    if (target) {
+    } else if (target && pending) {
+      // An inapplicable fact is not consumed and must not occupy the client feed.
       await tx
         .delete(federatedMessageTombstone)
-        .where(
-          and(
-            eq(federatedMessageTombstone.threadId, params.threadId),
-            eq(
-              federatedMessageTombstone.publisherNamespaceId,
-              params.publisherNamespaceId,
-            ),
-            eq(federatedMessageTombstone.messageSeq, params.messageSeq),
-          ),
-        );
+        .where(eq(federatedMessageTombstone.id, pending.id));
     }
 
     // A tombstone makes staged media terminal without waiting for localization.

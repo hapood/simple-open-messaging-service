@@ -14,6 +14,7 @@ import {
 import type { FederationReverseThreadSource } from './federation-reverse-thread-source.js';
 import { S2sResponseError } from './federation-errors.js';
 import { FederationInboundMessageCommitService } from './federation-inbound-message-commit.service.js';
+import { FederationInboundMessagePreparationService } from './federation-inbound-message-preparation.service.js';
 import { FederationInboundMessageEffectsService } from './federation-inbound-message-effects.service.js';
 import {
   FederationThreadResourceClient,
@@ -53,28 +54,26 @@ export class FederationThreadForwardRoundExecutorService {
     private readonly messageEffects: FederationInboundMessageEffectsService,
     private readonly sources: FederationThreadSourceService,
     private readonly database: DatabaseService,
+    private readonly preparation: FederationInboundMessagePreparationService,
   ) {}
 
   async runMessages(
     threadId: number,
-    peerDomain: string,
     namespaceId: number,
+    signal: AbortSignal,
     take?: number,
   ): Promise<FederationThreadForwardMessageRoundResult> {
-    const source = await this.sources.resolve(
-      threadId,
-      peerDomain,
-      namespaceId,
-    );
+    signal.throwIfAborted();
+    const source = await this.sources.resolve(threadId, namespaceId);
     let messageBatch: BufferedForwardMessagePage | undefined;
     let messageAdvance: { processed: number; target: number } | undefined;
     return this.rounds.runMessages(
       threadId,
-      peerDomain,
       namespaceId,
       {
         process: async (params) => {
-          const result = await this.processMessages(source, params);
+          signal.throwIfAborted();
+          const result = await this.processMessages(source, params, signal);
           messageBatch = result.batch;
           messageAdvance = {
             processed: result.scannedThrough,
@@ -82,8 +81,19 @@ export class FederationThreadForwardRoundExecutorService {
           };
         },
         complete: async ({ authorizationEpoch }) => {
+          signal.throwIfAborted();
           let publish: (() => Promise<void>) | undefined;
+          const messages = messageBatch
+            ? await this.preparation.prepare(
+                messageBatch.response,
+                messageBatch.prefetchedForwardClosures,
+                authorizationEpoch,
+                signal,
+              )
+            : [];
+          signal.throwIfAborted();
           await this.database.db.transaction(async (tx) => {
+            signal.throwIfAborted();
             const threadLock =
               await FederationThreadSyncStateService.lockAuthorizationEpochInTx(
                 tx,
@@ -94,15 +104,24 @@ export class FederationThreadForwardRoundExecutorService {
               threadLock,
               source,
             );
-            if (messageBatch) {
+            if (messageBatch && messages.length > 0) {
               const batch = messageBatch;
               const effects =
-                await this.inboundMessageCommits.applyForwardInTransaction(tx, {
-                  ...batch,
+                await this.inboundMessageCommits.commitMessagePageInTx(tx, {
+                  messages,
+                  peerToken: batch.response.peerToken,
+                  processedInterval: {
+                    left: batch.after,
+                    right: batch.response.data.scannedThrough,
+                  },
                   threadLock,
                 });
-              publish = () =>
-                this.messageEffects.publish(batch.response.peerDomain, effects);
+              if (effects.length > 0)
+                publish = () =>
+                  this.messageEffects.publish(
+                    batch.response.peerDomain,
+                    effects,
+                  );
             }
             if (messageAdvance)
               await FederationThreadSyncStateService.advanceMessageProcessedThroughInTx(
@@ -112,42 +131,45 @@ export class FederationThreadForwardRoundExecutorService {
                 messageAdvance.target,
                 namespaceId,
               );
+            signal.throwIfAborted();
           });
           await publish?.();
         },
       },
+      signal,
       take,
     );
   }
 
   async runTombstones(
     threadId: number,
-    peerDomain: string,
     namespaceId: number,
+    signal: AbortSignal,
     take?: number,
   ): Promise<FederationThreadForwardTombstoneRoundResult> {
-    const source = await this.sources.resolve(
-      threadId,
-      peerDomain,
-      namespaceId,
-    );
+    signal.throwIfAborted();
+    const source = await this.sources.resolve(threadId, namespaceId);
     let tombstoneBatch: BufferedForwardTombstonePage | undefined;
     let deletionAdvance: { processed: number; target: number } | undefined;
-    return this.rounds.runTombstones(
+    let hasMore = false;
+    const result = await this.rounds.runTombstones(
       threadId,
-      peerDomain,
       namespaceId,
       {
         process: async (params) => {
-          const result = await this.processTombstones(source, params);
+          signal.throwIfAborted();
+          const result = await this.processTombstones(source, params, signal);
           tombstoneBatch = result.batch;
+          hasMore = result.hasMore;
           deletionAdvance = {
-            processed: result.scannedThrough,
+            processed: result.appliedThrough,
             target: params.through,
           };
         },
         complete: async ({ authorizationEpoch }) => {
+          signal.throwIfAborted();
           await this.database.db.transaction(async (tx) => {
+            signal.throwIfAborted();
             const threadLock =
               await FederationThreadSyncStateService.lockAuthorizationEpochInTx(
                 tx,
@@ -172,16 +194,20 @@ export class FederationThreadForwardRoundExecutorService {
                 deletionAdvance.target,
                 namespaceId,
               );
+            signal.throwIfAborted();
           });
         },
       },
+      signal,
       take,
     );
+    return { ...result, hasMore };
   }
 
   private async processMessages(
     source: FederationReverseThreadSource,
     params: { after: number; through: number; take: number },
+    signal: AbortSignal,
   ): Promise<{
     scannedThrough: number;
     batch?: BufferedForwardMessagePage;
@@ -199,16 +225,22 @@ export class FederationThreadForwardRoundExecutorService {
       response = await this.threadResources.fetch<FederationMessageQueryPage>(
         source.threadId,
         `/somfp/v1/messages?${query.toString()}`,
-        source.peerDomain,
+        source.namespaceId,
+        signal,
         16 * 1024 * 1024,
       );
     } catch (error) {
+      signal.throwIfAborted();
       const resumeAfter = this.resumeAfter(error, params.after, params.through);
       if (resumeAfter === null) throw error;
       return { scannedThrough: resumeAfter };
     }
     this.assertMessagePage(source, response.data, params);
-    const closures = await this.prefetchForwardClosures(source, response);
+    const closures = await this.prefetchForwardClosures(
+      source,
+      response,
+      signal,
+    );
     return {
       scannedThrough: response.data.scannedThrough,
       batch: {
@@ -228,8 +260,10 @@ export class FederationThreadForwardRoundExecutorService {
       maxMessageSeq?: number;
       take: number;
     },
+    signal: AbortSignal,
   ): Promise<{
-    scannedThrough: number;
+    appliedThrough: number;
+    hasMore: boolean;
     batch?: BufferedForwardTombstonePage;
   }> {
     const query = this.threadQuery(source);
@@ -245,17 +279,33 @@ export class FederationThreadForwardRoundExecutorService {
         await this.threadResources.fetch<FederationMessageTombstoneQueryPage>(
           source.threadId,
           `/somfp/v1/message-tombstones?${query.toString()}`,
-          source.peerDomain,
+          source.namespaceId,
+          signal,
           4 * 1024 * 1024,
         );
     } catch (error) {
+      signal.throwIfAborted();
       const resumeAfter = this.resumeAfter(error, params.after, params.through);
       if (resumeAfter === null) throw error;
-      return { scannedThrough: resumeAfter };
+      const recovered = await this.processTombstones(
+        source,
+        { ...params, after: resumeAfter },
+        signal,
+      );
+      return {
+        ...recovered,
+        appliedThrough:
+          recovered.batch?.response.data.tombstones.at(-1)?.deletionSeq ??
+          params.after,
+      };
     }
     this.assertTombstonePage(source, response.data, params);
     return {
-      scannedThrough: response.data.scannedThrough,
+      // A source can scan past cutoff-blocked facts. Only applied facts move
+      // our durable cursor; an exhausted cutoff waits for messages or a head.
+      appliedThrough:
+        response.data.tombstones.at(-1)?.deletionSeq ?? params.after,
+      hasMore: response.data.hasMore && response.data.tombstones.length > 0,
       batch: { response, frozenTargetSeq: params.through },
     };
   }
@@ -376,6 +426,7 @@ export class FederationThreadForwardRoundExecutorService {
   private async prefetchForwardClosures(
     source: FederationReverseThreadSource,
     response: FederationThreadResourceResponse<FederationMessageQueryPage>,
+    signal: AbortSignal,
   ): Promise<ReadonlyMap<number, InboundForwardWireBundle>> {
     const result = new Map<number, InboundForwardWireBundle>();
     const byBundleId = new Map<string, InboundForwardWireBundle>();
@@ -403,7 +454,8 @@ export class FederationThreadForwardRoundExecutorService {
           await this.threadResources.fetch<InboundForwardWireBundle>(
             source.threadId,
             `/somfp/v1/forward-bundles/${encodeFederationResourceComponent(bundleId)}`,
-            source.peerDomain,
+            source.namespaceId,
+            signal,
             FORWARD_MAX_WIRE_JSON_BYTES,
           );
         if (

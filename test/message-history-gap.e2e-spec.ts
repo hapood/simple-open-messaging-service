@@ -9,9 +9,9 @@ import {
   message,
   messageThread,
   accountThreadState,
-  deletedMessage,
+  messageTombstone,
 } from '../src/database/schema.js';
-import { ContentType } from '../src/database/enums.js';
+import { ContentType, MessageTombstoneProvenance } from '../src/database/enums.js';
 import {
   seedAcceptedRelationship,
   seedSession,
@@ -135,13 +135,24 @@ describe('client message history gaps', () => {
   it('returns body-free tomb slots in both directions with stable pagination and gap coordinates', async () => {
     await database.db.transaction(async (tx) => {
       await requireThreadContentLockInTx(tx, threadId);
-      await tx.insert(deletedMessage).values([
-        { threadId, messageSeq: 11, deletionSeq: 1, type: 'USER_RETRACTION' },
+      await tx.insert(messageTombstone).values([
         {
           threadId,
-          messageSeq: 36,
+          provenance: MessageTombstoneProvenance.LOCAL,
+          publisherNamespaceId: 0,
+          localMessageSeq: 11,
+          deletionSeq: 1,
+          type: 'USER_RETRACTION',
+          consumed: true,
+        },
+        {
+          threadId,
+          provenance: MessageTombstoneProvenance.LOCAL,
+          publisherNamespaceId: 0,
+          localMessageSeq: 36,
           deletionSeq: 2,
           type: 'MODERATION_REMOVAL',
+          consumed: true,
         },
       ]);
       await tx
@@ -205,11 +216,14 @@ describe('client message history gaps', () => {
   it('keeps live enrichment separate and does not expose deleted media content', async () => {
     await database.db.transaction(async (tx) => {
       await requireThreadContentLockInTx(tx, threadId);
-      await tx.insert(deletedMessage).values({
+      await tx.insert(messageTombstone).values({
         threadId,
-        messageSeq: 11,
+        provenance: MessageTombstoneProvenance.LOCAL,
+        publisherNamespaceId: 0,
+        localMessageSeq: 11,
         deletionSeq: 1,
         type: 'USER_RETRACTION',
+        consumed: true,
       });
       await tx
         .update(message)
@@ -288,11 +302,14 @@ describe('client message history gaps', () => {
   it('resolves a local tomb anchor while keeping the tomb contract local-only', async () => {
     await database.db.transaction(async (tx) => {
       await requireThreadContentLockInTx(tx, threadId);
-      await tx.insert(deletedMessage).values({
+      await tx.insert(messageTombstone).values({
         threadId,
-        messageSeq: 36,
+        provenance: MessageTombstoneProvenance.LOCAL,
+        publisherNamespaceId: 0,
+        localMessageSeq: 36,
         deletionSeq: 1,
         type: 'USER_RETRACTION',
+        consumed: true,
       });
       await tx
         .update(message)

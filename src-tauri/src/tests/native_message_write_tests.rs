@@ -52,6 +52,10 @@ async fn delete(owner: &std::sync::Arc<crate::login_connection::LoginConnection>
     .unwrap();
 }
 
+fn deleted_body(seq: i64) -> Value {
+    message_tomb(42, seq, "USER_RETRACTION").unwrap()
+}
+
 fn raw(conn: &Connection, seq: i64) -> Value {
     parse_json(
         conn.query_row(
@@ -62,6 +66,57 @@ fn raw(conn: &Connection, seq: i64) -> Value {
         .unwrap(),
     )
     .unwrap()
+}
+
+#[tokio::test]
+async fn cutoff_uses_actual_rows_not_head_or_absent_facts() {
+    let owner = owner();
+    delete(&owner).await;
+    owner
+        .with_database(|conn| {
+            assert_eq!(read_tombstone_cutoff(conn, 1, 42)?, 4);
+            let tx = conn.transaction().unwrap();
+            update_message_head(&tx, 1, 42, 100)?;
+            put_cached_messages(&tx, 1, vec![body(4), body(20)])?;
+            tx.commit().unwrap();
+            // The tuple is still at zero, the remembered head at 100, actual maximum at 20.
+            assert_eq!(read_tombstone_cutoff(conn, 1, 42)?, 20);
+            let tx = conn.transaction().unwrap();
+            store_message_deletion(&tx, 1, 42, 20, "USER_RETRACTION")?;
+            tx.commit().unwrap();
+            assert_eq!(read_tombstone_cutoff(conn, 1, 42)?, 20);
+            assert_eq!(raw(conn, 20), deleted_body(20));
+            Ok(())
+        })
+        .unwrap();
+    reset_thread_message_cache(&owner, 1, 42).unwrap();
+    owner
+        .with_database(|conn| {
+            assert_eq!(read_tombstone_cutoff(conn, 1, 42)?, 0);
+            assert_eq!(load_message_deletions(conn, 1, 42, vec![4, 20])?.len(), 0);
+            Ok(())
+        })
+        .unwrap();
+}
+
+#[test]
+fn tomb_stub_prevents_live_body_insertion() {
+    let mut conn = Connection::open_in_memory().unwrap();
+    crate::native_db::create_cache_schema(&conn).unwrap();
+    conn.execute(
+        "INSERT INTO messages VALUES(1,42,4,0,?1)",
+        [message_tomb(42, 4, "USER_RETRACTION").unwrap().to_string()],
+    )
+    .unwrap();
+    assert_eq!(read_tombstone_cutoff(&conn, 1, 42).unwrap(), 4);
+    assert_eq!(
+        load_message_deletions(&conn, 1, 42, vec![4]).unwrap().len(),
+        1
+    );
+    let tx = conn.transaction().unwrap();
+    put_cached_messages(&tx, 1, vec![body(4)]).unwrap();
+    tx.commit().unwrap();
+    assert_eq!(raw(&conn, 4), deleted_body(4));
 }
 
 #[tokio::test]
@@ -84,7 +139,7 @@ async fn arrival_orders_never_hydrate_and_deletions_are_not_timeline_messages() 
         delete(&owner).await;
         owner
             .with_database(|conn| {
-                let expected = message_tomb(42, 4, "USER_RETRACTION")?;
+                let expected = deleted_body(4);
                 assert_eq!(raw(conn, 4), expected);
                 assert_eq!(
                     load_message_deletions(conn, 1, 42, vec![4, 4, 5])?,
@@ -129,15 +184,21 @@ async fn arrival_orders_never_hydrate_and_deletions_are_not_timeline_messages() 
             .with_database(|conn| {
                 assert!(load_message_ranges(conn, 1, 42)?.is_empty());
                 assert_eq!(read_deleted_hwm(conn, 1, 42)?, Some(1));
-                assert_eq!(raw(conn, 4), message_tomb(42, 4, "USER_RETRACTION")?);
+                assert!(conn
+                    .query_row("SELECT seq FROM messages WHERE seq=4", [], |r| r
+                        .get::<_, i64>(0))
+                    .optional()
+                    .unwrap()
+                    .is_none());
+                assert_eq!(load_message_deletions(conn, 1, 42, vec![4])?.len(), 0);
                 Ok(())
             })
             .unwrap();
-        assert!(page(&owner, vec![body(4)])
+        assert_eq!(page(&owner, vec![body(4)])
             .await
             .unwrap()
             .messages
-            .is_empty());
+            .len(), 1);
     }
 }
 
@@ -175,7 +236,7 @@ async fn current_coverage_protects_existing_rows_and_absences_and_raw_page_is_va
     assert!(page(&owner, vec![replacement])
         .await
         .unwrap_err()
-        .contains("TOMB contract"));
+        .contains("live bodies only"));
     owner
         .with_database(|conn| {
             assert_eq!(raw(conn, 4), body(4));
@@ -203,10 +264,7 @@ async fn page_returns_only_stored_live_values_for_response_coordinates() {
         vec![body(6)]
     );
     assert_eq!(
-        page(&owner, vec![body(6), body(4)])
-            .await
-            .unwrap()
-            .messages,
+        page(&owner, vec![body(6), body(4)]).await.unwrap().messages,
         vec![body(6), body(4)]
     );
     assert!(page(&owner, vec![]).await.unwrap().messages.is_empty());
@@ -227,7 +285,7 @@ async fn cached_batches_filter_current_coverage_and_tombs_but_allow_both_server_
             let tx = conn.transaction().unwrap();
             put_cached_messages(&tx, 1, (1..=6).map(body).collect())?;
             tx.commit().unwrap();
-            assert_eq!(raw(conn, 4), message_tomb(42, 4, "USER_RETRACTION")?);
+            assert_eq!(raw(conn, 4), deleted_body(4));
             let visible = load_live_messages_by_seqs(conn, 1, 42, &[1, 2, 3, 4, 5, 6])?;
             assert_eq!(visible, vec![body(3), body(5), body(6)]);
             Ok(())
@@ -236,33 +294,29 @@ async fn cached_batches_filter_current_coverage_and_tombs_but_allow_both_server_
 }
 
 #[tokio::test]
-async fn query_tombs_are_normalized_to_invisible_coordinate_markers() {
+async fn wire_tombs_are_rejected_in_message_pages() {
+    let owner = owner();
+    page(&owner, vec![body(4)]).await.unwrap();
+    assert!(page(
+        &owner,
+        vec![message_tomb(42, 4, "USER_RETRACTION").unwrap()]
+    )
+    .await
+    .unwrap_err()
+    .contains("live bodies only"));
+}
+
+#[tokio::test]
+async fn query_tombs_are_rejected_in_message_pages() {
     let owner = owner();
     let mut tomb = body(4);
     tomb["contentType"] = json!("TOMB");
     tomb["isDeleted"] = json!(true);
     tomb["deletionType"] = json!("MODERATION_REMOVAL");
-    assert!(page(&owner, vec![tomb]).await.unwrap().messages.is_empty());
-    owner
-        .with_database(|conn| {
-            assert_eq!(raw(conn, 4), message_tomb(42, 4, "MODERATION_REMOVAL")?);
-            assert_eq!(
-                count_unread_message_slots(
-                    conn,
-                    1,
-                    42,
-                    0,
-                    10,
-                    &MessageCountOwner {
-                        account: "me".into(),
-                        namespace_id: 0
-                    }
-                )?,
-                0
-            );
-            Ok(())
-        })
-        .unwrap();
+    assert!(page(&owner, vec![tomb])
+        .await
+        .unwrap_err()
+        .contains("live bodies only"));
 }
 
 #[tokio::test]
@@ -307,7 +361,7 @@ async fn parallel_body_and_deletion_commits_use_the_same_physical_exclusion() {
     body_result.unwrap();
     owner
         .with_database(|conn| {
-            assert_eq!(raw(conn, 4), message_tomb(42, 4, "USER_RETRACTION")?);
+            assert_eq!(raw(conn, 4), deleted_body(4));
             assert_eq!(read_deleted_hwm(conn, 1, 42)?, Some(1));
             assert_eq!(
                 load_message_ranges(conn, 1, 42)?[0].state,
@@ -349,8 +403,8 @@ async fn unread_counts_only_non_self_non_deleted_messages_without_a_page_limit()
             messages[0]["creator"] = json!({"account":"me","namespaceId":0});
             messages[1]["creator"] = json!({"account":"me","namespaceId":2});
             messages[2]["creator"] = Value::Null;
-            messages[3] = message_tomb(42, 4, "USER_RETRACTION")?;
             put_cached_messages(&tx, 1, messages)?;
+            store_message_deletion(&tx, 1, 42, 4, "USER_RETRACTION")?;
             tx.commit().unwrap();
             let owner = MessageCountOwner {
                 account: "me".into(),

@@ -36,15 +36,12 @@ export interface MessageThreadLiveCallbacks {
     replySeq: number,
     quote: import('../message-cards/chat-item').ChatMsgData['quote'],
   ) => void;
-  onNewerAvailable: (seq: number) => void;
-  onMediaStatus: (seq: number, status: MediaStatus) => void;
+  onNewerAvailable: (seq: number, previousLatestSeq?: number) => void;
 }
 
 /** The complete source contract consumed by the production thread shell. */
 export interface MessageThreadSource extends CbSource<ChatItemData> {
   prepareEntry(): Promise<PreparedMessageEntry>;
-  /** One finite newer page after the frozen entry cursor, including successful empty results. */
-  requestEntrySuffix(count: number): CbDemand<ChatItemData>;
   /** Optional for alternate offline/demo sources; production resolves through the repository. */
   resolveHistoryAnchor?(
     anchor: HistoryAnchor,

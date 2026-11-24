@@ -15,8 +15,11 @@ import { DurableTaskDispatcherService } from '../durable-task/durable-task-dispa
 import { DurableTaskType } from '../durable-task/durable-task.constants.js';
 import type { DurableTask } from '../durable-task/durable-task.types.js';
 import { PushService } from '../push/push.service.js';
+import { ClientStateFeedService } from '../client-state-feed/client-state-feed.service.js';
 import {
   parseThreadFanoutTarget,
+  parseThreadMetaFanoutTarget,
+  parseThreadTombFanoutTarget,
   threadFanoutScope,
 } from './thread-fanout-task.js';
 import {
@@ -40,6 +43,7 @@ export class ThreadFanoutTaskHandler implements OnModuleInit, OnModuleDestroy {
     private readonly push: PushService,
     private readonly progress: ThreadFanoutProgressService,
     private readonly sse: SseService,
+    private readonly clientStateFeed: ClientStateFeedService,
   ) {}
 
   onModuleInit(): void {
@@ -47,6 +51,14 @@ export class ThreadFanoutTaskHandler implements OnModuleInit, OnModuleDestroy {
       this.dispatcher.register({
         taskType: DurableTaskType.FAN_OUT_THREAD_CONTENT,
         execute: (task) => this.execute(task),
+      }),
+      this.dispatcher.register({
+        taskType: DurableTaskType.FAN_OUT_THREAD_TOMB,
+        execute: (task) => this.executeTomb(task),
+      }),
+      this.dispatcher.register({
+        taskType: DurableTaskType.FAN_OUT_THREAD_META,
+        execute: (task) => this.executeMeta(task),
       }),
       this.dispatcher.register({
         taskType: DurableTaskType.FAN_OUT_ACCOUNT_THREAD_CONTENT,
@@ -76,9 +88,6 @@ export class ThreadFanoutTaskHandler implements OnModuleInit, OnModuleDestroy {
     const checkpoint = await this.progress.read(task.id);
     if (checkpoint.phase === 'DONE') return;
     if (checkpoint.phase === 'FEED') {
-      // P2P and groups share this checkpointed loop. Each recipient commits in
-      // its own transaction; the window only bounds work before checking for a
-      // newer coalesced target. Processing never creates per-account child tasks.
       const audience = (
         await this.participants.getActiveParticipantUserIds(target.threadId)
       )
@@ -111,6 +120,90 @@ export class ThreadFanoutTaskHandler implements OnModuleInit, OnModuleDestroy {
     await this.progress.save(task.id, { phase: 'DONE', afterAccountId: 0 });
   }
 
+  private async executeTomb(task: DurableTask): Promise<void> {
+    const target = parseThreadTombFanoutTarget(task.payload);
+    if (
+      task.kind !== 'PROJECTION' ||
+      task.scopeType !== 'THREAD' ||
+      task.taskType !== DurableTaskType.FAN_OUT_THREAD_TOMB ||
+      task.scopeKey !==
+        threadFanoutScope(DurableTaskType.FAN_OUT_THREAD_TOMB, target.threadId)
+    ) {
+      throw new Error('Thread tomb fanout task scope mismatch');
+    }
+    const checkpoint = await this.progress.read(task.id);
+    if (checkpoint.phase === 'DONE') return;
+    if (checkpoint.phase === 'FEED') {
+      const audience = (
+        await this.participants.getActiveParticipantUserIds(target.threadId)
+      )
+        .map((member) => member.userId)
+        .filter((id) => id > checkpoint.afterAccountId)
+        .sort((a, b) => a - b);
+      for (
+        let start = 0;
+        start < audience.length;
+        start += FANOUT_YIELD_WINDOW
+      ) {
+        if (await this.progress.yieldTombToNewer(task.id, target)) return;
+        for (const userId of audience.slice(
+          start,
+          start + FANOUT_YIELD_WINDOW,
+        )) {
+          const updates = await this.progress.projectActiveTombAccount(
+            task.id,
+            target,
+            userId,
+          );
+          this.clientStateFeed.notifyFeedUpdates(updates);
+        }
+      }
+    }
+    await this.progress.save(task.id, { phase: 'DONE', afterAccountId: 0 });
+  }
+
+  private async executeMeta(task: DurableTask): Promise<void> {
+    const target = parseThreadMetaFanoutTarget(task.payload);
+    if (
+      task.kind !== 'PROJECTION' ||
+      task.scopeType !== 'THREAD' ||
+      task.taskType !== DurableTaskType.FAN_OUT_THREAD_META ||
+      task.scopeKey !==
+        threadFanoutScope(DurableTaskType.FAN_OUT_THREAD_META, target.threadId)
+    ) {
+      throw new Error('Thread meta fanout task scope mismatch');
+    }
+    const checkpoint = await this.progress.read(task.id);
+    if (checkpoint.phase === 'DONE') return;
+    if (checkpoint.phase === 'FEED') {
+      const audience = (
+        await this.participants.getActiveParticipantUserIds(target.threadId)
+      )
+        .map((member) => member.userId)
+        .filter((id) => id > checkpoint.afterAccountId)
+        .sort((a, b) => a - b);
+      for (
+        let start = 0;
+        start < audience.length;
+        start += FANOUT_YIELD_WINDOW
+      ) {
+        if (await this.progress.yieldMetaToNewer(task.id, target)) return;
+        for (const userId of audience.slice(
+          start,
+          start + FANOUT_YIELD_WINDOW,
+        )) {
+          const updates = await this.progress.projectActiveMetaAccount(
+            task.id,
+            target,
+            userId,
+          );
+          this.clientStateFeed.notifyFeedUpdates(updates);
+        }
+      }
+    }
+    await this.progress.save(task.id, { phase: 'DONE', afterAccountId: 0 });
+  }
+
   private async executeAccount(task: DurableTask): Promise<void> {
     const target = parseAccountThreadFanoutTarget(task.payload);
     if (
@@ -122,8 +215,12 @@ export class ThreadFanoutTaskHandler implements OnModuleInit, OnModuleDestroy {
     )
       throw new Error('Account thread fanout task scope mismatch');
     if ((await this.progress.read(task.id)).phase === 'DONE') return;
-    const projected = await this.progress.projectAccount(task.id, target);
+    const { projected, clientUpdates } = await this.progress.projectAccount(
+      task.id,
+      target,
+    );
     await this.wakeBatch(projected);
+    this.clientStateFeed.notifyFeedUpdates(clientUpdates);
   }
 
   /** Best-effort hints. A process restart during the five-second window drops

@@ -18,6 +18,7 @@ export async function decideMemberGroupRound(
   userId: number,
   requestId: string,
   decision: RequestDecision,
+  note?: string,
 ) {
   const resolution = await deps.requests.resolveMemberGroupRound(
     userId,
@@ -30,6 +31,7 @@ export async function decideMemberGroupRound(
       threadId: resolution.threadId,
       memberUserId: userId,
       decision: decision === 'ACCEPT' ? 'ACCEPTED' : 'REVOKED',
+      ...(note !== undefined ? { note } : {}),
     },
     {
       requestDecision: {

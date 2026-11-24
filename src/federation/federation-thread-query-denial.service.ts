@@ -21,7 +21,6 @@ export class FederationThreadQueryDenialService {
 
   async handleThreadQueryForbidden(
     threadId: number,
-    peerDomain: string,
     namespaceId: number,
     expectedAuthorizationEpoch: number,
   ): Promise<
@@ -146,7 +145,6 @@ export class FederationThreadQueryDenialService {
           actorUserId: await systemAccountIdInTx(tx),
           payload: {
             threadId,
-            peerDomain,
             namespaceId,
             expectedAuthorizationEpoch,
           },

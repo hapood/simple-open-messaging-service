@@ -1,6 +1,7 @@
 import { Test } from '@nestjs/testing';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import { DatabaseService } from '../database/database.service.js';
 import { MessageService } from '../message/message.service.js';
@@ -11,7 +12,7 @@ import { UploadActivityService } from './upload-activity.service.js';
 import { publishContentAddressedFile } from './cas-storage.js';
 
 async function fixture(invalidTarget: boolean) {
-  const root = await mkdtemp('/tmp/opencode/upload-publication-');
+  const root = await mkdtemp(join(tmpdir(), 'upload-publication-'));
   onTestFinished(() => rm(root, { recursive: true, force: true }));
   const source = join(root, 'source.part');
   const target = join(root, 'formal');

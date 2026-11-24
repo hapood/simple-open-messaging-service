@@ -109,7 +109,9 @@ describe('restage failed inbound media', () => {
       table: tables.message,
       values: expect.objectContaining({ localState: 'STUB' }),
     });
-    const coordination = s.sets.find((entry) => entry.table === tables.pendingMedia);
+    const coordination = s.sets.find(
+      (entry) => entry.table === tables.pendingMedia,
+    );
     expect(coordination).toBeDefined();
     expect(coordination!.values).not.toHaveProperty('status');
     expect(coordination!.values).not.toHaveProperty('failReason');

@@ -509,7 +509,7 @@ export class ForwardBundleService {
         enrichedRows[index].content,
       );
       const selectedTarget =
-        resolvedQuote && resolvedQuote.seq > 0
+        resolvedQuote?.seq !== undefined && resolvedQuote.seq > 0
           ? selectedIndex.get(`${message.threadId}:${resolvedQuote.seq}`)
           : undefined;
       messages.push({
@@ -1059,11 +1059,12 @@ export class ForwardBundleService {
    * InboundForwardWireBundle (untrusted), and the runtime checks below — not the parameter
    * type — are what make it a ForwardWireBundle.
    */
-  async importClosure(
-    sourceDomain: string,
-    closure: InboundForwardWireBundle,
-    transaction?: DatabaseTransaction,
-  ): Promise<{ localRootBundleId: bigint; depth: number }> {
+  validateWireClosure(closure: InboundForwardWireBundle): {
+    wire: ForwardWireBundle;
+    assetBytes: Map<string, number>;
+    depth: number;
+    bundles: Map<string, { depth: number; messageCount: number }>;
+  } {
     if (
       Buffer.byteLength(JSON.stringify(closure)) >
         FORWARD_MAX_WIRE_JSON_BYTES ||
@@ -1188,10 +1189,23 @@ export class ForwardBundleService {
     const wire = closure as ForwardWireBundle;
     this.validateWireBundleDigests(wire, (reason) => this.invalidWire(reason));
 
-    const { depth, bundles: bundleMetrics } = this.validateClosureGraph(
-      wire,
-      (reason) => this.invalidWire(reason),
+    const { depth, bundles } = this.validateClosureGraph(wire, (reason) =>
+      this.invalidWire(reason),
     );
+    return { wire, assetBytes, depth, bundles };
+  }
+
+  async importClosure(
+    sourceDomain: string,
+    closure: InboundForwardWireBundle,
+    transaction?: DatabaseTransaction,
+  ): Promise<{ localRootBundleId: bigint; depth: number }> {
+    const {
+      wire,
+      assetBytes,
+      depth,
+      bundles: bundleMetrics,
+    } = this.validateWireClosure(closure);
 
     const client = transaction ?? this.database.db;
     const existing = await client.query.forwardBundle.findFirst({

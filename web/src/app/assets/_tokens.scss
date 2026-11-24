@@ -98,6 +98,12 @@ $app-gray-900: #111827;
   --im-composer-send-bg: var(--app-action-primary);
   --im-composer-send-hover: var(--app-action-primary-hover);
   --im-composer-send-text: var(--app-on-action-primary);
+  // Muted fill for the composer silhouette revealed while the real composer steps aside.
+  --im-composer-placeholder-fill: color-mix(
+    in srgb,
+    var(--app-text-muted) 16%,
+    transparent
+  );
 
   // Borders & interaction-state fills (replaces #cccccc/#dddddd/#e5e7eb/#e5e6eb/#e3e5e8/#d1d5db/#c9ced6)
   --app-border: #dedfdf;
@@ -212,6 +218,11 @@ $app-gray-900: #111827;
   // aggregate is consumption-only so no producer can accidentally fold one source into another.
   --soms-composer-height: 0px;
   --soms-keyboard-height: 0px;
+  // Composer slide-down fade when it steps aside. Must equal COMPOSER_FADE_DURATION_MS and
+  // COMPOSER_SLIDE_OFFSET_DP in the Android NativeComposerController (with the same
+  // cubic-bezier(0.2, 0, 0, 1) as --app-ease-standard) so both platforms move identically.
+  --im-composer-fade-duration: 140ms;
+  --im-composer-slide-offset: 12px;
   --soms-bottom-occupation: calc(
     var(--soms-composer-height) + var(--soms-keyboard-height) +
       var(--soms-safe-bottom)
@@ -395,6 +406,12 @@ $app-gray-900: #111827;
   --im-composer-send-bg: var(--app-action-primary);
   --im-composer-send-hover: var(--app-action-primary-hover);
   --im-composer-send-text: var(--app-on-action-primary);
+  // Muted fill for the composer silhouette revealed while the real composer steps aside.
+  --im-composer-placeholder-fill: color-mix(
+    in srgb,
+    var(--app-text-muted) 16%,
+    transparent
+  );
 
   // Dark elevation. Lift the floating-panel fill with an 8% primary tint (M3 dark tonal elevation — the
   // same convention as --im-sticky-date-bg) so the surface reads as a layer above the deep --app-bg, and

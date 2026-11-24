@@ -35,7 +35,7 @@ export async function mergeMirrorGroupMetaTargetInTx(
   await requireThreadContentLockInTx(tx, mirror.id);
   // A non-positive coordinate carries no window: the row exists so later
   // merges can advance, but there is nothing to snapshot yet.
-  const windowThrough = input.metaTargetId > 0 ? input.metaTargetId : null;
+  const windowThrough = input.metaTargetId > 0 ? input.metaTargetId : 0;
   await tx.execute(sql`
     INSERT INTO "GroupMeta" ("threadId", "metaTargetId", "metaRecoveryThroughId")
     VALUES (${mirror.id}, ${input.metaTargetId}, ${windowThrough})

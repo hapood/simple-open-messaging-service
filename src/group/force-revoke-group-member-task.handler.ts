@@ -40,7 +40,7 @@ export class ForceRevokeGroupMemberTaskHandler
   }
 
   async execute(task: DurableTask): Promise<void> {
-    if (task.payload.peerDomain !== undefined) {
+    if (task.payload.direction !== undefined) {
       const command = readQueryDeniedGroupMembershipRevocationTask(task);
       if (command.direction === 'GROUP')
         await this.groupAuthoredIntents.executeQueryDeniedRevocation({

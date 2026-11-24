@@ -45,7 +45,6 @@ describe('mirror Group Meta rounds', () => {
   let localUserId: number;
   const group: MirrorGroupAddress = {
     account: groupAccount,
-    domain: originDomain,
     publisherNamespaceId: 0,
   };
 
@@ -285,7 +284,7 @@ describe('mirror Group Meta rounds', () => {
       metaEndId: 9,
       metaTargetId: 9,
       metaProcessedThroughId: 9,
-      metaRecoveryThroughId: null,
+      metaRecoveryThroughId: 0,
     });
     // Group Meta commits only version references, even before profile content exists.
     expect(
@@ -349,7 +348,7 @@ describe('mirror Group Meta rounds', () => {
       .where(eq(groupMeta.threadId, threadId));
     await database.db
       .update(groupMeta)
-      .set({ metaRecoveryThroughId: null })
+      .set({ metaRecoveryThroughId: 0 })
       .where(eq(groupMeta.threadId, threadId));
     await expect(
       database.db.transaction((tx) =>
@@ -370,7 +369,7 @@ describe('mirror Group Meta rounds', () => {
     );
     await database.db
       .update(groupMeta)
-      .set({ metaRecoveryThroughId: null })
+      .set({ metaRecoveryThroughId: 0 })
       .where(eq(groupMeta.threadId, threadId));
 
     await database.db.transaction((tx) =>
@@ -475,7 +474,7 @@ describe('mirror Group Meta rounds', () => {
     expect(await readMirrorMeta()).toMatchObject({
       metaEndId: 8,
       metaProcessedThroughId: 8,
-      metaRecoveryThroughId: null,
+      metaRecoveryThroughId: 0,
     });
   });
 
@@ -485,7 +484,7 @@ describe('mirror Group Meta rounds', () => {
     );
     await database.db
       .update(groupMeta)
-      .set({ metaRecoveryThroughId: null })
+      .set({ metaRecoveryThroughId: 0 })
       .where(eq(groupMeta.threadId, threadId));
 
     // Live delta observation: the member joins and later departs, leaving a
@@ -550,7 +549,7 @@ describe('mirror Group Meta rounds', () => {
     );
     await database.db
       .update(groupMeta)
-      .set({ metaRecoveryThroughId: null })
+      .set({ metaRecoveryThroughId: 0 })
       .where(eq(groupMeta.threadId, threadId));
     await database.db.transaction((tx) =>
       finalizeDeltaMirrorMetaRoundInTx(tx, {
@@ -561,7 +560,7 @@ describe('mirror Group Meta rounds', () => {
     expect(await readMirrorMeta()).toMatchObject({
       metaEndId: 3,
       metaProcessedThroughId: 3,
-      metaRecoveryThroughId: null,
+      metaRecoveryThroughId: 0,
     });
   });
 
@@ -571,7 +570,7 @@ describe('mirror Group Meta rounds', () => {
     );
     await database.db
       .update(groupMeta)
-      .set({ metaRecoveryThroughId: null })
+      .set({ metaRecoveryThroughId: 0 })
       .where(eq(groupMeta.threadId, threadId));
     await database.db.transaction((tx) =>
       applyDeltaMirrorMetaItemInTx(tx, {
@@ -632,7 +631,7 @@ describe('mirror Group Meta rounds', () => {
 
     await database.db
       .update(groupMeta)
-      .set({ metaProcessedThroughId: 2, metaRecoveryThroughId: null })
+      .set({ metaProcessedThroughId: 2, metaRecoveryThroughId: 0 })
       .where(eq(groupMeta.threadId, threadId));
     await database.db.transaction((tx) =>
       reopenMirrorMetaRecoveryInTx(tx, group),
@@ -915,7 +914,7 @@ describe('mirror Group Meta rounds', () => {
     );
     await database.db
       .update(groupMeta)
-      .set({ metaRecoveryThroughId: null })
+      .set({ metaRecoveryThroughId: 0 })
       .where(eq(groupMeta.threadId, threadId));
     const input = {
       group,
@@ -959,7 +958,7 @@ describe('mirror Group Meta rounds', () => {
     );
     await database.db
       .update(groupMeta)
-      .set({ metaRecoveryThroughId: null })
+      .set({ metaRecoveryThroughId: 0 })
       .where(eq(groupMeta.threadId, threadId));
     await database.db
       .update(relationshipPair)
@@ -1002,7 +1001,7 @@ describe('mirror Group Meta rounds', () => {
     );
     await database.db
       .update(groupMeta)
-      .set({ metaRecoveryThroughId: null })
+      .set({ metaRecoveryThroughId: 0 })
       .where(eq(groupMeta.threadId, threadId));
     await database.db
       .update(identityNamespace)
@@ -1050,7 +1049,7 @@ describe('mirror Group Meta rounds', () => {
     );
     await database.db
       .update(groupMeta)
-      .set({ metaRecoveryThroughId: null })
+      .set({ metaRecoveryThroughId: 0 })
       .where(eq(groupMeta.threadId, threadId));
     await database.db.transaction((tx) =>
       applyDeltaMirrorMetaItemInTx(tx, {
@@ -1193,7 +1192,7 @@ describe('mirror Group Meta rounds', () => {
     );
     await database.db
       .update(groupMeta)
-      .set({ metaRecoveryThroughId: null })
+      .set({ metaRecoveryThroughId: 0 })
       .where(eq(groupMeta.threadId, threadId));
     await database.db.transaction((tx) =>
       applyDeltaMirrorMetaItemInTx(tx, {

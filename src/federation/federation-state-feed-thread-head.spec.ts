@@ -53,8 +53,7 @@ describe('State Feed content heads respect relationship initialization', () => {
           {
             threadId: 31,
             namespaceId: 7,
-            peerDomain: 'peer.test',
-            direction: 'forward',
+            mode: 'thread',
           },
         ]);
       } else {

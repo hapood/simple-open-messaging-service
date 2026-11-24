@@ -16,13 +16,24 @@ export function threadFanoutAdmissionSql(params: {
     ? 'FAN_OUT_FEDERATION_THREAD_CONTENT'
     : 'FAN_OUT_THREAD_CONTENT';
   const prefix = sql.raw(params.prefix);
-  return sql`
-    ${prefix}_merge AS (
-      UPDATE "DurableTask" d SET "updatedAt" = CURRENT_TIMESTAMP, payload = jsonb_build_object(
+  const mergePayload = params.federation
+    ? sql`jsonb_build_object(
         'threadId', ${params.threadId}::integer,
         'messageEndSeq', GREATEST((d.payload->>'messageEndSeq')::bigint, (SELECT seq FROM system_message)),
         'tombstoneEndSeq', GREATEST((d.payload->>'tombstoneEndSeq')::bigint,
-          (SELECT "tombstoneEndSeq" FROM seq_alloc)))
+          (SELECT "tombstoneEndSeq" FROM seq_alloc)))`
+    : sql`jsonb_build_object(
+        'threadId', ${params.threadId}::integer,
+        'messageEndSeq', GREATEST((d.payload->>'messageEndSeq')::bigint, (SELECT seq FROM system_message)))`;
+  const insertPayload = params.federation
+    ? sql`jsonb_build_object('threadId', ${params.threadId}::integer,
+        'messageEndSeq', (SELECT seq FROM system_message),
+        'tombstoneEndSeq', (SELECT "tombstoneEndSeq" FROM seq_alloc))`
+    : sql`jsonb_build_object('threadId', ${params.threadId}::integer,
+        'messageEndSeq', (SELECT seq FROM system_message))`;
+  return sql`
+    ${prefix}_merge AS (
+      UPDATE "DurableTask" d SET "updatedAt" = CURRENT_TIMESTAMP, payload = ${mergePayload}
       WHERE EXISTS (SELECT 1 FROM system_message) AND d.kind = 'PROJECTION'
         AND d."scopeType" = 'THREAD' AND d."scopeKey" = ${scopeKey}
         AND d."taskType" = ${taskType} AND d.status = 'PENDING'
@@ -33,9 +44,7 @@ export function threadFanoutAdmissionSql(params: {
       SELECT 'PROJECTION'::"DurableTaskKind", 'THREAD'::"DurableTaskScopeType", ${scopeKey},
         ${taskType},
         (SELECT id FROM "Account" WHERE account = '$system'),
-        jsonb_build_object('threadId', ${params.threadId}::integer,
-          'messageEndSeq', (SELECT seq FROM system_message),
-          'tombstoneEndSeq', (SELECT "tombstoneEndSeq" FROM seq_alloc)),
+        ${insertPayload},
         ${scopeKey}, 'PENDING'::"DurableTaskStatus"
       WHERE EXISTS (SELECT 1 FROM system_message)
         AND NOT EXISTS (SELECT 1 FROM ${prefix}_merge)

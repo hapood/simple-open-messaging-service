@@ -190,7 +190,11 @@ describe('shared federation media transfer', () => {
     const s = setup();
     await Promise.all([
       s.service.receive(s.input),
-      s.service.receive({ ...s.input, peerDomain: 'other.test', namespaceId: 8 }),
+      s.service.receive({
+        ...s.input,
+        peerDomain: 'other.test',
+        namespaceId: 8,
+      }),
     ]);
     expect(s.events).toEqual(['charge', 'transfer']);
     expect(s.quota.claimFile).toHaveBeenCalledWith(7, 1, 4n);

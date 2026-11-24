@@ -2,7 +2,11 @@ import type { Mock } from 'vitest';
 import { provideZonelessChangeDetection, signal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { provideTransloco, TranslocoService } from '@jsverse/transloco';
-import { firstValueFrom } from 'rxjs';
+import { firstValueFrom, of, Subject } from 'rxjs';
+import {
+  MediaFileProgressService,
+  type MediaFileProgress,
+} from '../../services/media-file-progress.service';
 import { MEDIA_STATUS, type AlbumMedia } from '../message-cards/chat-item';
 import type { ImageDownloadTask } from '../../services/image-download.service';
 import { ImageDownloadService } from '../../services/image-download.service';
@@ -10,7 +14,7 @@ import { DownloadService } from '../../services/download.service';
 import { MessageRepository } from '../../services/message-repository.service';
 import { MsgService } from '../../services/message.service';
 import { ToastService } from '../../services/toast.service';
-import { MediaAvailabilityService } from '../../services/media-availability.service';
+
 import { InlineTranslocoLoader } from '../../i18n/transloco.loader';
 import { GalleryViewerComponent } from './gallery-viewer.component';
 
@@ -21,8 +25,19 @@ describe('GalleryViewerComponent — deferred image actions', () => {
     w: 800,
     h: 600,
     size: 1536,
+    name: 'photo.jpg',
+    mimeType: 'image/jpeg',
+    senderName: null,
+    sentAt: null,
     msgId: 42,
   };
+  let deleted: Subject<{
+    threadId: number;
+    deletions: Array<{
+      seq: number;
+      type: 'USER_RETRACTION' | 'MODERATION_REMOVAL';
+    }>;
+  }>;
   let downloads: FakeGalleryDownloads;
   let toast: {
     info: Mock;
@@ -30,6 +45,7 @@ describe('GalleryViewerComponent — deferred image actions', () => {
   };
 
   beforeEach(async () => {
+    deleted = new Subject();
     downloads = new FakeGalleryDownloads();
     toast = {
       info: vi.fn().mockName('info'),
@@ -44,21 +60,36 @@ describe('GalleryViewerComponent — deferred image actions', () => {
           loader: InlineTranslocoLoader,
         }),
         { provide: ImageDownloadService, useValue: downloads },
-        { provide: MsgService, useValue: {} },
-        { provide: MessageRepository, useValue: {} },
         {
-          provide: MediaAvailabilityService,
+          provide: MediaFileProgressService,
           useValue: {
-            register: vi.fn(() => ({
-              status: signal(MEDIA_STATUS.READY),
-              subscribe: vi.fn(() => () => undefined),
-              onWithdrawn: vi.fn(() => () => undefined),
-              unregister: vi.fn(),
-            })),
-            retry: vi.fn().mockResolvedValue(MEDIA_STATUS.READY),
+            observe: vi.fn(() =>
+              of({
+                status: 'ready',
+                loaded: 100,
+                total: 100,
+                bytesPerSecond: null,
+              }),
+            ),
           },
         },
-        { provide: DownloadService, useValue: { download: vi.fn(async () => undefined) } },
+        {
+          provide: MsgService,
+          useValue: {
+            relocalizeMedia: vi.fn(() =>
+              of({ code: 0, data: { status: MEDIA_STATUS.PENDING } }),
+            ),
+          },
+        },
+        {
+          provide: MessageRepository,
+          useValue: { deletedLive$: deleted.asObservable() },
+        },
+
+        {
+          provide: DownloadService,
+          useValue: { download: vi.fn(async () => undefined) },
+        },
         { provide: ToastService, useValue: toast },
       ],
     });
@@ -67,8 +98,9 @@ describe('GalleryViewerComponent — deferred image actions', () => {
     i18n.setActiveLang('en');
   });
 
-  it('keeps load and download as distinct intents', () => {
-    const component = create();
+  it('keeps load and download as distinct intents', async () => {
+    const fixture = await mount();
+    const component = fixture.componentInstance;
 
     expect(component.currentNeedsLoad()).toBe(true);
     expect(component.formatBytes(media.size ?? 0)).toBe('1.5 KB');
@@ -79,43 +111,38 @@ describe('GalleryViewerComponent — deferred image actions', () => {
 
     component.saveCurrent(new MouseEvent('click'));
     expect(downloads.start).not.toHaveBeenCalled();
-    expect(TestBed.inject(DownloadService).download).toHaveBeenCalledWith(expect.objectContaining({ path: media.src, threadId: 7 }));
+    expect(TestBed.inject(DownloadService).download).toHaveBeenCalledWith(
+      expect.objectContaining({ path: media.src, threadId: 7 }),
+    );
   });
 
   it('preserves the actual MIME type when saving media', async () => {
-    const component = create([{ ...media, src: '/uploads/animation.webp', mimeType: 'image/webp', name: 'animation.webp' }]);
+    const component = create([
+      {
+        ...media,
+        src: '/uploads/animation.webp',
+        mimeType: 'image/webp',
+        name: 'animation.webp',
+      },
+    ]);
     await component.saveCurrent(new MouseEvent('click'));
-    expect(TestBed.inject(DownloadService).download).toHaveBeenCalledWith(expect.objectContaining({ mimeType: 'image/webp', filename: 'animation.webp' }));
+    expect(TestBed.inject(DownloadService).download).toHaveBeenCalledWith(
+      expect.objectContaining({
+        mimeType: 'image/webp',
+        filename: 'animation.webp',
+      }),
+    );
   });
 
   it('does not infer a file format from the media category', async () => {
     const component = create([media]);
     await component.saveCurrent(new MouseEvent('click'));
-    expect(TestBed.inject(DownloadService).download).toHaveBeenCalledWith(expect.objectContaining({ mimeType: 'application/octet-stream' }));
-  });
-
-  it('shows dynamic byte units and delegates cancellation for the current image', () => {
-    const component = create();
-    downloads.set(task('downloading', 768, 1536));
-
-    expect(component.currentProgress()).toBe(50);
-    expect(component.currentProgressText()).toBe('768 B / 1.5 KB');
-
-    component.cancelCurrent();
-    expect(downloads.cancel).toHaveBeenCalledWith(media);
-  });
-
-  it('treats cancelling a queued save as neutral and does not toast later task changes', async () => {
-    const component = create();
-    component.saveCurrent(new MouseEvent('click'));
-    component.cancelCurrent();
-
-    downloads.set(task('failed', 768, 1536));
-    TestBed.flushEffects();
-    await Promise.resolve();
-
-    expect(toast.warn).not.toHaveBeenCalled();
-    expect(toast.info).not.toHaveBeenCalled();
+    expect(TestBed.inject(DownloadService).download).toHaveBeenCalledWith(
+      expect.objectContaining({
+        mimeType: 'image/jpeg',
+        filename: 'photo.jpg',
+      }),
+    );
   });
 
   it('does not infer download completion from unrelated image cache tasks', async () => {
@@ -138,6 +165,12 @@ describe('GalleryViewerComponent — deferred image actions', () => {
       media,
       {
         kind: 'video',
+        duration: 12,
+        size: 4096,
+        name: 'clip.mp4',
+        mimeType: 'video/mp4',
+        senderName: null,
+        sentAt: null,
         src: '/uploads/clip.mp4',
         w: 1280,
         h: 720,
@@ -217,6 +250,12 @@ describe('GalleryViewerComponent — deferred image actions', () => {
   it('destroys video A on image switch and rebuilds it only when returning', () => {
     const video: AlbumMedia = {
       kind: 'video',
+      duration: 12,
+      size: 4096,
+      name: 'clip.mp4',
+      mimeType: 'video/mp4',
+      senderName: null,
+      sentAt: null,
       src: '/uploads/a.mp4',
       w: 1280,
       h: 720,
@@ -271,6 +310,12 @@ describe('GalleryViewerComponent — deferred image actions', () => {
   it('starts the active Android video through Rust without a second play-button tap', async () => {
     const video: AlbumMedia = {
       kind: 'video',
+      duration: 12,
+      size: 4096,
+      name: 'clip.mp4',
+      mimeType: 'video/mp4',
+      senderName: null,
+      sentAt: null,
       src: '/uploads/video',
       w: 1080,
       h: 1920,
@@ -373,6 +418,305 @@ describe('GalleryViewerComponent — deferred image actions', () => {
     action.click();
     expect(save).toHaveBeenCalledWith(0);
   });
+
+  it('mounts an independent thumbnail cell for every visual resource beyond six items', async () => {
+    const observe = TestBed.inject(MediaFileProgressService).observe;
+    const fixture = TestBed.createComponent(GalleryViewerComponent);
+    const images = Array.from({ length: 8 }, (_, index) => ({
+      ...media,
+      msgId: index + 1,
+    }));
+    fixture.componentRef.setInput('images', images);
+    fixture.componentRef.setInput('threadId', 7);
+    fixture.componentRef.setInput('startIndex', 0);
+    // Isolate rail composition from the original-media player lifecycle.
+    vi.spyOn(fixture.componentInstance, 'ngAfterViewInit').mockImplementation(
+      () => undefined,
+    );
+    fixture.detectChanges();
+    await fixture.whenStable();
+    expect(
+      fixture.nativeElement.querySelectorAll('.gv-thumb app-album-media-cell'),
+    ).toHaveLength(8);
+    // Eight rail cells plus the current detail surface own their observations.
+    expect(observe).toHaveBeenCalledTimes(9);
+    fixture.destroy();
+  });
+
+  const managedMedia: AlbumMedia = {
+    ...media,
+    src: `/uploads/msg-assets/aa/aa/${'a'.repeat(64)}?threadId=7&seq=42`,
+    msgId: 999,
+  };
+
+  it('retries the authorizing carrier rather than the snapshot display ID', async () => {
+    const fixture = await mount([managedMedia]);
+    fixture.componentRef.setInput('threadId', 0);
+    const observe = vi.mocked(TestBed.inject(MediaFileProgressService).observe);
+    const before = observe.mock.calls.length;
+    await fixture.componentInstance.relocalizeCurrent();
+    await fixture.whenStable();
+    expect(
+      TestBed.inject(MsgService).relocalizeMedia,
+    ).toHaveBeenCalledExactlyOnceWith(7, 42);
+    expect(observe).toHaveBeenCalledTimes(before + 1);
+    fixture.destroy();
+  });
+
+  it('keeps download history in the opening context without rewriting the authorized URL', async () => {
+    const fixture = await mount([managedMedia]);
+    fixture.componentRef.setInput('threadId', 0);
+    await fixture.componentInstance.saveCurrent(new MouseEvent('click'));
+    expect(
+      TestBed.inject(DownloadService).download,
+    ).toHaveBeenCalledExactlyOnceWith({
+      threadId: 0,
+      path: managedMedia.src,
+      filename: managedMedia.name,
+      mimeType: managedMedia.mimeType,
+    });
+    fixture.destroy();
+  });
+
+  it('does not reopen progress when localization retry is rejected', async () => {
+    vi.mocked(TestBed.inject(MsgService).relocalizeMedia).mockReturnValue(
+      of({ code: 1, message: 'retry rejected' }),
+    );
+    const fixture = await mount([managedMedia]);
+    const observe = vi.mocked(TestBed.inject(MediaFileProgressService).observe);
+    const before = observe.mock.calls.length;
+    await fixture.componentInstance.relocalizeCurrent();
+    await fixture.whenStable();
+    expect(observe).toHaveBeenCalledTimes(before);
+    expect(fixture.componentInstance.loadErrors().has(0)).toBe(true);
+    fixture.destroy();
+  });
+
+  it('ignores retry completion for the observation of a different current file', async () => {
+    const response = new Subject<{
+      code: number;
+      message: string;
+      data: { status: 'pending' };
+    }>();
+    vi.mocked(TestBed.inject(MsgService).relocalizeMedia).mockReturnValue(
+      response,
+    );
+    const fixture = await mount([
+      managedMedia,
+      { ...media, src: '/uploads/other.jpg', msgId: 43 },
+    ]);
+    const pending = fixture.componentInstance.relocalizeCurrent();
+    fixture.componentInstance.goTo(1);
+    await fixture.whenStable();
+    const observe = vi.mocked(TestBed.inject(MediaFileProgressService).observe);
+    const before = observe.mock.calls.length;
+    response.next({ code: 0, message: '', data: { status: 'pending' } });
+    await pending;
+    await fixture.whenStable();
+    expect(observe).toHaveBeenCalledTimes(before);
+    expect(fixture.componentInstance.current()?.msgId).toBe(43);
+    fixture.destroy();
+  });
+
+  it('ignores an older retry failure after a newer retry succeeds', async () => {
+    const older = new Subject<{ code: number; message: string }>();
+    const retry = vi.mocked(TestBed.inject(MsgService).relocalizeMedia);
+    retry.mockReturnValueOnce(older);
+    const fixture = await mount([managedMedia]);
+    const pending = fixture.componentInstance.relocalizeCurrent();
+    await fixture.componentInstance.relocalizeCurrent();
+    await fixture.whenStable();
+    older.next({ code: 1, message: 'obsolete rejection' });
+    await pending;
+    expect(fixture.componentInstance.loadErrors().size).toBe(0);
+    fixture.destroy();
+  });
+
+  it('ignores localization errors after the viewer is destroyed', async () => {
+    const response = new Subject<{ code: number; message: string }>();
+    vi.mocked(TestBed.inject(MsgService).relocalizeMedia).mockReturnValueOnce(
+      response,
+    );
+    const fixture = await mount([managedMedia]);
+    const pending = fixture.componentInstance.relocalizeCurrent();
+    fixture.destroy();
+    response.error(new Error('late network failure'));
+    await pending;
+    expect(fixture.componentInstance.loadErrors().size).toBe(0);
+  });
+
+  it('does not interpret download authorization as a timeline deletion coordinate', async () => {
+    const fixture = await mount([managedMedia]);
+    fixture.componentRef.setInput('threadId', 0);
+    await fixture.whenStable();
+    const close = vi.fn();
+    fixture.componentInstance.close.subscribe(close);
+    deleted.next({
+      threadId: 7,
+      deletions: [{ seq: 999, type: 'USER_RETRACTION' }],
+    });
+    deleted.next({
+      threadId: 0,
+      deletions: [{ seq: 42, type: 'USER_RETRACTION' }],
+    });
+    expect(close).not.toHaveBeenCalled();
+    deleted.next({
+      threadId: 7,
+      deletions: [{ seq: 42, type: 'MODERATION_REMOVAL' }],
+    });
+    expect(close).not.toHaveBeenCalled();
+    fixture.destroy();
+    expect(deleted.observed).toBe(false);
+  });
+
+  it('replaces the timeline deletion subscription when the current attachment changes', async () => {
+    const fixture = await mount([
+      media,
+      { ...media, src: '/uploads/other.jpg', msgId: 43 },
+    ]);
+    const close = vi.fn();
+    fixture.componentInstance.close.subscribe(close);
+    fixture.componentInstance.goTo(1);
+    await fixture.whenStable();
+    expect(fixture.componentInstance.current()?.msgId).toBe(43);
+    deleted.next({
+      threadId: 7,
+      deletions: [{ seq: 42, type: 'USER_RETRACTION' }],
+    });
+    expect(close).not.toHaveBeenCalled();
+    deleted.next({
+      threadId: 7,
+      deletions: [{ seq: 43, type: 'USER_RETRACTION' }],
+    });
+    expect(close).toHaveBeenCalledOnce();
+    fixture.destroy();
+  });
+
+  it('shows only server speed in the detail mask and closes when the current file is deleted', async () => {
+    const progress = new Subject<MediaFileProgress>();
+    vi.mocked(TestBed.inject(MediaFileProgressService).observe).mockReturnValue(
+      progress,
+    );
+    const fixture = await mount([{ ...media, kind: 'file' }]);
+    const close = vi.fn();
+    fixture.componentInstance.close.subscribe(close);
+    downloads.set(task('downloading', 700, 1000));
+    progress.next({
+      status: 'downloading',
+      loaded: 50,
+      total: 100,
+      bytesPerSecond: 2048,
+    });
+    await fixture.whenStable();
+    expect(
+      fixture.nativeElement.querySelector('.gv-server-download .speed')
+        .textContent,
+    ).toBe('2.0 KB/s');
+    expect(
+      fixture.nativeElement
+        .querySelector('.gv-server-download [role="progressbar"]')
+        .getAttribute('aria-valuenow'),
+    ).toBe('50');
+    progress.next({
+      status: 'ready',
+      loaded: 100,
+      total: 100,
+      bytesPerSecond: null,
+    });
+    await fixture.whenStable();
+    expect(
+      fixture.nativeElement.querySelector('.gv-server-download'),
+    ).toBeNull();
+    expect(fixture.nativeElement.querySelector('.gv-load-progress')).toBeNull();
+    deleted.next({
+      threadId: 8,
+      deletions: [{ seq: 42, type: 'USER_RETRACTION' }],
+    });
+    expect(close).not.toHaveBeenCalled();
+    deleted.next({
+      threadId: 7,
+      deletions: [{ seq: 42, type: 'USER_RETRACTION' }],
+    });
+    expect(close).toHaveBeenCalledOnce();
+    fixture.destroy();
+    expect(progress.observed).toBe(false);
+  });
+
+  it('switches type-specific metadata and uses the same original-file download action', async () => {
+    const file: AlbumMedia = {
+      kind: 'file',
+      src: '/uploads/report.pdf',
+      name: 'report.pdf',
+      size: 2048,
+      mimeType: 'application/pdf',
+      senderName: 'Alice',
+      sentAt: 1700000000000,
+      msgId: 43,
+    };
+    const audio: AlbumMedia = {
+      kind: 'audio',
+      src: '/uploads/voice.ogg',
+      name: 'voice.ogg',
+      size: 4096,
+      mimeType: 'audio/ogg',
+      duration: 12,
+      senderName: 'Bob',
+      sentAt: 1700000001000,
+      msgId: 44,
+    };
+    const fixture = await mount([media, file, audio]);
+    const component = fixture.componentInstance;
+    const metadata = () =>
+      fixture.nativeElement.querySelector('app-attachment-metadata')
+        .textContent;
+    expect(metadata()).toContain('800 × 600');
+    component.goTo(1);
+    await fixture.whenStable();
+    expect(metadata()).toContain('report.pdf');
+    expect(metadata()).toContain('application/pdf');
+    expect(metadata()).toContain('Alice');
+    expect(metadata()).not.toContain('800 × 600');
+    expect(
+      fixture.nativeElement.querySelector('.gv-file-content'),
+    ).not.toBeNull();
+    expect(fixture.nativeElement.querySelector('.gv-load-button')).toBeNull();
+    fixture.nativeElement.querySelector('.gv-download').click();
+    expect(TestBed.inject(DownloadService).download).toHaveBeenCalledWith({
+      threadId: 7,
+      path: file.src,
+      filename: file.name,
+      mimeType: file.mimeType,
+    });
+    component.goTo(2);
+    await fixture.whenStable();
+    expect(metadata()).toContain('voice.ogg');
+    expect(metadata()).toContain('0:12');
+    expect(fixture.nativeElement.querySelector('.gv-file-content')).toBeNull();
+    expect(
+      fixture.nativeElement
+        .querySelector('.gv-audio-content audio')
+        .getAttribute('src'),
+    ).toBe(audio.src);
+    component.goTo(1);
+    await fixture.whenStable();
+    expect(
+      fixture.nativeElement.querySelector('.gv-audio-content audio'),
+    ).toBeNull();
+    fixture.destroy();
+  });
+
+  async function mount(images: AlbumMedia[] = [media]) {
+    const fixture = TestBed.createComponent(GalleryViewerComponent);
+    fixture.componentRef.setInput('images', images);
+    fixture.componentRef.setInput('startIndex', 0);
+    fixture.componentRef.setInput('threadId', 7);
+    vi.spyOn(fixture.componentInstance, 'ngAfterViewInit').mockImplementation(
+      () => undefined,
+    );
+    fixture.detectChanges();
+    await fixture.whenStable();
+    return fixture;
+  }
 
   function create(images: AlbumMedia[] = [media]): GalleryViewerComponent {
     const fixture = TestBed.createComponent(GalleryViewerComponent);

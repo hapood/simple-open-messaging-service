@@ -4,14 +4,15 @@ import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import type { DatabaseTransaction } from '../database/database.service.js';
 import { MessageDeleteType } from '../database/enums.js';
-import { type InboundForwardWireBundle } from '../forward/forward-bundle.service.js';
 import { DeletedMessageService } from '../message/deleted-message.service.js';
+import { enqueueMessageFanoutsInTx } from '../message/thread-fanout-task.js';
 import {
   FederationInboundMessagePageService,
+  type PreparedMessageWrite,
+  type MessagePageWriteContext,
   type FederationMessagePageEffect,
 } from './federation-inbound-message-page.service.js';
 import { FederationInboundMessageRouteService } from './federation-inbound-message-route.service.js';
-import type { FederationMessageQueryPage } from './federation-message-feed.service.js';
 import type { FederationMessageTombstoneQueryPage } from './federation-message-tombstone-feed.service.js';
 import { FederationThreadAccessService } from './federation-thread-access.service.js';
 import type { FederationThreadResourceResponse } from './federation-thread-resource-client.service.js';
@@ -20,21 +21,9 @@ import {
   type ThreadContentLock,
 } from '../common/locks/thread-content-lock.js';
 
-export interface ReverseMessagePageCommit {
-  threadLock?: ThreadContentLock;
-  response: FederationThreadResourceResponse<FederationMessageQueryPage>;
-  before: number;
-  through?: number;
-  messageSeqOffset: number;
-  prefetchedForwardClosures?: ReadonlyMap<number, InboundForwardWireBundle>;
-}
-
-export interface ForwardMessagePageCommit {
-  threadLock?: ThreadContentLock;
-  response: FederationThreadResourceResponse<FederationMessageQueryPage>;
-  after: number;
-  frozenTargetSeq: number;
-  prefetchedForwardClosures?: ReadonlyMap<number, InboundForwardWireBundle>;
+export interface MessagePageCommit extends MessagePageWriteContext {
+  messages: readonly PreparedMessageWrite[];
+  peerToken: FederationThreadResourceResponse<unknown>['peerToken'];
 }
 
 export interface ForwardTombstonePageCommit {
@@ -57,85 +46,85 @@ export class FederationInboundMessageCommitService {
     private readonly deletedMessages: DeletedMessageService,
   ) {}
 
-  async applyReverseInTransaction(
+  async commitMessagePageInTx(
     tx: DatabaseTransaction,
-    params: ReverseMessagePageCommit,
+    params: MessagePageCommit,
   ): Promise<FederationMessagePageEffect[]> {
-    await this.threadAccess.assertResourceResponseWritable(tx, params.response);
+    const { threadId } = params.threadLock;
     const threadLock = await requireThreadContentLockInTx(
       tx,
-      params.response.threadId,
+      threadId,
       params.threadLock,
     );
-    return this.pages.apply(
+    const { left, right } = params.processedInterval;
+    if (
+      !Number.isSafeInteger(left) ||
+      !Number.isSafeInteger(right) ||
+      left < 0 ||
+      right < left
+    )
+      throw new Error('invalid processed message interval');
+    for (const prepared of params.messages) {
+      if (prepared.item.seq <= left || prepared.item.seq > right)
+        throw new Error('prepared message is outside the processed interval');
+    }
+    const head = await tx.execute<{ seq: number }>(sql`
+      SELECT COALESCE(MAX(seq), 0)::integer AS seq FROM "Message"
+      WHERE "threadId" = ${threadId}
+    `);
+    const previousSeq = head.rows[0]?.seq ?? 0;
+    const effects = await this.pages.applyPrepared(
       tx,
-      params.response.peerDomain,
-      params.response.data.messages,
-      params.response.peerToken,
-      {
-        threadLock,
-        prefetchedForwardClosures: params.prefetchedForwardClosures,
-        sequencePolicy: {
-          kind: 'MAP_ORIGIN',
-          beforeSeq: params.before,
-          messageSeqOffset: params.messageSeqOffset,
-          ...(params.through === undefined
-            ? {}
-            : { throughSeq: params.through }),
-        },
-        expectedThreadId: params.response.threadId,
-        historical: true,
-      },
+      params.messages,
+      params.peerToken,
+      params,
     );
-  }
-
-  async applyForwardInTransaction(
-    tx: DatabaseTransaction,
-    params: ForwardMessagePageCommit,
-  ): Promise<FederationMessagePageEffect[]> {
-    await this.threadAccess.assertResourceResponseWritable(tx, params.response);
-    const threadLock = await requireThreadContentLockInTx(
-      tx,
-      params.response.threadId,
-      params.threadLock,
+    if (effects.length === 0) return effects;
+    const writtenSeqs = effects.map((effect) =>
+      effect.kind === 'pending' ? effect.seq : effect.message.seq,
     );
-    return this.pages.apply(
-      tx,
-      params.response.peerDomain,
-      params.response.data.messages,
-      params.response.peerToken,
-      {
-        threadLock,
-        prefetchedForwardClosures: params.prefetchedForwardClosures,
-        expectedThreadId: params.response.threadId,
-      },
-    );
-  }
-
-  async finalizeReverseWindowInTransaction(
-    tx: DatabaseTransaction,
-    params: {
-      threadId: number;
-      namespaceId: number;
-      beforeSeq: number;
-      throughSeq: number;
-      threadLock?: ThreadContentLock;
-    },
-  ): Promise<void> {
-    await requireThreadContentLockInTx(tx, params.threadId, params.threadLock);
-    await tx.execute(sql`
+    // Finalize only this page's new rows. Media publication has its own barrier.
+    const finalized = await tx.execute<{ seq: number }>(sql`
       UPDATE "Message" staged
       SET "localState" = 'READY', "updatedAt" = CURRENT_TIMESTAMP
-      WHERE staged."threadId" = ${params.threadId}
-        AND staged."publisherNamespaceId" = ${params.namespaceId}
+      WHERE staged."threadId" = ${threadId}
+        AND staged."publisherNamespaceId" = ${params.peerToken.namespaceId}
+        AND staged.seq IN (${sql.join(
+          writtenSeqs.map((seq) => sql`${seq}`),
+          sql`, `,
+        )})
         AND staged."localState" = 'STUB'
-        AND staged."originSeq" >= ${params.throughSeq}
-        AND staged."originSeq" < ${params.beforeSeq}
         AND NOT EXISTS (
           SELECT 1 FROM "PendingMedia" pending
           WHERE pending."messageId" = staged.id
         )
+      RETURNING staged.seq
     `);
+    const readySeqs = new Set(finalized.rows.map((row) => row.seq));
+    for (const effect of effects) {
+      if (effect.kind === 'message' && readySeqs.has(effect.message.seq))
+        effect.message.localState = 'READY';
+    }
+    await tx.execute(sql`
+      UPDATE "MessageThread"
+      SET "curSeq" = GREATEST("curSeq", ${Math.max(...writtenSeqs)})
+      WHERE id = ${threadId}
+    `);
+    const next = await tx.execute<{ seq: number; tombstoneEndSeq: number }>(sql`
+      SELECT COALESCE(MAX(message.seq), 0)::integer AS seq, thread."tombstoneEndSeq"
+      FROM "MessageThread" thread
+      LEFT JOIN "Message" message ON message."threadId" = thread.id
+      WHERE thread.id = ${threadId}
+      GROUP BY thread.id, thread."tombstoneEndSeq"
+    `);
+    if (next.rows[0] && next.rows[0].seq > previousSeq) {
+      await enqueueMessageFanoutsInTx(tx, threadLock, {
+        threadId,
+        messageEndSeq: next.rows[0].seq,
+        tombstoneEndSeq: next.rows[0].tombstoneEndSeq,
+      });
+    }
+    return effects;
   }
 
   async applyTombstonesInTransaction(
@@ -170,7 +159,6 @@ export class FederationInboundMessageCommitService {
       const route = await this.routes.resolveTombstone(
         tx,
         item.thread,
-        params.response.peerDomain,
         params.response.peerToken.namespaceId,
         params.response.peerToken.peerAssignedLocalNamespaceId,
         item.messageSeq,
@@ -185,7 +173,6 @@ export class FederationInboundMessageCommitService {
         threadLock,
         threadId: route.threadId,
         messageSeq: item.messageSeq,
-        sourceDomain: params.response.peerDomain,
         publisherNamespaceId: params.response.peerToken.namespaceId,
         remoteDeletionSeq: item.deletionSeq,
         type: item.type,

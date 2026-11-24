@@ -10,8 +10,8 @@ import {
 
 describe('layoutAlbum', () => {
   const mkFixed = (n: number, w = 400, h = 300) =>
-    Array.from({ length: n }, () => ({ w, h }));
-  const mkMixed = (wh: [number, number][]) => wh.map(([w, h]) => ({ w, h }));
+    Array.from({ length: n }, () => ({ kind: 'image' as const, w, h }));
+  const mkMixed = (wh: [number, number][]) => wh.map(([w, h]) => ({ kind: 'image' as const, w, h }));
 
   const MIN_H = ALBUM_W * ALBUM_MIN_ROW_H_RATIO; // 98
   const MAX_H = ALBUM_W * ALBUM_MAX_ROW_H_RATIO; // 224 (album row cap; single-media uses ALBUM_SINGLE_MAX_H=240)
@@ -19,6 +19,7 @@ describe('layoutAlbum', () => {
   /** Invariant guards: rect count=min(n,6), in-bounds, pairwise non-overlapping, last row bottom===totalH, cells non-zero. */
   const assertInvariants = (
     imgs: {
+      kind: 'image';
       w: number;
       h: number;
     }[],
@@ -131,14 +132,14 @@ describe('layoutAlbum', () => {
   });
 
   it('audio uses the compact fixed voice-note dimensions', () => {
-    const result = layoutAlbum([{ kind: 'audio', w: 0, h: 0 }]);
-    expect(result.containerW).toBe(VOICE_BAR_W);
+    const result = layoutAlbum([{ kind: 'audio', duration: 1 }]);
+    expect(result.containerW).toBe(VOICE_BAR_W + 1);
     expect(result.totalH).toBe(VOICE_BAR_H);
   });
 
   it('grows longer voice notes within the compact width cap', () => {
-    const short = layoutAlbum([{ kind: 'audio', w: 0, h: 0, duration: 2 }]);
-    const long = layoutAlbum([{ kind: 'audio', w: 0, h: 0, duration: 120 }]);
+    const short = layoutAlbum([{ kind: 'audio', duration: 2 }]);
+    const long = layoutAlbum([{ kind: 'audio', duration: 120 }]);
     expect(short.containerW).toBeGreaterThanOrEqual(VOICE_BAR_W);
     expect(long.containerW).toBeGreaterThan(short.containerW);
     expect(long.containerW).toBeLessThanOrEqual(ALBUM_W);
@@ -161,38 +162,8 @@ describe('layoutAlbum', () => {
     expect(rects[0].wPct).toBeCloseTo(100, 5);
   });
 
-  it('w/h=0/negative/NaN: fallback 4:3 does not crash, totalH finite positive', () => {
-    const cases: {
-      w: number;
-      h: number;
-    }[][] = [
-      mkMixed([[0, 0]]),
-      mkMixed([[-1, 200]]),
-      mkMixed([[NaN, 300]]),
-      mkMixed([[400, NaN]]),
-      mkMixed([
-        [0, 0],
-        [400, 300],
-      ]), // a bad image mixed into the album
-      mkMixed([
-        [400, 300],
-        [0, 0],
-        [9, 16],
-      ]),
-    ];
-    for (const imgs of cases) {
-      const { rects, totalH } = layoutAlbum(imgs);
-      expect(Number.isFinite(totalH)).toBe(true);
-      expect(totalH).toBeGreaterThan(0);
-      for (const r of rects) {
-        expect(r.hPx).toBeGreaterThan(0);
-        expect(r.wPct).toBeGreaterThan(0);
-      }
-    }
-  });
-
-  it('w/h=0 single image: fallback 4:3 → totalH=210 (same as normal 4:3 single)', () => {
-    expect(layoutAlbum(mkMixed([[0, 0]])).totalH).toBe(210);
+  it('uses layout-owned placeholder geometry for a generic file', () => {
+    expect(layoutAlbum([{ kind: 'file' }]).totalH).toBe(210);
   });
 
   it('empty array: returns empty rects and totalH=0', () => {

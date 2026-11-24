@@ -1,4 +1,4 @@
-import { inArray } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNotNull } from 'drizzle-orm';
 import { findStoredQuoteTargets } from './stored-quote-targets.js';
 import type { Database } from '../database/database.service.js';
 import * as tables from '../database/schema.js';
@@ -38,14 +38,48 @@ export async function resolveStoredQuotes<T extends Message>(
     refs.map(({ m }) => m),
   );
   const threadIds = [...new Set(refs.map((r) => r.m.threadId))];
-  const [gaps, states] = await Promise.all([
+  const [gaps, states, threads] = await Promise.all([
     db.query.federationThreadHistoryGap.findMany({
       where: inArray(tables.federationThreadHistoryGap.threadId, threadIds),
     }),
     db.query.federationThreadSyncState.findMany({
       where: inArray(tables.federationThreadSyncState.threadId, threadIds),
     }),
+    db.query.messageThread.findMany({
+      where: inArray(tables.messageThread.id, threadIds),
+      columns: { id: true, type: true, authorityNamespaceId: true },
+    }),
   ]);
+  const reverseKeys = new Map<
+    string,
+    { threadId: number; namespaceId: number }
+  >();
+  for (const state of states) {
+    const thread = threads.find((t) => t.id === state.threadId);
+    const isForward =
+      thread?.type === 'GROUP' && thread.authorityNamespaceId === 0;
+    if (!isForward && state.namespaceId > 0) {
+      reverseKeys.set(`${state.threadId}:${state.namespaceId}`, {
+        threadId: state.threadId,
+        namespaceId: state.namespaceId,
+      });
+    }
+  }
+  const reverseMaxOriginSeq = new Map<string, number>();
+  await Promise.all(
+    [...reverseKeys.entries()].map(async ([key, pair]) => {
+      const row = await db.query.message.findFirst({
+        where: and(
+          eq(tables.message.threadId, pair.threadId),
+          eq(tables.message.publisherNamespaceId, pair.namespaceId),
+          isNotNull(tables.message.originSeq),
+        ),
+        orderBy: [desc(tables.message.originSeq)],
+        columns: { originSeq: true },
+      });
+      reverseMaxOriginSeq.set(key, row?.originSeq ?? 0);
+    }),
+  );
   const replacements = new Map<bigint, string>();
   for (const { m, quote } of refs) {
     const target = targets.get(m.id);
@@ -63,12 +97,21 @@ export async function resolveStoredQuotes<T extends Message>(
       (s) =>
         s.threadId === m.threadId && s.namespaceId === m.publisherNamespaceId,
     );
+    const thread = threads.find((t) => t.id === m.threadId);
+    const isForward =
+      thread?.type === 'GROUP' && thread.authorityNamespaceId === 0;
+    const scannedThrough = !state
+      ? 0
+      : isForward
+        ? state.messageProcessedThroughSeq
+        : (reverseMaxOriginSeq.get(`${state.threadId}:${state.namespaceId}`) ??
+          0);
     const pending = target
       ? false
       : gap
         ? gap.recoverable
         : quote.sourceSeq !== undefined &&
-          (!state || quote.sourceSeq > state.messageProcessedThroughSeq);
+          (!state || quote.sourceSeq > scannedThrough);
     replacements.set(
       m.id,
       withMessageContentQuote(m.content, {

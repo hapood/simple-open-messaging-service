@@ -402,10 +402,7 @@ function deferred<T>() {
 describe('native logout adapter integration', () => {
   for (const android of [false, true]) {
     it(`releases without deleting and waits for Rust revocation (${android ? 'Android' : 'desktop'})`, async () => {
-      const admission = deferred<{
-        ticket: string;
-        localClearFailed: boolean;
-      }>();
+      const admission = deferred<void>();
       const remote = deferred<void>();
       const setToken = vi.fn();
       const originalAgent = Object.getOwnPropertyDescriptor(
@@ -419,7 +416,6 @@ describe('native logout adapter integration', () => {
           return { status: 'revoked' };
         }
         if (command === 'logout_status') return 'awaitingRevocation';
-        if (command === 'wait_for_logout') return remote.promise;
         return undefined;
       });
       try {
@@ -453,32 +449,23 @@ describe('native logout adapter integration', () => {
           finished = true;
         });
         try {
-          if (android) {
-            expect(app.auth.isLoggedIn()).toBe(false);
-            expect(app.user.releaseSession).toHaveBeenCalledTimes(1);
-          }
+          expect(app.user.releaseSession).not.toHaveBeenCalled();
           expect(app.user.clearSession).not.toHaveBeenCalled();
           expect(setToken).not.toHaveBeenCalled();
           expect(finished).toBe(false);
-          admission.resolve({
-            ticket: 'ended-operation',
-            localClearFailed: false,
-          });
+          admission.resolve();
           await vi.waitFor(() => {
-            if (android)
-              expect(invoke).toHaveBeenCalledWith('wait_for_logout', {
-                ticket: 'ended-operation',
-              });
-            else expect(invoke).toHaveBeenCalledWith('try_logout', undefined);
+            expect(invoke).toHaveBeenCalledWith('try_logout', undefined);
           });
-          if (android)
-            expect(setToken).toHaveBeenCalledExactlyOnceWith(
-              null,
-              '11111111-2222-4d9e-af01-234567890abc',
-            );
+          expect(app.user.releaseSession).toHaveBeenCalledTimes(1);
+          expect(setToken).not.toHaveBeenCalled();
+          expect(invoke).not.toHaveBeenCalledWith('finish_logout', { localOnly: false });
           expect(finished).toBe(false);
           remote.resolve();
           await done;
+          expect(invoke).toHaveBeenCalledWith('finish_logout', { localOnly: false });
+          expect(setToken).not.toHaveBeenCalled();
+          expect(app.auth.isLoggedIn()).toBe(false);
           expect(app.requests).toHaveLength(0);
           expect(
             invoke.mock.calls.some(([command]) =>
@@ -486,10 +473,7 @@ describe('native logout adapter integration', () => {
             ),
           ).toBe(false);
         } finally {
-          admission.resolve({
-            ticket: 'ended-operation',
-            localClearFailed: false,
-          });
+          admission.resolve();
           remote.resolve();
           await done;
         }
@@ -503,6 +487,64 @@ describe('native logout adapter integration', () => {
       }
     });
   }
+
+  it('coalesces repeated native logout requests until cleanup completes', async () => {
+    const cleanup = deferred<void>();
+    const invoke = vi.fn(async (command: string) => {
+      if (command === 'logout_status') return 'awaitingRevocation';
+      if (command === 'try_logout') return { status: 'revoked' };
+      if (command === 'finish_logout') return cleanup.promise;
+      return undefined;
+    });
+    window.__TAURI_INTERNALS__ = {};
+    window.__TAURI__ = { core: { invoke } };
+    try {
+      const app = client(undefined, false);
+      app.state.setAuthenticated(true);
+      app.user.releaseSession.mockResolvedValue(undefined);
+      const first = firstValueFrom(app.auth.logout());
+      const second = firstValueFrom(app.auth.logout());
+      await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith('finish_logout', { localOnly: false }));
+      expect(invoke.mock.calls.filter(([command]) => command === 'begin_logout')).toHaveLength(1);
+      expect(app.user.releaseSession).toHaveBeenCalledTimes(1);
+      cleanup.resolve();
+      await Promise.all([first, second]);
+      expect(app.auth.isLoggedIn()).toBe(false);
+    } finally {
+      cleanup.resolve();
+      delete window.__TAURI_INTERNALS__;
+      delete window.__TAURI__;
+    }
+  });
+
+  it('retries failed native cleanup without repeating revocation', async () => {
+    let cleanupPending = false;
+    let cleanupAttempts = 0;
+    const invoke = vi.fn(async (command: string) => {
+      if (command === 'logout_status') return cleanupPending ? 'awaitingCleanup' : 'awaitingRevocation';
+      if (command === 'try_logout') {
+        cleanupPending = true;
+        return { status: 'revoked' };
+      }
+      if (command === 'finish_logout' && ++cleanupAttempts === 1) throw new Error('storage unavailable');
+      return undefined;
+    });
+    window.__TAURI_INTERNALS__ = {};
+    window.__TAURI__ = { core: { invoke } };
+    try {
+      const app = client(undefined, false);
+      app.state.setAuthenticated(true);
+      app.user.releaseSession.mockResolvedValue(undefined);
+      await expect(firstValueFrom(app.auth.logout())).rejects.toThrow('storage unavailable');
+      await firstValueFrom(app.auth.logout());
+      expect(invoke.mock.calls.filter(([command]) => command === 'try_logout')).toHaveLength(1);
+      expect(cleanupAttempts).toBe(2);
+      expect(app.auth.isLoggedIn()).toBe(false);
+    } finally {
+      delete window.__TAURI_INTERNALS__;
+      delete window.__TAURI__;
+    }
+  });
 
   it('the real release primitive invalidates and closes without touching persistent data', async () => {
     const invalidateSession = vi.fn();

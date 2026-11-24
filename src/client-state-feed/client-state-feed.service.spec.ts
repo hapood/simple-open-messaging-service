@@ -211,7 +211,11 @@ describe('ClientStateFeedService', () => {
           requestReadId: 42n,
         },
       ]);
-      const values = vi.fn().mockResolvedValue(undefined);
+      const values = vi.fn().mockReturnValue({
+        onConflictDoUpdate: () => ({
+          returning: () => Promise.resolve([{ feedId: 7 }]),
+        }),
+      });
       const tx = {
         select: vi
           .fn()
@@ -221,10 +225,7 @@ describe('ClientStateFeedService', () => {
           .mockReturnValueOnce({
             from: () => ({
               where: () => ({
-                orderBy: () => ({
-                  limit: () =>
-                    Promise.resolve(unchanged ? [{ body: head }] : []),
-                }),
+                limit: () => Promise.resolve(unchanged ? [{ body: head }] : []),
               }),
             }),
           }),
@@ -253,6 +254,8 @@ describe('ClientStateFeedService', () => {
         expect(values).toHaveBeenCalledExactlyOnceWith({
           userId: 1,
           feedId: 7,
+          threadId: 0,
+          type: 'REQUEST_HEAD',
           body: head,
         });
       }

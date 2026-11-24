@@ -3,6 +3,7 @@ import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import { DatabaseService } from '../database/database.service.js';
 import { ContentType } from '../database/enums.js';
+import { HistoryIntervalEventsService } from '../message/history-interval-events.service.js';
 import {
   FORWARD_MAX_WIRE_JSON_BYTES,
   type InboundForwardWireBundle,
@@ -14,6 +15,7 @@ import {
 import type { FederationReverseThreadSource } from './federation-reverse-thread-source.js';
 import { S2sResponseError } from './federation-errors.js';
 import { FederationInboundMessageCommitService } from './federation-inbound-message-commit.service.js';
+import { FederationInboundMessagePreparationService } from './federation-inbound-message-preparation.service.js';
 import { FederationInboundMessageEffectsService } from './federation-inbound-message-effects.service.js';
 import {
   FederationThreadResourceClient,
@@ -50,46 +52,52 @@ export class FederationThreadReverseRoundExecutorService {
     private readonly inboundMessageCommits: FederationInboundMessageCommitService,
     private readonly messageEffects: FederationInboundMessageEffectsService,
     private readonly sources: FederationThreadSourceService,
+    private readonly historyIntervals: HistoryIntervalEventsService,
+    private readonly preparation: FederationInboundMessagePreparationService,
   ) {}
 
   async run(
     threadId: number,
-    peerDomain: string,
     namespaceId: number,
+    signal: AbortSignal,
     take?: number,
-    continuation?: FederationReverseRoundContext,
+    dirty = true,
   ): Promise<FederationThreadReverseRoundResult> {
-    const source = await this.sources.resolve(
-      threadId,
-      peerDomain,
-      namespaceId,
-    );
+    signal.throwIfAborted();
+    const source = await this.sources.resolve(threadId, namespaceId);
+    if (source.kind === 'GROUP' && source.localGroupAuthority) {
+      throw new Error('member submission streams cannot be pulled in reverse');
+    }
     let messageBatch: BufferedReverseMessageBatch | null = null;
     return this.rounds.run(
       threadId,
-      peerDomain,
       namespaceId,
       {
         fetchMessages: async (params) => {
-          const fetched = await this.fetchMessages(source, params);
+          signal.throwIfAborted();
+          const fetched = await this.fetchMessages(source, params, signal);
           messageBatch = fetched.batch;
           return fetched.result;
         },
         complete: ({ context, closesGap }) => {
+          signal.throwIfAborted();
           if (!messageBatch)
             throw new Error('reverse round completed without a message batch');
-          return this.commit(source, context, closesGap, messageBatch);
+          return this.commit(source, context, closesGap, messageBatch, signal);
         },
-        markUnavailable: ({ context }) => this.markUnavailable(source, context),
+        markUnavailable: ({ context }) =>
+          this.markUnavailable(source, context, signal),
       },
+      signal,
       take,
-      continuation,
+      dirty,
     );
   }
 
   private async fetchMessages(
     source: FederationReverseThreadSource,
     params: { before: number; through?: number; take: number },
+    signal: AbortSignal,
   ): Promise<{
     result: FederationReverseMessageResult;
     batch: BufferedReverseMessageBatch | null;
@@ -112,10 +120,12 @@ export class FederationThreadReverseRoundExecutorService {
       response = await this.threadResources.fetch<FederationMessageQueryPage>(
         source.threadId,
         `/somfp/v1/messages?${query.toString()}`,
-        source.peerDomain,
+        source.namespaceId,
+        signal,
         16 * 1024 * 1024,
       );
     } catch (error) {
+      signal.throwIfAborted();
       if (
         error instanceof S2sResponseError &&
         error.code === BusinessCode.FEDERATION_FEED_CURSOR_UNAVAILABLE
@@ -132,6 +142,7 @@ export class FederationThreadReverseRoundExecutorService {
     const prefetchedForwardClosures = await this.prefetchForwardClosures(
       source,
       response,
+      signal,
     );
     return {
       result: {
@@ -216,6 +227,7 @@ export class FederationThreadReverseRoundExecutorService {
   private async prefetchForwardClosures(
     source: FederationReverseThreadSource,
     messageResponse: FederationThreadResourceResponse<FederationMessageQueryPage>,
+    signal: AbortSignal,
   ): Promise<ReadonlyMap<number, InboundForwardWireBundle>> {
     const result = new Map<number, InboundForwardWireBundle>();
     const byBundleId = new Map<string, InboundForwardWireBundle>();
@@ -240,7 +252,8 @@ export class FederationThreadReverseRoundExecutorService {
           await this.threadResources.fetch<InboundForwardWireBundle>(
             source.threadId,
             `/somfp/v1/forward-bundles/${encodeFederationResourceComponent(bundleId)}`,
-            source.peerDomain,
+            source.namespaceId,
+            signal,
             FORWARD_MAX_WIRE_JSON_BYTES,
           );
         this.assertSameAuthority(messageResponse, response);
@@ -292,9 +305,19 @@ export class FederationThreadReverseRoundExecutorService {
     context: FederationReverseRoundContext,
     closesGap: boolean,
     batch: BufferedReverseMessageBatch,
+    signal: AbortSignal,
   ): Promise<void> {
+    signal.throwIfAborted();
     let publish: (() => Promise<void>) | undefined;
+    const messages = await this.preparation.prepare(
+      batch.response,
+      batch.prefetchedForwardClosures,
+      context.authorizationEpoch,
+      signal,
+    );
+    signal.throwIfAborted();
     await this.database.db.transaction(async (tx) => {
+      signal.throwIfAborted();
       await FederationThreadSyncStateService.commitReverseBatchInTx(tx, {
         threadId: source.threadId,
         namespaceId: source.namespaceId,
@@ -304,31 +327,39 @@ export class FederationThreadReverseRoundExecutorService {
         scannedThrough: context.nextBeforeSeq,
         throughSeq: context.throughSeq,
         closesGap,
-        applyDependencies: async (threadLock) => {
+        writeMessages: async (threadLock) => {
           await FederationThreadSourceService.assertAudienceInTx(
             threadLock,
             source,
           );
-          const effects =
-            await this.inboundMessageCommits.applyReverseInTransaction(tx, {
-              ...batch,
-              threadLock,
-              messageSeqOffset: context.messageSeqOffset,
-            });
-          publish = () =>
-            this.messageEffects.publish(batch.response.peerDomain, effects);
-          await this.inboundMessageCommits.finalizeReverseWindowInTransaction(
-            tx,
-            {
-              threadLock,
-              threadId: source.threadId,
-              namespaceId: source.namespaceId,
-              beforeSeq: batch.before,
-              throughSeq: context.nextBeforeSeq,
-            },
-          );
+          if (messages.length > 0) {
+            const effects =
+              await this.inboundMessageCommits.commitMessagePageInTx(tx, {
+                messages,
+                peerToken: batch.response.peerToken,
+                threadLock,
+                processedInterval: {
+                  left: context.nextBeforeSeq - 1,
+                  right: batch.before - 1,
+                },
+              });
+            if (effects.length > 0) {
+              publish = async () => {
+                this.historyIntervals.publishCommitted({
+                  threadId: source.threadId,
+                  left: context.nextBeforeSeq + context.messageSeqOffset - 1,
+                  right: batch.before + context.messageSeqOffset - 1,
+                });
+                await this.messageEffects.publish(
+                  batch.response.peerDomain,
+                  effects,
+                );
+              };
+            }
+          }
         },
       });
+      signal.throwIfAborted();
     });
     await publish?.();
   }
@@ -336,15 +367,30 @@ export class FederationThreadReverseRoundExecutorService {
   private async markUnavailable(
     source: FederationReverseThreadSource,
     context: FederationReverseRoundContext,
+    signal: AbortSignal,
   ): Promise<void> {
-    await this.database.db.transaction((tx) =>
-      FederationThreadSyncStateService.markReverseGapUnavailableInTx(tx, {
+    signal.throwIfAborted();
+    const intervals = await this.database.db.transaction(async (tx) => {
+      signal.throwIfAborted();
+      const marked =
+        await FederationThreadSyncStateService.markReverseGapUnavailableInTx(
+          tx,
+          {
+            threadId: source.threadId,
+            namespaceId: source.namespaceId,
+            authorizationEpoch: context.authorizationEpoch,
+            gapId: context.gapId,
+            beforeSeq: context.nextBeforeSeq,
+          },
+        );
+      signal.throwIfAborted();
+      return marked;
+    });
+    for (const interval of intervals)
+      this.historyIntervals.publishCommitted({
         threadId: source.threadId,
-        namespaceId: source.namespaceId,
-        authorizationEpoch: context.authorizationEpoch,
-        gapId: context.gapId,
-      }),
-    );
+        ...interval,
+      });
   }
 
   private malformed(message: string): never {

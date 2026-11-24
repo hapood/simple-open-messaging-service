@@ -77,12 +77,20 @@ export class ThreadPreviewService {
       content: string | null;
     }>(sql`
       SELECT m.seq, m."createdAt"::text AS "createdAt", m."creatorAccount",
-        m."profileNamespaceId", m."profileRev", m."isDeleted", d.type AS "deletionType",
+        m."profileNamespaceId", m."profileRev", m."isDeleted",
+        COALESCE(d.type, federated.type) AS "deletionType",
         CASE WHEN m."isDeleted" THEN NULL ELSE m."contentType" END AS "contentType",
         CASE WHEN m."isDeleted" THEN NULL ELSE m.content::text END AS content
       FROM "AccountThreadState" s
       JOIN "Message" m ON m."threadId" = s."threadId" AND m.seq = ANY(s."previewSeqs"[1:${take}])
-      LEFT JOIN "DeletedMessage" d ON d."threadId" = m."threadId" AND d."messageSeq" = m.seq
+      LEFT JOIN "DeletedMessage" d
+        ON d."threadId" = m."threadId"
+        AND d."messageSeq" = m.seq
+      LEFT JOIN "FederatedMessageTombstone" federated
+        ON federated."threadId" = m."threadId"
+        AND federated."publisherNamespaceId" = m."publisherNamespaceId"
+        AND federated."messageSeq" = m."originSeq"
+        AND federated.consumed = true
       WHERE s."accountId" = ${accountId} AND s."threadId" = ${threadId} AND NOT s.blocked
       ORDER BY m.seq ASC`);
     for (const row of result.rows) {

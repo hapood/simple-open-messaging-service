@@ -15,6 +15,8 @@ export interface UserIntentRevocationInput extends UserIntentFeedInput {
   localActorId: number;
   /** Local Account.id of the target, or null for a peer-hosted target. */
   localTargetId: number | null;
+  /** Optional revocation note (≤255 chars). */
+  note?: string;
   /** Alternate validated writer used by received peer intents. */
   authoredSql?: SQL;
 }
@@ -53,7 +55,7 @@ export function userIntentRevocationSql(input: UserIntentRevocationInput): SQL {
       },
       threadId: input.threadId,
       status: 'REVOKED',
-      note: '',
+      note: (input.note ?? '').slice(0, 255),
       statusChangedAt: new Date(),
       expiresAt: null,
     });
@@ -89,7 +91,9 @@ export function userIntentRevocationSql(input: UserIntentRevocationInput): SQL {
       FROM seq_alloc s
       RETURNING seq
     ), member_watermark AS (
-      UPDATE "AccountThreadState" s SET "messageVisibleThroughSeq" = m.seq,
+      UPDATE "AccountThreadState" s
+      SET "messageVisibleThroughSeq" = m.seq,
+        "tombstoneVisibleThroughSeq" = (SELECT "tombstoneEndSeq" FROM seq_alloc),
         "updatedAt" = CURRENT_TIMESTAMP
       FROM system_message m, "RelationshipPair" p, "Account" a
       WHERE s."threadId" = ${input.threadId} AND a.id = s."accountId" AND a."namespaceId" = 0
@@ -99,9 +103,7 @@ export function userIntentRevocationSql(input: UserIntentRevocationInput): SQL {
     ), thread_fanout_merge AS (
       UPDATE "DurableTask" d SET "updatedAt" = CURRENT_TIMESTAMP, payload = jsonb_build_object(
         'threadId', ${input.threadId}::integer,
-        'messageEndSeq', GREATEST((d.payload->>'messageEndSeq')::bigint, (SELECT seq FROM system_message)),
-        'tombstoneEndSeq', GREATEST((d.payload->>'tombstoneEndSeq')::bigint,
-          (SELECT "tombstoneEndSeq" FROM seq_alloc)))
+        'messageEndSeq', GREATEST((d.payload->>'messageEndSeq')::bigint, (SELECT seq FROM system_message)))
       WHERE d.kind = 'PROJECTION' AND d."scopeType" = 'THREAD'
         AND d."scopeKey" = ${threadScope} AND d."taskType" = 'FAN_OUT_THREAD_CONTENT'
         AND d.status = 'PENDING' AND EXISTS (SELECT 1 FROM system_message)
@@ -113,8 +115,7 @@ export function userIntentRevocationSql(input: UserIntentRevocationInput): SQL {
         'FAN_OUT_THREAD_CONTENT',
         (SELECT id FROM "Account" WHERE account = '$system'),
         jsonb_build_object('threadId', ${input.threadId}::integer,
-          'messageEndSeq', (SELECT seq FROM system_message),
-          'tombstoneEndSeq', (SELECT "tombstoneEndSeq" FROM seq_alloc)),
+          'messageEndSeq', (SELECT seq FROM system_message)),
         ${threadScope}, 'PENDING'::"DurableTaskStatus"
       WHERE EXISTS (SELECT 1 FROM system_message) AND NOT EXISTS (SELECT 1 FROM thread_fanout_merge)
       RETURNING id
@@ -127,7 +128,6 @@ export function userIntentRevocationSql(input: UserIntentRevocationInput): SQL {
         (SELECT id FROM "Account" WHERE account = '$system'),
         jsonb_build_object('threadId', ${input.threadId}::integer,
           'messageEndSeq', (SELECT seq FROM system_message),
-          'tombstoneEndSeq', (SELECT "tombstoneEndSeq" FROM seq_alloc),
           'accountId', a.id::integer),
         'PENDING'::"DurableTaskStatus"
       FROM "Account" a, departed d

@@ -144,53 +144,33 @@ describe('MockItemSource (cursor contract)', () => {
     expect(newer[0].data.sender?.kind).toBe('demand');
   });
 
-  it('getNewer returns reals only + reconciles pending by clientMessageId (never appends pending)', async () => {
+  it('newer history preserves server identity and client correlation at the newest boundary', async () => {
     const s = new MockItemSource(100, 0, 0, new MockUserService(), 1);
     await s.loadWindow({ kind: 'latest', count: 100 });
-    // Two in-flight optimistic sends, each keyed by a clientMessageId. The server echo carries the SAME clientMessageId
-    // but a FRESH server msgId (mirrors production: clientMessageId reconciles, the server-assigned msgId is new).
-    s.addPending({ ...msg(201), clientMessageId: 'cid-1' });
-    s.addPending({ ...msg(202), clientMessageId: 'cid-2' });
-    s.pushLive([{ ...msg(500), clientMessageId: 'cid-1' }]); // server echo confirming pending-1 (cid-1)
-    // getNewer returns reals only: [500]. As a side effect it reconciles pending — pending-1 (cid-1 matched) is
-    // dropped. pending-2 is NOT appended (the kernel mounts pending separately via getPending at the newest edge).
+    s.pushLive([{ ...msg(500), clientMessageId: 'cid-1' }]);
     const newer = await s.getNewer(100, 10);
-    expect(newer.map((i) => i.id)).toEqual([500]);
-    expect(newer[0].clientMessageId).toBe('cid-1'); // shape preserves the reconcile key on the confirmed real
-    expect(newer[0].boundary).toBe('newest'); // reached the sequence end
-    // pending-1 dropped (confirmed); pending-2 still in flight → recoverable via getPending.
-    expect(s.hasPending()).toBe(true);
-    const pending = s.getPending();
-    expect(pending.map((p) => p.id)).toEqual([202]);
-    expect(pending[0].clientMessageId).toBe('cid-2');
+    expect(newer.map((item) => item.id)).toEqual([500]);
+    expect(newer[0].clientMessageId).toBe('cid-1');
+    expect(newer[0].boundary).toBe('newest');
   });
 
-  it('init reconciles pending by clientMessageId (empty-thread confirm routes through init, not getNewer)', async () => {
+  it('latest window includes the first confirmed message with both history boundaries', async () => {
     const s = new MockItemSource(0, 0, 0, new MockUserService(), 1);
-    s.addPending({ ...msg(201), clientMessageId: 'cid-1' });
-    s.pushLive([{ ...msg(1), clientMessageId: 'cid-1' }]); // server echo confirming pending-1 (cid-1)
-    // The kernel's loadNewer falls back to init(-1) when the window is entirely optimistic (an empty-thread confirm).
-    // init MUST reconcile pending just like getNewer — otherwise the confirmed pending survives in source.pending and
-    // the kernel's elevatePending re-mounts it as a stale optimistic bubble below the next incoming message.
+    s.pushLive([{ ...msg(1), clientMessageId: 'cid-1' }]);
     const items = await s.loadWindow({ kind: 'latest', count: 100 });
-    expect(items.map((i) => i.id)).toEqual([1]);
-    expect(items[0].clientMessageId).toBe('cid-1'); // shape preserves the reconcile key on the confirmed real
-    expect(items[0].boundary).toBe('both'); // sole item spanning both edges (empty thread)
-    expect(s.hasPending()).toBe(false); // pending-1 dropped (confirmed) — the regression this guards
-    expect(s.getPending().map((p) => p.id)).toEqual([]);
+    expect(items.map((item) => item.id)).toEqual([1]);
+    expect(items[0].clientMessageId).toBe('cid-1');
+    expect(items[0].boundary).toBe('both');
   });
 
-  it('getNewer never appends pending even when real fills the page at the edge (MAX_PAGE reals reach the end)', async () => {
+  it('caps newer history pages while retaining the newest boundary', async () => {
     const s = new MockItemSource(150, 0, 0, new MockUserService(), 1); // total=150 → id 101..150 = exactly MAX_PAGE newer
     await s.loadWindow({ kind: 'latest', count: 100 });
-    s.addPending(msg(299));
-    // cursor=100, count=100: exactly MAX_PAGE (50) real items (101..150) fill the page AND reach the end → no pending mixing.
+    // The requested count exceeds MAX_PAGE, but the capped page still reaches the history head.
     const newer = await s.getNewer(100, 100);
     expect(newer.length).toBe(50); // page full (capped) at the edge
     expect(newer[49].id).toBe(150);
     expect(newer[49].boundary).toBe('newest'); // reached the end
-    expect(s.hasPending()).toBe(true); // pending untouched, recoverable via getPending
-    expect(s.getPending().map((p) => p.id)).toEqual([299]);
   });
 
   it('deterministic: same total, two inits → identical data', async () => {
@@ -241,50 +221,4 @@ describe('MockItemSource (cursor contract)', () => {
     expect(other.data.avatarIdentityId).toBe(JSON.stringify([0, 'user-2']));
   });
 
-  // failPending / retryPending: a failed send stays the SAME entity (stable clientMessageId) and sinks to the tail of
-  // the pending queue. clientMessageId is the retry/reconcile key; data.msgId is a stable numeric id unchanged across
-  // the fail/retry flip (it is NOT the retry key — that is clientMessageId).
-  it('failPending flips status to failed, sinks the entry to the end of pending, keeps clientMessageId + msgId stable', async () => {
-    const s = new MockItemSource(500, 0, 0, new MockUserService(), 1);
-    await s.loadWindow({ kind: 'latest', count: 100 });
-    s.addPending({ ...msg(201), clientMessageId: 'cid-A' });
-    s.addPending({ ...msg(202), clientMessageId: 'cid-B' });
-    expect(s.failPending('cid-A')).toBe(true);
-    expect(s.failPending('no-such')).toBe(false); // unknown clientMessageId → no-op
-    const pending = s.getPending();
-    expect(pending.map((p) => p.clientMessageId)).toEqual(['cid-B', 'cid-A']); // A sunk to the end
-    const failed = pending[1];
-    expect(failed.data.status).toBe('failed');
-    expect(failed.clientMessageId).toBe('cid-A'); // stable identity (the retry/reconcile key)
-    expect(failed.data.msgId).toBe(201); // stable numeric id, unchanged across the fail flip
-  });
-
-  it('retryPending flips status back to sending at its current position, keeping clientMessageId + msgId stable', async () => {
-    const s = new MockItemSource(500, 0, 0, new MockUserService(), 1);
-    await s.loadWindow({ kind: 'latest', count: 100 });
-    s.addPending({ ...msg(201), clientMessageId: 'cid-A' });
-    s.failPending('cid-A');
-    const retrying = s.retryPending('cid-A');
-    expect(retrying).toBeDefined();
-    expect(s.retryPending('no-such')).toBeUndefined();
-    expect(retrying!.data.status).toBe('sending');
-    expect(retrying!.clientMessageId).toBe('cid-A'); // stable identity (no fresh uuid on retry)
-    expect(retrying!.data.msgId).toBe(201); // stable numeric id, unchanged across the retry flip
-    expect(s.getPending().map((p) => p.clientMessageId)).toEqual(['cid-A']); // stayed at the end (its current position)
-  });
-
-  it('markPendingAccepted keeps the optimistic entry and spinner until its push echo arrives', async () => {
-    const s = new MockItemSource(500, 0, 0, new MockUserService(), 1);
-    await s.loadWindow({ kind: 'latest', count: 100 });
-    s.addPending({
-      ...msg(201),
-      clientMessageId: 'cid-A',
-      data: { ...msg(201).data, status: 'sending' },
-    });
-
-    expect(s.markPendingAccepted('cid-A')).toBe(true);
-    expect(s.getPending()[0].data.status).toBe('accepted');
-    expect(Object.hasOwn(s.getPending()[0].data, 'kind')).toBe(false);
-    expect(s.markPendingAccepted('missing')).toBe(false);
-  });
 });

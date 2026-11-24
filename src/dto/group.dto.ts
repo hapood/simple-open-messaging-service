@@ -172,9 +172,38 @@ export class HandleGroupJoinRequestDto extends GroupIdDto {
   @ApiProperty({ type: String, example: '42' })
   @IsRequestId()
   requestId!: string;
+
+  @ApiPropertyOptional({
+    example: 'Welcome',
+    description: 'Optional decision note (≤255 chars)',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(255)
+  note?: string;
 }
 
-export class KickGroupDto extends GroupMemberTargetDto {}
+export class LeaveGroupDto extends GroupIdDto {
+  @ApiPropertyOptional({
+    example: 'Leaving the group',
+    description: 'Optional leave note (≤255 chars)',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(255)
+  note?: string;
+}
+
+export class KickGroupDto extends GroupMemberTargetDto {
+  @ApiPropertyOptional({
+    example: 'Removed by admin',
+    description: 'Optional kick note (≤255 chars)',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(255)
+  note?: string;
+}
 
 class GroupRosterMemberTargetDto {
   @ApiProperty({ example: 12, description: 'Group id' })

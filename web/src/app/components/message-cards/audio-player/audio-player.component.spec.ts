@@ -2,15 +2,8 @@ import type { Mock } from 'vitest';
 import { TestBed } from '@angular/core/testing';
 import { provideZonelessChangeDetection } from '@angular/core';
 import { AudioPlayerComponent } from './audio-player.component';
-import { MEDIA_STATUS, type MediaStatus } from '../chat-item';
 
-/**
- * Guards the federated playback bug: while a clip is not playable — still localizing (status
- * 'downloading') OR localize failed ('failed') — tapping play must be a no-op, never reaching
- * <audio>.play() against a not-yet-local or 4xx shard, which would onError() into a spurious
- * frontend-only 'failed'. The ready path + both not-ready sources (server status, frontend decode
- * failure) are covered so the "button is inert while not ready" contract stays whole.
- */
+/** Playback behavior only; server readiness is owned by the mounting file cell. */
 describe('AudioPlayerComponent', () => {
   beforeEach(() => {
     TestBed.configureTestingModule({
@@ -21,7 +14,7 @@ describe('AudioPlayerComponent', () => {
 
   /** Render so the #audio viewChild resolves, then settle the zoneless change-detection queue. Returns
    *  the component, the <audio> element, and a play() spy (stubbed so no real network/decode happens). */
-  async function render(status: MediaStatus = MEDIA_STATUS.READY): Promise<{
+  async function render(): Promise<{
     comp: AudioPlayerComponent;
     audio: HTMLAudioElement;
     playSpy: Mock;
@@ -29,7 +22,6 @@ describe('AudioPlayerComponent', () => {
     const fixture = TestBed.createComponent(AudioPlayerComponent);
     fixture.componentRef.setInput('src', '/uploads/cas/aa/bb/shard.mp3');
     fixture.componentRef.setInput('duration', 5);
-    fixture.componentRef.setInput('status', status);
     fixture.detectChanges();
     await fixture.whenStable();
     const audio = fixture.nativeElement.querySelector(
@@ -41,22 +33,10 @@ describe('AudioPlayerComponent', () => {
     return { comp: fixture.componentInstance, audio, playSpy };
   }
 
-  it('suppresses play while downloading — no spurious failed from a not-yet-local shard', async () => {
-    const { comp, playSpy } = await render(MEDIA_STATUS.DOWNLOADING);
-
-    expect(comp.inert()).toBe(true);
-    expect(comp.failed()).toBe(false);
-
-    comp.toggle();
-
-    expect(playSpy).not.toHaveBeenCalled();
-    expect(comp.failed()).toBe(false); // the onError path never runs
-  });
-
   it('plays normally when ready (the download guard does not over-block the ready path)', async () => {
-    const { comp, playSpy } = await render(MEDIA_STATUS.READY);
+    const { comp, playSpy } = await render();
 
-    expect(comp.inert()).toBe(false);
+    expect(comp.failed()).toBe(false);
     comp.toggle();
     expect(playSpy).toHaveBeenCalledTimes(1);
   });
@@ -80,25 +60,13 @@ describe('AudioPlayerComponent', () => {
   });
 
   it('stays inert once a load/decode failure has been recorded', async () => {
-    const { comp, playSpy } = await render(MEDIA_STATUS.READY);
+    const { comp, playSpy } = await render();
     comp.failed.set(true);
-    expect(comp.inert()).toBe(true);
+    expect(comp.failed()).toBe(true);
 
     comp.toggle();
 
     expect(playSpy).not.toHaveBeenCalled();
-  });
-
-  it('stays inert when the server localize failed (status FAILED)', async () => {
-    const { comp, playSpy } = await render(MEDIA_STATUS.FAILED);
-
-    expect(comp.inert()).toBe(true);
-    expect(comp.failed()).toBe(false); // not the frontend decode-failed signal — the message-level status
-
-    comp.toggle();
-
-    expect(playSpy).not.toHaveBeenCalled();
-    expect(comp.failed()).toBe(false); // inert preempts play, so onError never trips a spurious failed
   });
 
   it('renders ready audio without a transfer rail', async () => {
@@ -108,25 +76,10 @@ describe('AudioPlayerComponent', () => {
     fixture.detectChanges();
     await fixture.whenStable();
 
-    expect(fixture.componentInstance.inert()).toBe(false);
+    expect(fixture.componentInstance.failed()).toBe(false);
     expect(fixture.nativeElement.querySelector('.ap-transfer')).toBeNull();
     expect(fixture.nativeElement.querySelector('.ap-btn').disabled).toBe(false);
     expect(fixture.nativeElement.querySelector('.ap-wave')).not.toBeNull();
-  });
-
-  it('renders a visible indeterminate progress rail while audio is downloading', async () => {
-    const fixture = TestBed.createComponent(AudioPlayerComponent);
-    fixture.componentRef.setInput('src', '/uploads/cas/aa/bb/voice.webm');
-    fixture.componentRef.setInput('status', MEDIA_STATUS.DOWNLOADING);
-    fixture.detectChanges();
-    await fixture.whenStable();
-
-    const rail = fixture.nativeElement.querySelector(
-      '.ap-transfer',
-    ) as HTMLElement;
-    expect(rail).not.toBeNull();
-    expect(rail.hasAttribute('aria-valuenow')).toBe(false);
-    expect(rail.getAttribute('aria-label')).toBe('Audio download progress');
   });
 
   it('seeks from the waveform and cycles 1x → 1.5x → 2x → 1x', async () => {

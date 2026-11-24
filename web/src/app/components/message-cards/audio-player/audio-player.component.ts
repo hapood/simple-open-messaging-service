@@ -1,5 +1,4 @@
 import { ChangeDetectionStrategy, ChangeDetectorRef, Component, computed, ElementRef, inject, input, signal, viewChild } from '@angular/core';
-import { MEDIA_STATUS, type MediaStatus } from '../chat-item';
 import { formatDuration } from '../file-meta.util';
 import { AudioPlaybackCoordinator } from './audio-playback-coordinator.service';
 
@@ -14,8 +13,8 @@ import { AudioPlaybackCoordinator } from './audio-playback-coordinator.service';
  *
  * The `<audio>` has no `controls` attribute (the play button + progress bar ARE the controls). A decode/load
  * failure (unsupported codec, federated localize 4xx) flips to a muted, non-functional button via `failed`.
- * While the federated asset is not ready (status 'downloading' | 'failed') the button is inert — play is
- * suppressed so a not-yet-local or 4xx shard can't trip onError into a spurious failed.
+ * The owning file cell mounts the player only after server readiness. This component owns playback,
+ * not download observation or transfer presentation.
  */
 @Component({
   selector: 'app-audio-player',
@@ -25,22 +24,12 @@ import { AudioPlaybackCoordinator } from './audio-playback-coordinator.service';
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class AudioPlayerComponent {
-  /** Exposed for transfer-state comparisons in the template. */
-  readonly MEDIA_STATUS = MEDIA_STATUS;
   /** Audio source URL — a /uploads/cas/… CAS URL. */
   readonly src = input.required<string>();
   /** Clip duration in seconds (client-probed / recorded). Display + the progress denominator. */
   readonly duration = input(0);
   readonly time = input('');
   readonly showUnplayed = input(true);
-  /** Federated media localize status (message-level — every cell of the message shares it). Anything but
-   *  'ready' ('downloading' = still localizing, 'failed' = localize failed) means the local shard URL is
-   *  not playable, so {@link inert} suppresses play (the media-row overlay already surfaces a spinner /
-   *  cloud_off + the matching aria). Without that guard el.play() would fire against a not-yet-local or
-   *  4xx shard, the <audio> would error, and onError() would record a SPURIOUS failed — a frontend-only
-   *  state that never reflects the real localize status. The terminal arrives live from the server via
-   *  SSE and flips this input ready/failed. */
-  readonly status = input<MediaStatus>(MEDIA_STATUS.READY);
 
   private readonly audioRef = viewChild<ElementRef<HTMLAudioElement>>('audio');
   /** Pause the clip — a STABLE callback (created once) so the coordinator can identify "this player" by
@@ -58,19 +47,13 @@ export class AudioPlayerComponent {
   readonly progressPct = computed(() => Math.round(this.progress() * 100));
   /** True when the clip failed to load/decode → the button is muted and non-functional. */
   readonly failed = signal(false);
-  /** The button is non-functional while the clip is not playable: a prior decode/load error (failed), OR
-   *  the federated asset is not ready — still localizing ('downloading') or localize failed ('failed').
-   *  Centralized so the template's [disabled] and toggle()'s guard share one source and never drift. */
-  readonly inert = computed(
-    () => this.failed() || this.status() !== MEDIA_STATUS.READY,
-  );
   readonly durLabel = computed(() => formatDuration(this.duration()));
   readonly played = signal(false);
   readonly rate = signal(1);
 
   toggle(): void {
     const el = this.audioRef()?.nativeElement;
-    if (!el || this.inert()) return;
+    if (!el || this.failed()) return;
     if (this.playing()) {
       el.pause();
       return;
@@ -97,7 +80,7 @@ export class AudioPlayerComponent {
   seek(event: MouseEvent): void {
     const el = this.audioRef()?.nativeElement;
     const target = event.currentTarget as HTMLElement | null;
-    if (!el || !target || this.inert()) return;
+    if (!el || !target || this.failed()) return;
     const rect = target.getBoundingClientRect();
     if (rect.width <= 0) return;
     const ratio = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width));

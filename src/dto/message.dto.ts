@@ -156,7 +156,7 @@ export class QueryDeletedMessagesDto {
   @ApiPropertyOptional({
     example: 120,
     description:
-      'Optional recovery filter. Tombstones above this target message sequence are scanned but omitted.',
+      'Optional current-message cutoff. Tombstones above this message sequence are omitted; scannedThrough is not an applied cursor.',
   })
   @IsOptional()
   @Type(() => Number)
@@ -607,9 +607,8 @@ export class RelocalizeMediaDto {
   seq!: number;
 }
 
-/** Bulk media-status snapshot for mounted messages in one thread. Returns { seq, status } per
- *  existing seq; missing seqs are omitted. */
-export class MediaMessageProgressDto {
+/** Observe one authorized attachment without owning its download. */
+export class MediaFileProgressDto {
   @ApiProperty({ example: 12, description: 'Conversation (MessageThread) id' })
   @Type(() => Number)
   @IsInt()
@@ -621,9 +620,7 @@ export class MediaMessageProgressDto {
   @IsInt()
   @Min(1)
   seq!: number;
-}
 
-export class MediaFileProgressDto extends MediaMessageProgressDto {
   @ApiProperty({
     example: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
     description: 'CAS digest for one file in the message',

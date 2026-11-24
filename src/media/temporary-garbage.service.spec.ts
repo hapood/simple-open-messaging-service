@@ -10,6 +10,7 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { TemporaryGarbageService } from './temporary-garbage.service.js';
 
 const tmpKey = '00000000-0000-4000-8000-000000000001';
@@ -22,7 +23,7 @@ let execute: ReturnType<typeof vi.fn>;
 let cancelUpload: ReturnType<typeof vi.fn>;
 let casLock: ReturnType<typeof vi.fn>;
 beforeEach(async () => {
-  root = await mkdtemp('/tmp/opencode/garbage-test-');
+  root = await mkdtemp(join(tmpdir(), 'garbage-test-'));
   vi.stubEnv('SOMS_DATA_DIR', root);
   await mkdir(join(root, 'resumable'));
   await mkdir(join(root, 'cas/tmp'), { recursive: true });

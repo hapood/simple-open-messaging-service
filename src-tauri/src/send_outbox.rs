@@ -97,6 +97,7 @@ impl<'a> SendOutboxStorage<'a> {
     }
 
     /// Only an app-generated recording may be registered. User-selected paths stay references.
+    #[cfg(any(target_os = "android", test))]
     pub(crate) fn register_owned_recording(&self, client_message_id: &str, path: &std::path::Path) -> Result<(), String> {
         let metadata = std::fs::symlink_metadata(path).map_err(|e| e.to_string())?;
         if !metadata.file_type().is_file() { return Err("recording is not a regular file".into()); }
@@ -150,18 +151,6 @@ impl<'a> SendOutboxStorage<'a> {
             let (client_message_id, thread_id, item) = row.map_err(|e| e.to_string())?;
             Ok(StoredSendTask { client_message_id, thread_id, item: serde_json::from_str(&item).map_err(|e| e.to_string())? })
         }).collect()
-    }
-
-    /// One snapshot supplies the keep-set for an upload-directory maintenance operation.
-    pub(crate) fn referenced_files(&self) -> Result<std::collections::BTreeSet<String>, String> {
-        let mut files = std::collections::BTreeSet::new();
-        for task in self.list()? {
-            for file in task.item.files() {
-                validate_file_reference(&file.path)?;
-                files.insert(file.path.clone());
-            }
-        }
-        Ok(files)
     }
 
     pub(crate) fn remove(&self, cid: &str) -> Result<Vec<String>, String> {
@@ -240,9 +229,9 @@ mod tests {
         let connection = Connection::open(&path).unwrap();
         let store = SendOutboxStorage::initialize(&connection).unwrap();
         assert_eq!(store.list().unwrap(), vec![task]);
-        assert_eq!(store.referenced_files().unwrap(), std::collections::BTreeSet::from(["voice/one.m4a".to_string()]));
         assert!(store.remove("cid").unwrap().is_empty());
-        assert!(store.referenced_files().unwrap().is_empty());
+        assert!(store.get("cid").unwrap().is_none());
+        assert!(store.list().unwrap().is_empty());
         assert!(store.clear().unwrap().is_empty());
         assert!(store.list().unwrap().is_empty());
     }
@@ -272,9 +261,12 @@ mod tests {
         assert!(store.remove("cid").unwrap().contains(&recording.canonicalize().unwrap().to_string_lossy().to_string()));
         assert!(store.owned_recordings("cid").unwrap().is_empty());
         assert!(external.exists());
-        std::os::unix::fs::symlink(&external, owned.join("voice-link.m4a")).unwrap();
-        assert!(release_owned_recordings([owned.join("voice-link.m4a").to_string_lossy().to_string()]).is_err());
-        assert!(external.exists());
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&external, owned.join("voice-link.m4a")).unwrap();
+            assert!(release_owned_recordings([owned.join("voice-link.m4a").to_string_lossy().to_string()]).is_err());
+            assert!(external.exists());
+        }
         release_owned_recordings([recording.canonicalize().unwrap().to_string_lossy().to_string()]).unwrap();
         assert!(!recording.exists());
     }

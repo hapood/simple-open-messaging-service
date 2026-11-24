@@ -632,7 +632,7 @@ export class AuthService {
       await this.endBrowserSession();
       return true;
     }
-    return this.endNativeSession(false);
+    return this.endNativeSession();
   }
 
   /** Forced invalidation and explicit local token clear do not attempt remote revocation. */
@@ -698,20 +698,20 @@ export class AuthService {
     if (completion === 'superseded') throw new SessionSupersededError();
   }
 
-  private desktopLogout: Promise<void> | null = null;
+  private nativeLogout: Promise<void> | null = null;
 
-  private requestDesktopLogout(): Promise<void> {
-    if (this.desktopLogout) return this.desktopLogout;
-    const pending = this.performDesktopLogout();
-    this.desktopLogout = pending;
+  private requestNativeLogout(): Promise<void> {
+    if (this.nativeLogout) return this.nativeLogout;
+    const pending = this.performNativeLogout();
+    this.nativeLogout = pending;
     void pending.then(
-      () => { this.desktopLogout = null; },
-      () => { this.desktopLogout = null; },
+      () => { this.nativeLogout = null; },
+      () => { this.nativeLogout = null; },
     );
     return pending;
   }
 
-  private async performDesktopLogout(): Promise<void> {
+  private async performNativeLogout(): Promise<void> {
     // Rust retains the credential and auth transition, including between IPC commands.
     await tauriInvoke('begin_logout');
     await this.sendOutbox.clear();
@@ -733,9 +733,8 @@ export class AuthService {
     await tauriInvoke('finish_logout', { localOnly });
     this.nativeLoginUuid = null;
     this.clearLocalSessionState();
-    await clearSessionNotifications().catch((error) =>
-      console.warn('[notification] logout cleanup failed', error),
-    );
+    // Rust clears OS notifications before releasing logout admission. A second
+    // renderer cleanup here could erase notifications belonging to a new login.
   }
 
   logout() {
@@ -751,43 +750,19 @@ export class AuthService {
         }),
       );
     }
-    if (!isAndroidNative()) {
-      if (!this.desktopLogout) this.announceSessionEnding();
-      return from(this.requestDesktopLogout()).pipe(tap({
-        error: () => this.toast.warn(this.t('auth.notice.logoutClearFailed'), {
-          duration: IMPORTANT_NOTICE_MS,
-        }),
-      }));
-    }
-    if (!this.isLoggedIn()) return EMPTY;
-    // Renderer-owned WebRTC must end while this session credential is still usable. Android ignores this
-    // DOM signal: its native call owner has its own lifecycle and survives WebView recreation.
-    this.announceSessionEnding();
-    return from(
-      this.endNativeSession(true).then((nativeOk) => {
-        if (!nativeOk)
-          this.toast.warn(
-            this.t('auth.notice.logoutClearFailed'),
-            { duration: IMPORTANT_NOTICE_MS },
-          );
+    if (!this.nativeLogout) this.announceSessionEnding();
+    return from(this.requestNativeLogout()).pipe(tap({
+      error: () => this.toast.warn(this.t('auth.notice.logoutClearFailed'), {
+        duration: IMPORTANT_NOTICE_MS,
       }),
-    ).pipe(
-      tap({
-        error: () =>
-          this.toast.warn(
-            this.t('auth.notice.logoutClearFailed'),
-            { duration: IMPORTANT_NOTICE_MS },
-          ),
-      }),
-    );
+    }));
   }
 
-  private async endNativeSession(remote: boolean): Promise<boolean> {
-    if (this.desktopLogout) {
-      await this.desktopLogout;
+  private async endNativeSession(): Promise<boolean> {
+    if (this.nativeLogout) {
+      await this.nativeLogout;
       return true;
     }
-    const origin = apiOrigin();
     const endedLogin = this.nativeLoginUuid;
     this.nativeLoginUuid = null;
     this.clearLocalSessionState();
@@ -805,44 +780,7 @@ export class AuthService {
     );
     await cleanup;
     let nativeOk = true;
-    if (remote) {
-      let ticket: string | null = null;
-      let platformCleared = false;
-      try {
-        const admitted = await tauriInvoke<{
-          ticket: string | null;
-          localClearFailed: boolean;
-        }>('begin_logout', { origin, sessionUuid: endedLogin });
-        ticket = admitted.ticket;
-        nativeOk = !admitted.localClearFailed;
-      } catch (error) {
-        console.warn('[session] native logout admission failed', error);
-        if (endedLogin) {
-          nativeOk = await this.clearNativeToken(endedLogin);
-          platformCleared = true;
-        }
-      }
-      // The acknowledgement proves Rust captured and ended the owner before Android clears storage.
-      if (isAndroidNative() && !platformCleared && endedLogin) {
-        try {
-          window.SomsFcm!.setSessionToken(null, endedLogin);
-        } catch {
-          nativeOk = false;
-        }
-      }
-      await Promise.all([
-        platformCleared
-          ? Promise.resolve()
-          : clearSessionNotifications().catch((error) =>
-              console.warn('[notification] logout cleanup failed', error),
-            ),
-        ticket
-          ? tauriInvoke('wait_for_logout', { ticket }).catch((error) =>
-              console.warn('[session] logout wait failed', error),
-            )
-          : Promise.resolve(),
-      ]);
-    } else if (endedLogin) {
+    if (endedLogin) {
       nativeOk = await this.clearNativeToken(endedLogin);
     } else {
       nativeOk = await this.discardResidualNativeToken();

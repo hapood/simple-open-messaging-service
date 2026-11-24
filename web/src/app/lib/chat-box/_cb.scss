@@ -122,8 +122,7 @@
   transform: scale(1) rotate(0);
 }
 
-.cb-ghost-loading.cb-edge-failed,
-.cb-entry-gap.cb-edge-failed {
+.cb-ghost-loading.cb-edge-failed {
   color: var(--app-text-muted);
   cursor: pointer;
 
@@ -165,15 +164,6 @@
   box-sizing: border-box;
   height: var(--soms-content-bottom-reserve, 0px);
   flex-shrink: 0;
-}
-
-.cb-entry-gap {
-  box-sizing: border-box;
-  height: 48px;
-  display: flex;
-  align-items: flex-start;
-  justify-content: center;
-  padding-top: 8px;
 }
 
 @keyframes cb-shimmer {

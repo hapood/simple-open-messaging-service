@@ -38,10 +38,10 @@ type MentionProjectionState = {
   selfMentionNamespaceId: number | null;
   unreadCount: number;
   previewSeqs: number[];
+  previewDeletedSeqs: number[];
   lastReadSeq: number;
   lastMentionSeq: number | null;
   messageEndSeq: number;
-  tombstoneEndSeq: number;
   threadProfileRev: number;
   profileSourceId: number | null;
   blocked: boolean;
@@ -109,8 +109,8 @@ export class ThreadFeedHeadWriter {
         CASE WHEN t.type <> 'GROUP' THEN NULL
           WHEN t."authorityNamespaceId" = 0 THEN 0
           ELSE origin."peerAssignedLocalNamespaceId" END AS "selfMentionNamespaceId",
-        s."unreadCount", s."previewSeqs", s."lastReadSeq", s."lastMentionSeq", s."messageEndSeq",
-        s."tombstoneEndSeq", s."threadProfileRev", s."profileSourceId", s.blocked, t."clearedSeq", s."messageVisibleThroughSeq"
+        s."unreadCount", s."previewSeqs", s."previewDeletedSeqs", s."lastReadSeq", s."lastMentionSeq", s."messageEndSeq",
+        s."threadProfileRev", s."profileSourceId", s.blocked, t."clearedSeq", s."messageVisibleThroughSeq"
       FROM "AccountThreadState" s JOIN "Account" a ON a.id = s."accountId"
       JOIN "MessageThread" t ON t.id = s."threadId"
       LEFT JOIN "IdentityNamespace" origin ON origin.id = t."authorityNamespaceId"
@@ -181,7 +181,6 @@ export class ThreadFeedHeadWriter {
     next: {
       lastReadSeq: number;
       messageEndSeq: number;
-      tombstoneEndSeq: number;
     },
   ): Promise<number | null> {
     if (previous.blocked) return null;
@@ -200,12 +199,10 @@ export class ThreadFeedHeadWriter {
       current = null;
       rescan = true;
     }
-    if (current !== null && next.tombstoneEndSeq > previous.tombstoneEndSeq) {
+    if (current !== null) {
       const removed = await tx.execute(sql`
-        SELECT 1 FROM "DeletedMessage" WHERE "threadId" = ${threadId}
-          AND "messageSeq" = ${current}
-          AND "deletionSeq" > ${previous.tombstoneEndSeq}
-          AND "deletionSeq" <= ${next.tombstoneEndSeq} LIMIT 1`);
+        SELECT 1 FROM "Message" WHERE "threadId" = ${threadId}
+          AND seq = ${current} AND "isDeleted" = true LIMIT 1`);
       if (removed.rows.length > 0) {
         current = null;
         rescan = true;
@@ -237,56 +234,44 @@ export class ThreadFeedHeadWriter {
     }
   }
 
-  /** Publish the Group Meta coordinate and its end-anchored profile revision to
-   * members whose stored copy is behind, even when no content head moved —
-   * meta-only mutations advance no message sequence. Blocked recipients stay
-   * stale; unblocking re-reads the head. Caller holds the thread lock and runs
-   * this after the content-head writes; the allocation trigger numbers each
-   * changed row for the thread feed. */
-  static async advanceGroupMetaCoordinatesInTx(
+  /** Publish the end-anchored group profile revision to members whose stored
+   * copy is behind. Blocked recipients stay stale; unblocking re-reads the head.
+   * Caller holds the thread lock and runs this after the content-head writes;
+   * the allocation trigger numbers each changed row for the thread feed. */
+  static async advanceGroupProfileInTx(
     tx: DatabaseTransaction,
     input: {
       threadId: number;
       userIds: readonly number[];
-      groupMetaFeedEndId: number;
       profileRev: number;
       profileSourceId: number | null;
     },
   ): Promise<number[]> {
-    if (input.userIds.length === 0) return [];
+    if (input.userIds.length === 0 || input.profileSourceId === null) return [];
     const changed = await tx.execute<{ accountId: number }>(sql`
       UPDATE "AccountThreadState" s
-      SET "updatedAt" = CURRENT_TIMESTAMP, "groupMetaFeedEndId" = GREATEST(
-        COALESCE(s."groupMetaFeedEndId", 0), ${input.groupMetaFeedEndId}),
-        "threadProfileRev" = CASE WHEN ${input.profileSourceId}::integer IS NOT NULL
-          AND (s."profileSourceId" IS NULL OR s."profileSourceId" < ${input.profileSourceId})
-          AND s."threadProfileRev" IS DISTINCT FROM ${input.profileRev}
-          THEN ${input.profileRev} ELSE s."threadProfileRev" END,
-        "profileSourceId" = CASE WHEN ${input.profileSourceId}::integer IS NOT NULL
-          AND (s."profileSourceId" IS NULL OR s."profileSourceId" < ${input.profileSourceId})
-          AND s."threadProfileRev" IS DISTINCT FROM ${input.profileRev}
-          THEN ${input.profileSourceId} ELSE s."profileSourceId" END
+      SET "updatedAt" = CURRENT_TIMESTAMP,
+        "threadProfileRev" = ${input.profileRev},
+        "profileSourceId" = ${input.profileSourceId}
       FROM unnest(${sql.param([...input.userIds])}::integer[]) AS u(id)
       WHERE s."threadId" = ${input.threadId} AND s."accountId" = u.id
         AND s.blocked = false
-        AND COALESCE(s."groupMetaFeedEndId", 0) < ${input.groupMetaFeedEndId}
+        AND (s."profileSourceId" IS NULL OR s."profileSourceId" < ${input.profileSourceId})
+        AND s."threadProfileRev" IS DISTINCT FROM ${input.profileRev}
       RETURNING s."accountId" AS "accountId"`);
     return changed.rows.map(({ accountId }) => accountId);
   }
 
-  /** Read the canonical Group Meta coordinate with its end-anchored profile
-   * revision and catch the given members up in one lock scope. No-op for
-   * threads without a meta feed (P2P). */
-  static async reconcileGroupMetaCoordinateInTx(
+  /** Publish the group profile revision from the canonical GROUP_PROFILE fact. No-op for P2P. */
+  static async reconcileGroupProfileInTx(
     tx: DatabaseTransaction,
     input: { threadId: number; userIds: readonly number[] },
   ): Promise<number[]> {
     const result = await tx.execute<{
-      metaEndId: number;
       profileRev: number;
       profileSourceId: number | null;
     }>(sql`
-      SELECT meta."metaEndId", meta."profileRev",
+      SELECT meta."profileRev",
         fact."feedId" AS "profileSourceId"
       FROM "GroupMeta" meta
       LEFT JOIN "GroupMetaMemberFeed" fact ON fact."threadId" = meta."threadId"
@@ -294,15 +279,14 @@ export class ThreadFeedHeadWriter {
         AND fact.body -> 'profileRev' = to_jsonb(meta."profileRev")
       WHERE meta."threadId" = ${input.threadId} LIMIT 1`);
     const head = result.rows[0];
-    if (!head?.metaEndId) return [];
+    if (!head) return [];
     if (head.profileRev > 0 && head.profileSourceId === null)
       throw new Error(
         'group profile reference has no matching GROUP_PROFILE item',
       );
-    return this.advanceGroupMetaCoordinatesInTx(tx, {
+    return this.advanceGroupProfileInTx(tx, {
       threadId: input.threadId,
       userIds: input.userIds,
-      groupMetaFeedEndId: head.metaEndId,
       profileRev: head.profileRev,
       profileSourceId: head.profileSourceId,
     });
@@ -315,7 +299,6 @@ export class ThreadFeedHeadWriter {
     target: {
       threadId: number;
       messageEndSeq: number;
-      tombstoneEndSeq: number;
       profileRev?: number;
     },
   ): Promise<ThreadProjectionChange> {
@@ -323,28 +306,42 @@ export class ThreadFeedHeadWriter {
     const state = await this.readStateInTx(tx, accountId, target.threadId);
     if (!state || state.blocked) return unchanged;
     const messageEndSeq = Math.max(state.messageEndSeq, target.messageEndSeq);
-    const tombstoneEndSeq = Math.max(
-      state.tombstoneEndSeq,
-      target.tombstoneEndSeq,
+    const previewSeqs = await this.previewSeqsInTx(
+      tx,
+      accountId,
+      target.threadId,
+      state,
+      {
+        messageEndSeq,
+      },
     );
+    const previewDeletedRows =
+      previewSeqs.length === 0
+        ? []
+        : (
+            await tx.execute<{ seq: number }>(sql`
+              SELECT seq FROM "Message"
+              WHERE "threadId" = ${target.threadId}
+                AND seq = ANY(${sql.param(previewSeqs)}::integer[])
+                AND "isDeleted" = true
+              ORDER BY seq ASC`)
+          ).rows;
+    const previewDeletedSeqs = previewDeletedRows.map((row) => row.seq);
+    const previewSeqsChanged =
+      previewSeqs.length !== state.previewSeqs.length ||
+      previewSeqs.some((seq, index) => seq !== state.previewSeqs[index]);
+    const previewDeletedChanged =
+      previewDeletedSeqs.length !== state.previewDeletedSeqs.length ||
+      previewDeletedSeqs.some(
+        (seq, index) => seq !== state.previewDeletedSeqs[index],
+      );
+    const previewChanged = previewSeqsChanged || previewDeletedChanged;
     const mentionOutsideVisibility =
       state.lastMentionSeq !== null &&
       (state.lastMentionSeq <=
         Math.max(state.lastReadSeq, state.clearedSeq ?? 0) ||
         (state.messageVisibleThroughSeq !== null &&
           state.lastMentionSeq > state.messageVisibleThroughSeq));
-    if (
-      !mentionOutsideVisibility &&
-      !state.previewSeqs.some(
-        (seq) =>
-          seq <= (state.clearedSeq ?? 0) ||
-          (state.messageVisibleThroughSeq !== null &&
-            seq > state.messageVisibleThroughSeq),
-      ) &&
-      messageEndSeq === state.messageEndSeq &&
-      tombstoneEndSeq === state.tombstoneEndSeq
-    )
-      return unchanged;
     const lastMentionSeq = await this.resolveMentionInTx(
       tx,
       accountId,
@@ -353,9 +350,15 @@ export class ThreadFeedHeadWriter {
       {
         lastReadSeq: state.lastReadSeq,
         messageEndSeq,
-        tombstoneEndSeq,
       },
     );
+    if (
+      !mentionOutsideVisibility &&
+      !previewChanged &&
+      messageEndSeq === state.messageEndSeq &&
+      lastMentionSeq === state.lastMentionSeq
+    )
+      return unchanged;
     const unreadCount =
       state.unreadCount +
       (await this.unreadDeltaInTx(
@@ -368,32 +371,6 @@ export class ThreadFeedHeadWriter {
           messageEndSeq,
         ),
       ));
-    const previewSeqs = await this.previewSeqsInTx(
-      tx,
-      accountId,
-      target.threadId,
-      state,
-      {
-        messageEndSeq,
-      },
-    );
-    let previewChanged =
-      previewSeqs.length !== state.previewSeqs.length ||
-      previewSeqs.some((seq, index) => seq !== state.previewSeqs[index]);
-    // References survive deletion, but their rendered status changes.
-    if (
-      !previewChanged &&
-      previewSeqs.length &&
-      tombstoneEndSeq > state.tombstoneEndSeq
-    ) {
-      const deleted = await tx.execute(sql`
-        SELECT 1 FROM "DeletedMessage"
-        WHERE "threadId" = ${target.threadId}
-          AND "messageSeq" = ANY(${sql.param(previewSeqs)}::integer[])
-          AND "deletionSeq" > ${state.tombstoneEndSeq}
-          AND "deletionSeq" <= ${tombstoneEndSeq} LIMIT 1`);
-      previewChanged = deleted.rows.length > 0;
-    }
     await tx.execute(sql`
       WITH selected_peer_profile AS (
         SELECT message.seq, message."profileRev"
@@ -411,10 +388,10 @@ export class ThreadFeedHeadWriter {
       UPDATE "AccountThreadState" SET
         "updatedAt" = CURRENT_TIMESTAMP,
         "previewSeqs" = ${sql.param(previewSeqs)}::integer[],
+        "previewDeletedSeqs" = ${sql.param(previewDeletedSeqs)}::integer[],
         "unreadCount" = ${unreadCount},
         "lastMentionSeq" = ${lastMentionSeq},
         "messageEndSeq" = GREATEST("AccountThreadState"."messageEndSeq", ${target.messageEndSeq}),
-        "tombstoneEndSeq" = GREATEST("AccountThreadState"."tombstoneEndSeq", ${target.tombstoneEndSeq}),
         "threadProfileRev" = CASE WHEN thread.type = 'P2P' THEN COALESCE((
             SELECT "profileRev" FROM selected_peer_profile
           ), "AccountThreadState"."threadProfileRev")
@@ -430,9 +407,9 @@ export class ThreadFeedHeadWriter {
         AND thread.id = ${target.threadId}
         AND "AccountThreadState".blocked = false
         AND ("AccountThreadState"."messageEndSeq" < ${target.messageEndSeq}
-          OR "AccountThreadState"."tombstoneEndSeq" < ${target.tombstoneEndSeq}
           OR "AccountThreadState"."lastMentionSeq" IS DISTINCT FROM ${lastMentionSeq}::integer
-          OR "AccountThreadState"."previewSeqs" IS DISTINCT FROM ${sql.param(previewSeqs)}::integer[])`);
+          OR "AccountThreadState"."previewSeqs" IS DISTINCT FROM ${sql.param(previewSeqs)}::integer[]
+          OR "AccountThreadState"."previewDeletedSeqs" IS DISTINCT FROM ${sql.param(previewDeletedSeqs)}::integer[])`);
     return {
       unreadCountChanged: unreadCount !== state.unreadCount,
       previewChanged,

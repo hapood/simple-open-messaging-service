@@ -252,7 +252,7 @@ impl Session {
     pub(super) fn load(&self) -> Result<Registry, String> {
         let mut registry = cache().lock().unwrap_or_else(|e| e.into_inner()).load(|| {
             let value = tauri::async_runtime::block_on(
-                super::super::preferences::native_db_get_preference("device".into(), KEY.into()),
+                super::super::preferences::native_db_get_preference(KEY.into()),
             )?;
             value
                 .map(serde_json::from_value)
@@ -278,7 +278,6 @@ impl Session {
             .unwrap_or_else(|e| e.into_inner())
             .save(registry, |registry| {
                 tauri::async_runtime::block_on(super::super::preferences::native_db_put_preference(
-                    "device".into(),
                     KEY.into(),
                     serde_json::to_value(registry).map_err(|e| e.to_string())?,
                 ))

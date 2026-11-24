@@ -5,14 +5,19 @@ import {
   OnModuleDestroy,
 } from '@nestjs/common';
 import { PushService } from '../push/push.service.js';
-import { and, desc, eq, gt, lte, sql } from 'drizzle-orm';
+import { and, eq, gt, lte, sql } from 'drizzle-orm';
 import { account, clientStateFeed } from '../database/schema.js';
+import { ClientStateFeedType } from '../database/enums.js';
 import type { DatabaseTransaction } from '../database/database.service.js';
 import { DatabaseService } from '../database/database.service.js';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import { SseService } from '../gateway/sse.service.js';
 import type { IncomingRequestHead } from '../../shared/relationship-request.js';
+import type {
+  ThreadMetaHead,
+  ThreadTombHead,
+} from '../../shared/client-state-feed.js';
 
 /** Independent post-commit client-feed events. Request attention is a
  * domain-specific event kind, not optional fields on a shared update: events
@@ -25,6 +30,18 @@ export type PendingClientStateFeedUpdate =
       userId: number;
       feedId: number;
       threadFeedEndId: number;
+    }
+  | {
+      /** A thread tombstone head advanced in ClientStateFeed. */
+      kind: 'thread-tomb-head';
+      userId: number;
+      feedId: number;
+    }
+  | {
+      /** A group meta head advanced in ClientStateFeed. */
+      kind: 'thread-meta-head';
+      userId: number;
+      feedId: number;
     }
   | {
       /** A friend request or group invitation round reached this account. */
@@ -57,7 +74,7 @@ export interface GroupRequestReadEvent {
   threadFeedEndId: number;
 }
 
-/** Transports the account's complete incoming request head; owns no request lifecycle. */
+/** Transports the account's compacted client state heads; owns no domain lifecycle. */
 @Injectable()
 export class ClientStateFeedService implements OnModuleDestroy {
   private readonly logger = new Logger(ClientStateFeedService.name);
@@ -99,6 +116,9 @@ export class ClientStateFeedService implements OnModuleDestroy {
         this.sse.onThreadFeedUpdated(update.userId, {
           threadFeedEndId: update.threadFeedEndId,
         });
+        break;
+      case 'thread-tomb-head':
+      case 'thread-meta-head':
         break;
     }
     const current = this.pushHighWatermarks.get(update.userId) ?? 0;
@@ -179,8 +199,13 @@ export class ClientStateFeedService implements OnModuleDestroy {
     const [current] = await tx
       .select({ body: clientStateFeed.body })
       .from(clientStateFeed)
-      .where(eq(clientStateFeed.userId, userId))
-      .orderBy(desc(clientStateFeed.feedId))
+      .where(
+        and(
+          eq(clientStateFeed.userId, userId),
+          eq(clientStateFeed.type, ClientStateFeedType.REQUEST_HEAD),
+          eq(clientStateFeed.threadId, 0),
+        ),
+      )
       .limit(1);
     const previous = current?.body as IncomingRequestHead | undefined;
     if (
@@ -188,6 +213,90 @@ export class ClientStateFeedService implements OnModuleDestroy {
       previous.requestReadId === body.requestReadId
     )
       return null;
+    return this.upsertItemInTx(
+      tx,
+      userId,
+      ClientStateFeedType.REQUEST_HEAD,
+      0,
+      body,
+    );
+  }
+
+  /** Caller holds the account feed allocator lock for userId. */
+  async publishThreadTombHeadInTx(
+    tx: DatabaseTransaction,
+    userId: number,
+    threadId: number,
+    tombstoneEndSeq: number,
+  ): Promise<number | null> {
+    if (!Number.isSafeInteger(tombstoneEndSeq) || tombstoneEndSeq < 0)
+      throw new Error('invalid tombstoneEndSeq for client state feed');
+    const [current] = await tx
+      .select({ body: clientStateFeed.body })
+      .from(clientStateFeed)
+      .where(
+        and(
+          eq(clientStateFeed.userId, userId),
+          eq(clientStateFeed.type, ClientStateFeedType.THREAD_TOMB_HEAD),
+          eq(clientStateFeed.threadId, threadId),
+        ),
+      )
+      .limit(1);
+    const previous = current?.body as ThreadTombHead | undefined;
+    if (previous && previous.tombstoneEndSeq >= tombstoneEndSeq) return null;
+    const body: ThreadTombHead = { threadId, tombstoneEndSeq };
+    return this.upsertItemInTx(
+      tx,
+      userId,
+      ClientStateFeedType.THREAD_TOMB_HEAD,
+      threadId,
+      body,
+    );
+  }
+
+  /** Caller holds the account feed allocator lock for userId. */
+  async publishThreadMetaHeadInTx(
+    tx: DatabaseTransaction,
+    userId: number,
+    threadId: number,
+    groupMetaFeedEndId: number,
+  ): Promise<number | null> {
+    if (!Number.isSafeInteger(groupMetaFeedEndId) || groupMetaFeedEndId < 0)
+      throw new Error('invalid groupMetaFeedEndId for client state feed');
+    const [current] = await tx
+      .select({ body: clientStateFeed.body })
+      .from(clientStateFeed)
+      .where(
+        and(
+          eq(clientStateFeed.userId, userId),
+          eq(clientStateFeed.type, ClientStateFeedType.THREAD_META_HEAD),
+          eq(clientStateFeed.threadId, threadId),
+        ),
+      )
+      .limit(1);
+    const previous = current?.body as ThreadMetaHead | undefined;
+    if (previous && Number(previous.groupMetaFeedEndId) >= groupMetaFeedEndId)
+      return null;
+    const body: ThreadMetaHead = {
+      threadId,
+      groupMetaFeedEndId: String(groupMetaFeedEndId),
+    };
+    return this.upsertItemInTx(
+      tx,
+      userId,
+      ClientStateFeedType.THREAD_META_HEAD,
+      threadId,
+      body,
+    );
+  }
+
+  private async upsertItemInTx(
+    tx: DatabaseTransaction,
+    userId: number,
+    type: ClientStateFeedType,
+    threadId: number,
+    body: IncomingRequestHead | ThreadTombHead | ThreadMetaHead,
+  ): Promise<number> {
     const [allocated] = await tx
       .update(account)
       .set({
@@ -199,7 +308,25 @@ export class ClientStateFeedService implements OnModuleDestroy {
     if (!allocated) throw new Error('client state feed owner missing');
     await tx
       .insert(clientStateFeed)
-      .values({ userId, feedId: allocated.feedId, body });
+      .values({
+        userId,
+        feedId: allocated.feedId,
+        type,
+        threadId,
+        body,
+      })
+      .onConflictDoUpdate({
+        target: [
+          clientStateFeed.userId,
+          clientStateFeed.type,
+          clientStateFeed.threadId,
+        ],
+        set: {
+          feedId: allocated.feedId,
+          body,
+          updatedAt: new Date(),
+        },
+      });
     return allocated.feedId;
   }
 

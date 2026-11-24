@@ -28,6 +28,7 @@ import type { FederationQuoteTarget } from '../src/federation/federation-quote-t
 import { ForwardBundleService } from '../src/forward/forward-bundle.service.js';
 import { resolveStoredQuotes } from '../src/message/quote-reference.js';
 import { FederationInboundMessageValidatorService } from '../src/federation/federation-inbound-message-validator.service.js';
+import { requireThreadContentLockInTx } from '../src/common/locks/thread-content-lock.js';
 import { truncateTablesForTest } from './support/truncate';
 import { assertFederationMessageWire } from './support/federation-wire-schema.js';
 
@@ -200,9 +201,12 @@ describe('federation quote coordinates across three persisted node views', () =>
       quoteTarget,
       quoteDigest,
     });
-    const result = await database.db.transaction((tx) =>
-      store.store(tx, {
+    const result = await database.db.transaction(async (tx) => {
+      const threadLock = await requireThreadContentLockInTx(tx, view.threadId);
+      return store.store(tx, {
+        threadLock,
         threadId: view.threadId,
+        seq,
         creator: { account: 'user', namespaceId: peer.namespaceId },
         fetchedFromDomain: peer.domain,
         namespaceId: peer.namespaceId,
@@ -224,8 +228,8 @@ describe('federation quote coordinates across three persisted node views', () =>
           [],
           quoteDigest,
         ),
-      }),
-    );
+      });
+    });
     if (result.kind !== 'message') throw new Error('text unexpectedly pending');
     return result.message;
   }
@@ -264,9 +268,9 @@ describe('federation quote coordinates across three persisted node views', () =>
       submission.quoteTarget!,
       submission.quoteDigest,
     );
-    expect(JSON.parse(authoritativeReply.content).quote).toMatchObject({
-      seq: 41,
-      namespaceId: 0,
+    expect(JSON.parse(authoritativeReply.content).quote).toEqual({
+      originSeq: 41,
+      digest: submission.quoteDigest,
     });
     const distribution = await publish(alpha, bravo, authoritativeReply);
     expect(distribution.quoteTarget).toEqual({ seq: 41 });
@@ -384,6 +388,7 @@ describe('federation quote coordinates across three persisted node views', () =>
   it('retains a missing authority target across receipt and redistribution using originSeq', async () => {
     const digest = 'd'.repeat(64);
     const reply = await receive(alpha, charlie, 51, { originSeq: 41 }, digest);
+    expect(JSON.parse(reply.content).quote).toEqual({ originSeq: 41, digest });
     const distribution = await publish(alpha, bravo, reply);
     expect(distribution.quoteTarget).toEqual({ seq: 41 });
     expect(distribution.quoteDigest).toBe(digest);
@@ -418,7 +423,7 @@ describe('federation quote coordinates across three persisted node views', () =>
       threadId: bravo.threadId,
       namespaceId: alpha.namespaceId,
       messageTargetSeq: 51,
-      messageProcessedThroughSeq: 51,
+      messageProcessedThroughSeq: 0,
     });
     const [absent] = await resolveStoredQuotes(database.db, [reply]);
     expect(JSON.parse(absent.content).quote.status).toBe('NOT_FOUND');

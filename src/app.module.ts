@@ -6,6 +6,7 @@ import { MessageController } from './controller/message.controller.js';
 import { AuthController } from './controller/auth.controller.js';
 import { UserModule } from './user/user.module.js';
 import { MessageModule } from './message/message.module.js';
+import { HistoryIntervalModule } from './message/history-interval.module.js';
 import { AuthModule } from './auth/auth.module.js';
 import { GatewayModule } from './gateway/gateway.module.js';
 import { UserController } from './controller/user.controller.js';
@@ -61,6 +62,7 @@ import { HttpAdmissionService } from './http/http-admission.service.js';
     UserModule,
     GatewayModule,
     MessageModule,
+    HistoryIntervalModule,
     GroupModule,
     UploadModule,
     // UploadController (staged send promotion) registers from here.

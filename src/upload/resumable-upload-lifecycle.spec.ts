@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Logger } from '@nestjs/common';
+import { tmpdir } from 'node:os';
 import {
   mkdir,
   mkdtemp,
@@ -49,7 +50,7 @@ describe('resumable upload lifecycle (no database)', () => {
 
   beforeEach(async () => {
     vi.resetAllMocks();
-    directory = await mkdtemp('/tmp/opencode/upload-lifecycle-');
+    directory = await mkdtemp(join(tmpdir(), 'upload-lifecycle-'));
     session = {
       id: 1n,
       pendingMediaId: 41n,

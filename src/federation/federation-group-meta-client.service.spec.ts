@@ -10,17 +10,21 @@ function harness(result: GroupMetaFeedPage | Error) {
     result instanceof Error
       ? vi.fn().mockRejectedValue(result)
       : vi.fn().mockResolvedValue(result);
-  const runWithRetry = vi.fn(
-    async (_peer: string, _name: string, operation: () => Promise<unknown>) =>
-      operation(),
-  );
+  const signal = new AbortController().signal;
   return {
     client: new FederationGroupMetaClient(
       { get } as never,
-      { runWithRetry } as never,
+      {
+        captureActiveById: vi.fn().mockResolvedValue({
+          domain: 'peer.test',
+          namespaceId: 9,
+          peerAssignedLocalNamespaceId: 1,
+          rootPublicKey: 'root',
+        }),
+      } as never,
     ),
     get,
-    runWithRetry,
+    signal,
   };
 }
 
@@ -32,13 +36,14 @@ const request = {
 };
 
 describe('FederationGroupMetaClient', () => {
-  it('fetches exactly one fixed-through page through the network scheduler', async () => {
+  it('fetches one page by namespace without a local retry loop', async () => {
     const page: GroupMetaFeedPage = {
       account: '!group',
       mode: 'delta',
       items: [
         {
           feedId: 5,
+          originCreatedAt: 0,
           operation: 'MEMBER_UPSERT',
           body: {
             account: 'alice',
@@ -52,16 +57,32 @@ describe('FederationGroupMetaClient', () => {
       groupMetaFeedEndId: 10,
       hasMore: true,
     };
-    const { client, get, runWithRetry } = harness(page);
+    const { client, get, signal } = harness(page);
 
-    await expect(client.fetchPage('peer.test', request)).resolves.toBe(page);
+    await expect(client.fetchPage(9, request, signal)).resolves.toBe(page);
 
-    expect(runWithRetry).toHaveBeenCalledOnce();
     expect(get).toHaveBeenCalledWith(
       '/somfp/v1/group-meta?account=%21group&mode=delta&after=3&take=100&through=8',
       'peer.test',
       16 * 1024 * 1024,
+      signal,
     );
+  });
+
+  it('does not request after the caller has cancelled', async () => {
+    const { client, get } = harness({
+      account: '!group',
+      mode: 'delta',
+      items: [],
+      scannedThrough: 3,
+      groupMetaFeedEndId: 8,
+      hasMore: false,
+    });
+    const signal = AbortSignal.abort();
+    await expect(client.fetchPage(9, request, signal)).rejects.toMatchObject({
+      name: 'AbortError',
+    });
+    expect(get).not.toHaveBeenCalled();
   });
 
   it('maps a valid unavailable cursor window for the durable task', async () => {
@@ -75,7 +96,7 @@ describe('FederationGroupMetaClient', () => {
     );
 
     const error = await client
-      .fetchPage('peer.test', request)
+      .fetchPage(9, request, new AbortController().signal)
       .catch((caught: unknown) => caught);
     expect(error).toBeInstanceOf(RemoteGroupMetaCursorUnavailableError);
     expect(error).toMatchObject({ resumeAfter: 2, resumeBefore: 11 });
@@ -88,6 +109,7 @@ describe('FederationGroupMetaClient', () => {
       items: [
         {
           feedId: 5,
+          originCreatedAt: 0,
           operation: 'MEMBER_DEPART',
           body: {
             account: 'alice',
@@ -98,6 +120,7 @@ describe('FederationGroupMetaClient', () => {
         },
         {
           feedId: 4,
+          originCreatedAt: 0,
           operation: 'GROUP_PROFILE',
           body: { account: '!group', namespaceId: 0, profileRev: 1 },
         },
@@ -107,9 +130,9 @@ describe('FederationGroupMetaClient', () => {
       hasMore: true,
     });
 
-    await expect(client.fetchPage('peer.test', request)).rejects.toThrow(
-      'unordered group-meta page items',
-    );
+    await expect(
+      client.fetchPage(9, request, new AbortController().signal),
+    ).rejects.toThrow('unordered group-meta page items');
   });
 
   it('does not retry or remap malformed recovery data', async () => {
@@ -122,8 +145,8 @@ describe('FederationGroupMetaClient', () => {
       ),
     );
 
-    await expect(client.fetchPage('peer.test', request)).rejects.toThrow(
-      'invalid group-meta recovery window',
-    );
+    await expect(
+      client.fetchPage(9, request, new AbortController().signal),
+    ).rejects.toThrow('invalid group-meta recovery window');
   });
 });

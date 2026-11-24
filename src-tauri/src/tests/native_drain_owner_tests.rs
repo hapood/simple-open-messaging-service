@@ -32,14 +32,15 @@ fn seed_group_thread(conn: &mut Connection, user_id: i64, meta_end: &str) {
         "type": "GROUP", "threadId": THREAD_ID, "publisherNamespaceId": 0,
         "selfMentionNamespaceId": 0, "conversationState": "ACTIVE", "blocked": false,
         "role": "MEMBER", "profileAccount": "!dev", "profileRev": 3,
-        "threadFeedId": 5, "alias": null, "messageEndSeq": 0, "tombstoneEndSeq": 0,
-        "groupMetaFeedEndId": meta_end, "joinRequestEndFeedId": 0,
+        "threadFeedId": 5, "alias": null, "messageEndSeq": 0,
+        "joinRequestEndFeedId": 0,
         "joinRequestReadFeedId": -1, "groupInviteEndFeedId": 0, "lastReadSeq": 0,
         "announcementReadFeedId": 0, "unreadCount": 0, "lastMentionSeq": null,
         "previews": [],
     }))
     .unwrap();
     super::super::client_state::ensure_thread_identity(&tx, user_id, &snapshot).unwrap();
+    super::super::thread_resource_sync::advance(&tx, user_id, THREAD_ID, 0, 0, meta_end).unwrap();
     tx.commit().unwrap();
 }
 
@@ -60,17 +61,12 @@ fn fixture(proxy: &ServerSessionState, group: bool) -> FeedIntent {
             )
             .unwrap();
     } else {
-        seed_p2p_thread(&mut database, 42, 0);
-        database
-            .execute(
-                "UPDATE threads SET tombstone_end_seq=5 WHERE user_id=42 AND thread_id=?1",
-                [THREAD_ID],
-            )
-            .unwrap();
+        seed_p2p_thread(&mut database, 42, 5);
         database
             .execute_batch(
-                "CREATE TEMP TABLE tombstone_proof(kind TEXT);
-                 CREATE TEMP TRIGGER tombstone_message_proof AFTER INSERT ON main.messages
+                "INSERT INTO messages VALUES(42,52,3,1,'{\"threadId\":52,\"seq\":3,\"contentType\":\"TEXT\",\"content\":\"body\",\"isDeleted\":false}');
+                 CREATE TEMP TABLE tombstone_proof(kind TEXT);
+                 CREATE TEMP TRIGGER tombstone_message_proof AFTER UPDATE ON main.messages
                  BEGIN INSERT INTO tombstone_proof VALUES('message'); END;
                  CREATE TEMP TRIGGER tombstone_hwm_proof AFTER UPDATE OF deleted_hwm ON main.threads
                  BEGIN INSERT INTO tombstone_proof VALUES('hwm'); END;",
@@ -163,7 +159,6 @@ fn seed_p2p_thread(conn: &mut Connection, user_id: i64, tombstone_end: i64) {
         "selfMentionNamespaceId": 0, "conversationState": "ACTIVE", "blocked": false,
         "role": null, "profileAccount": "bob", "profileRev": 1,
         "threadFeedId": 5, "alias": null, "messageEndSeq": 0,
-        "tombstoneEndSeq": tombstone_end, "groupMetaFeedEndId": null,
         "joinRequestEndFeedId": 0,
         "joinRequestReadFeedId": -1, "groupInviteEndFeedId": 0, "lastReadSeq": 0,
         "announcementReadFeedId": 0, "unreadCount": 0, "lastMentionSeq": null,
@@ -171,6 +166,7 @@ fn seed_p2p_thread(conn: &mut Connection, user_id: i64, tombstone_end: i64) {
     }))
     .unwrap();
     super::super::client_state::ensure_thread_identity(&tx, user_id, &snapshot).unwrap();
+    super::super::thread_resource_sync::advance(&tx, user_id, THREAD_ID, 0, tombstone_end, "0").unwrap();
     tx.commit().unwrap();
 }
 
@@ -232,7 +228,7 @@ async fn stalled_drain_sockets_close_on_end_or_repair() {
             OPEN_THREAD_ID.store(THREAD_ID, std::sync::atomic::Ordering::Release);
             let (started, ready) = tokio::sync::oneshot::channel();
             let expected = if group {
-                "GET /api/v1/user/group-meta?threadId=52&mode=full&after=0&take=100&through=2 HTTP/1.1\r\n"
+                "GET /api/v1/user/group-meta?threadId=52&after=0&take=100&through=2 HTTP/1.1\r\n"
             } else {
                 "POST /api/v1/deleted-messages/query HTTP/1.1\r\n"
             };
@@ -412,10 +408,15 @@ async fn a_queued_tombstone_page_commit_rejects_end_or_repair() {
                         )
                         .optional()
                         .map_err(|e| e.to_string())?;
-                    let messages: i64 = conn
-                        .query_row("SELECT COUNT(*) FROM messages", [], |row| row.get(0))
+                    let facts: i64 = conn
+                        .query_row("SELECT COUNT(*) FROM messages WHERE json_extract(payload_json,'$.contentType')='TOMB'", [], |row| row.get(0))
                         .map_err(|e| e.to_string())?;
-                    Ok::<_, String>((hwm, messages))
+                    let deleted: i64 = conn.query_row(
+                        "SELECT COUNT(*) FROM messages WHERE json_extract(payload_json,'$.isDeleted')=1",
+                        [], |row| row.get(0),
+                    ).map_err(|e| e.to_string())?;
+                    assert_eq!(deleted, 0);
+                    Ok::<_, String>((hwm, facts))
                 })
                 .unwrap()
         };
@@ -428,272 +429,64 @@ async fn a_queued_tombstone_page_commit_rejects_end_or_repair() {
     }
 }
 
-/// The Group Meta drain keeps its captured endpoint, bearer and physical connection across
-/// pages and profile warming, and materializes referenced profiles through the same owner.
 #[tokio::test]
-async fn group_meta_drain_retains_owner_and_materializes_profiles() {
-    let server = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let proxy = ServerSessionState::new();
-    origins(&proxy, &format!("http://{}", server.local_addr().unwrap()));
-    let intent = fixture(&proxy, true);
-    OPEN_THREAD_ID.store(THREAD_ID, std::sync::atomic::Ordering::Release);
-    // Mutating routing after capture cannot retarget any page or profile request.
-    origins(&proxy, "http://127.0.0.1:1");
-    let serving = tokio::spawn(async move {
-        {
-            let (mut socket, _) = server.accept().await.unwrap();
-            let (headers, _) = read_request(&mut socket).await;
-            assert!(headers.starts_with(
-                "GET /api/v1/user/group-meta?threadId=52&mode=full&after=0&take=100&through=2 HTTP/1.1\r\n"
-            ));
-            assert!(headers
-                .to_ascii_lowercase()
-                .contains("authorization: bearer drain-token\r\n"));
-            respond(
-                &mut socket,
-                group_meta_page(
-                    "1",
-                    true,
-                    json!([{"feedId": "1", "createdAt":1000,"originCreatedAt":null,"operation": "MEMBER_UPSERT",
-                            "body": {"account": "bob", "namespaceId": 0,
-                                     "role": "MEMBER", "profileRev": 2}}]),
-                ),
-            )
-            .await;
-        }
-        {
-            let (mut socket, _) = server.accept().await.unwrap();
-            let (headers, _) = read_request(&mut socket).await;
-            assert!(headers.starts_with(
-                "GET /api/v1/user/group-meta?threadId=52&mode=full&after=1&take=100&through=2 HTTP/1.1\r\n"
-            ));
-            assert!(headers
-                .to_ascii_lowercase()
-                .contains("authorization: bearer drain-token\r\n"));
-            respond(
-                &mut socket,
-                group_meta_page(
-                    "2",
-                    false,
-                    json!([{"feedId": "2", "createdAt":1000,"originCreatedAt":null,"operation": "GROUP_ANNOUNCEMENT",
-                            "body": {"text": "hello"}}]),
-                ),
-            )
-            .await;
-        }
-        let demands = [
-            (
-                json!({"publisherNamespaceId": 0, "lookup": "ACCOUNT_PROFILE",
-                       "target": {"profileNamespaceId": 0, "account": "!dev", "rev": 3}}),
-                json!({"code": 0, "data": {"status": "READY", "profile": {
-                    "account": "!dev", "profileNamespaceId": 0, "rev": 3,
-                    "publisherNamespaceId": 0, "name": "Dev", "bio": "group",
-                }}}),
-            ),
-            (
-                json!({"publisherNamespaceId": 0, "lookup": "GROUP_MEMBER_PROFILE",
-                       "target": {"profileNamespaceId": 0, "account": "bob", "rev": 2},
-                       "groupAccount": "!dev"}),
-                json!({"code": 0, "data": {"status": "READY", "profile": {
-                    "account": "bob", "profileNamespaceId": 0, "rev": 2,
-                    "publisherNamespaceId": 0, "name": "Bob", "bio": "member",
-                }}}),
-            ),
-        ];
-        for (demand, reply) in demands {
-            let (mut socket, _) = server.accept().await.unwrap();
-            let (headers, body) = read_request(&mut socket).await;
-            assert!(headers.starts_with("POST /api/v1/user/profile-resolution HTTP/1.1\r\n"));
-            assert!(headers
-                .to_ascii_lowercase()
-                .contains("authorization: bearer drain-token\r\n"));
-            assert_eq!(body, demand);
-            respond(&mut socket, reply).await;
-        }
-    });
-    let (changed, patches, error) = tokio::time::timeout(
-        Duration::from_secs(5),
-        sync_group_meta_thread(intent.clone(), THREAD_ID),
-    )
-    .await
-    .unwrap();
-    serving.await.unwrap();
-    assert_eq!(error, None);
-    assert_eq!(changed, vec![THREAD_ID]);
-    assert_eq!(patches.len(), 2);
-    assert_eq!(patches[0].group_meta_feed_id, "1");
-    assert_eq!(patches[0].member_count, 1);
-    assert!(patches[0].announcement_feed_id.is_none());
-    assert!(patches[0].announcement_text.is_none());
-    assert_eq!(patches[0].group_meta_recovery_through.as_deref(), Some("2"));
-    assert_eq!(patches[1].group_meta_feed_id, "2");
-    assert_eq!(patches[1].member_count, 1);
-    assert_eq!(patches[1].announcement_text.as_deref(), Some("hello"));
-    assert_eq!(patches[1].announcement_feed_id.as_deref(), Some("2"));
-    assert_eq!(patches[1].group_meta_recovery_through, None);
-    intent
-        .work
-        .owner()
-        .with_database(|conn| {
-            let (feed, recovery, members, announcement): (
-                String,
-                Option<String>,
-                i64,
-                Option<String>,
-            ) = conn
-                .query_row(
-                    "SELECT feed_id, recovery_through,
-                            member_count, announcement_text
-                     FROM group_meta WHERE user_id=42 AND thread_id=?1",
-                    [THREAD_ID],
-                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
-                )
-                .map_err(|e| e.to_string())?;
-            assert_eq!(feed, "2");
-            assert_eq!(recovery, None);
-            assert_eq!(members, 1);
-            assert_eq!(announcement.as_deref(), Some("hello"));
-            let roster: i64 = conn
-                .query_row(
-                    "SELECT COUNT(*) FROM members
-                     WHERE user_id=42 AND thread_id=?1 AND left_state=0",
-                    [THREAD_ID],
-                    |row| row.get(0),
-                )
-                .map_err(|e| e.to_string())?;
-            assert_eq!(roster, 1);
-            let profiles: Vec<String> = conn
-                .prepare("SELECT account FROM profile_proof")
-                .map_err(|e| e.to_string())?
-                .query_map([], |row| row.get(0))
-                .map_err(|e| e.to_string())?
-                .collect::<Result<_, _>>()
-                .map_err(|e| e.to_string())?;
-            assert_eq!(profiles, vec!["!dev".to_string(), "bob".to_string()]);
-            let cursors: Vec<String> = conn
-                .prepare("SELECT value FROM meta_cursor_proof")
-                .map_err(|e| e.to_string())?
-                .query_map([], |row| row.get(0))
-                .map_err(|e| e.to_string())?
-                .collect::<Result<_, _>>()
-                .map_err(|e| e.to_string())?;
-            assert_eq!(
-                cursors,
-                vec!["0".to_string(), "1".to_string(), "2".to_string()]
-            );
-            Ok(())
-        })
-        .unwrap();
-    close(&intent);
-}
-
-/// Profile warming is optional: a failed reference must not discard or hide the Group Meta
-/// pages that already committed through the same owner.
-#[tokio::test]
-async fn failed_profile_warming_keeps_committed_group_meta_pages() {
-    let server = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let proxy = ServerSessionState::new();
-    origins(&proxy, &format!("http://{}", server.local_addr().unwrap()));
-    let intent = fixture(&proxy, true);
-    OPEN_THREAD_ID.store(THREAD_ID, std::sync::atomic::Ordering::Release);
-    let serving = tokio::spawn(async move {
-        {
-            let (mut socket, _) = server.accept().await.unwrap();
-            let (headers, _) = read_request(&mut socket).await;
-            assert!(headers.starts_with(
-                "GET /api/v1/user/group-meta?threadId=52&mode=full&after=0&take=100&through=2 HTTP/1.1\r\n"
-            ));
-            respond(&mut socket, group_meta_page("1", true, json!([]))).await;
-        }
-        {
-            let (mut socket, _) = server.accept().await.unwrap();
-            let (headers, _) = read_request(&mut socket).await;
-            assert!(headers.starts_with(
-                "GET /api/v1/user/group-meta?threadId=52&mode=full&after=1&take=100&through=2 HTTP/1.1\r\n"
-            ));
-            respond(&mut socket, group_meta_page("2", false, json!([]))).await;
-        }
-        {
-            let (mut socket, _) = server.accept().await.unwrap();
-            let _ = read_request(&mut socket).await;
-            socket
-                .write_all(b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
-                .await
-                .unwrap();
-        }
-    });
-    let (changed, patches, error) = tokio::time::timeout(
-        Duration::from_secs(5),
-        sync_group_meta_thread(intent.clone(), THREAD_ID),
-    )
-    .await
-    .unwrap();
-    assert_eq!(error, None, "warming failure is retried on the next wake");
-    tokio::time::timeout(Duration::from_secs(5), serving)
-        .await
-        .expect("mock server did not receive the expected Meta pages and profile demand")
-        .unwrap();
-    assert_eq!(changed, vec![THREAD_ID]);
-    assert_eq!(patches.len(), 2);
-    intent
-        .work
-        .owner()
-        .with_database(|conn| {
-            let feed: String = conn
-                .query_row(
-                    "SELECT feed_id FROM group_meta
-                     WHERE user_id=42 AND thread_id=?1",
-                    [THREAD_ID],
-                    |row| row.get(0),
-                )
-                .map_err(|e| e.to_string())?;
-            assert_eq!(feed, "2");
-            let profiles: i64 = conn
-                .query_row("SELECT COUNT(*) FROM profiles", [], |row| row.get(0))
-                .map_err(|e| e.to_string())?;
-            assert_eq!(profiles, 0);
-            Ok(())
-        })
-        .unwrap();
-    close(&intent);
-}
-
-#[tokio::test]
-async fn uninitialized_deletion_progress_is_rejected_without_replay() {
+async fn tombstone_cutoff_exhaustion_keeps_last_applied_cursor_and_rereads_maximum() {
     let server = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let proxy = ServerSessionState::new();
     origins(&proxy, &format!("http://{}", server.local_addr().unwrap()));
     let mut intent = fixture(&proxy, false);
-    intent
-        .work
-        .owner()
-        .with_database(|conn| {
-            conn.execute(
-                "DELETE FROM threads WHERE user_id=42 AND thread_id=?1",
-                [THREAD_ID],
-            )
-            .map_err(|e| e.to_string())?;
-            conn.execute(
-                "INSERT INTO message_ranges VALUES(42,?1,0,3,'LOCAL_COVERED')",
-                [THREAD_ID],
-            )
-            .map_err(|e| e.to_string())?;
-            Ok(())
-        })
-        .unwrap();
     OPEN_THREAD_ID.store(THREAD_ID, std::sync::atomic::Ordering::Release);
-    let error = sync_tombstone_thread(&mut intent, THREAD_ID)
-        .await
-        .unwrap_err();
-    assert_eq!(error, "thread deletion progress is not initialized");
-    assert!(server.accept().now_or_never().is_none());
+    let owner = intent.work.owner().clone();
+    let serving = tokio::spawn(async move {
+        let (mut first, _) = server.accept().await.unwrap();
+        let (_, request) = read_request(&mut first).await;
+        assert_eq!(request["maxMessageSeq"], 3);
+        assert_eq!(request["take"], 50);
+        owner
+            .with_database(|conn| {
+                conn.execute(
+                    "INSERT INTO messages VALUES(42,52,20,1,?1)",
+                    [
+                        json!({"threadId":52,"seq":20,"contentType":"TEXT","content":"later"})
+                            .to_string(),
+                    ],
+                )
+                .unwrap();
+                Ok::<_, String>(())
+            })
+            .unwrap();
+        respond(&mut first, json!({"code":0,"data":{
+            "tombstones":[{"threadId":52,"deletionSeq":1,"messageSeq":3,"type":"USER_RETRACTION"}],
+            "scannedThrough":4,"hasMore":true
+        }})).await;
+        let (mut second, _) = server.accept().await.unwrap();
+        let (_, request) = read_request(&mut second).await;
+        assert_eq!(request["after"], 1);
+        assert_eq!(request["maxMessageSeq"], 20);
+        respond(
+            &mut second,
+            json!({"code":0,"data":{
+                "tombstones":[],"scannedThrough":5,"hasMore":true
+            }}),
+        )
+        .await;
+    });
+    let committed = tokio::time::timeout(
+        Duration::from_secs(5),
+        sync_tombstone_thread(&mut intent, THREAD_ID),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    serving.await.unwrap();
+    assert_eq!(committed.len(), 1);
     intent
         .work
         .owner()
         .with_database(|conn| {
             assert_eq!(
-                super::super::messages::read_deleted_hwm(conn, 42, THREAD_ID)?,
-                None
+                super::super::messages::read_deleted_hwm(conn, 42, 52)?,
+                Some(1)
             );
             Ok(())
         })
@@ -720,7 +513,7 @@ async fn tombstone_drain_commits_through_the_captured_connection() {
             .contains("authorization: bearer drain-token\r\n"));
         assert_eq!(
             body,
-            json!({"threadId": 52, "after": 0, "take": 100, "through": 5})
+            json!({"threadId": 52, "after": 0, "take": 50, "through": 5, "maxMessageSeq": 3})
         );
         respond(
             &mut socket,
@@ -756,7 +549,7 @@ async fn tombstone_drain_commits_through_the_captured_connection() {
                 )
                 .optional()
                 .map_err(|e| e.to_string())?;
-            assert_eq!(hwm, Some(5));
+            assert_eq!(hwm, Some(1));
             let tombs: i64 = conn
                 .query_row("SELECT COUNT(*) FROM messages", [], |row| row.get(0))
                 .map_err(|e| e.to_string())?;
@@ -768,7 +561,9 @@ async fn tombstone_drain_commits_through_the_captured_connection() {
                     |row| row.get(0),
                 )
                 .map_err(|e| e.to_string())?;
-            assert!(payload.contains("TOMB"));
+            let payload: Value = serde_json::from_str(&payload).unwrap();
+            assert_eq!(payload["contentType"], "TOMB");
+            assert_eq!(payload["isDeleted"], true);
             let mut proofs: Vec<String> = conn
                 .prepare("SELECT kind FROM tombstone_proof")
                 .map_err(|e| e.to_string())?

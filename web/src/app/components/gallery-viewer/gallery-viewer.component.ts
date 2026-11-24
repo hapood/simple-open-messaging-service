@@ -10,26 +10,33 @@ import {
   input,
   output,
   signal,
+  untracked,
   ChangeDetectionStrategy,
 } from '@angular/core';
 import { TranslocoPipe, TranslocoService } from '@jsverse/transloco';
 import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
 import type Artplayer from 'artplayer';
 import PhotoSwipe, { type SlideData } from 'photoswipe';
+import { MEDIA_STATUS, type AlbumMedia } from '../message-cards/chat-item';
+import { firstValueFrom } from 'rxjs';
+import { MsgService } from '../../services/message.service';
+import { mediaSource } from '../message-cards/media-source';
+import { FileIconComponent } from '../message-cards/file-icon.component';
+import { MessageRepository } from '../../services/message-repository.service';
 import {
-  MEDIA_STATUS,
-  type AlbumMedia,
-  type MediaStatus,
-} from '../message-cards/chat-item';
-import {
-  MediaAvailabilityRegistration,
-  MediaAvailabilityService,
-} from '../../services/media-availability.service';
+  MediaFileProgressService,
+  type MediaFileProgress,
+} from '../../services/media-file-progress.service';
+import { MediaDownloadOverlayComponent } from '../message-cards/media-row/media-download-overlay.component';
+import { MatIconModule } from '@angular/material/icon';
 import { DownloadService } from '../../services/download.service';
 import { ToastService } from '../../services/toast.service';
 import { ImageDownloadService } from '../../services/image-download.service';
 import { formatBytes } from '../message-cards/file-meta.util';
 import { NativeVideoService } from '../../services/native-video.service';
+import { AlbumMediaCellComponent } from '../message-cards/media-row/album-media-cell.component';
+import { AttachmentMetadataComponent } from './attachment-metadata.component';
+import { AudioPlayerComponent } from '../message-cards/audio-player/audio-player.component';
 import {
   assetUrl,
   ANDROID_MEDIA3_ENABLED,
@@ -55,7 +62,16 @@ type VideoPlaybackError = 'network' | 'unsupported';
 @Component({
   selector: 'app-gallery-viewer',
   standalone: true,
-  imports: [TranslocoPipe, MatProgressSpinnerModule],
+  imports: [
+    TranslocoPipe,
+    MatProgressSpinnerModule,
+    AlbumMediaCellComponent,
+    MediaDownloadOverlayComponent,
+    MatIconModule,
+    AttachmentMetadataComponent,
+    FileIconComponent,
+    AudioPlayerComponent,
+  ],
   templateUrl: './gallery-viewer.component.html',
   changeDetection: ChangeDetectionStrategy.OnPush,
   styleUrl: './gallery-viewer.component.scss',
@@ -73,7 +89,25 @@ export class GalleryViewerComponent implements AfterViewInit, OnDestroy {
 
   readonly MEDIA_STATUS = MEDIA_STATUS;
   readonly index = signal(0);
-  readonly registeredStatus = signal<MediaStatus | null>(null);
+  readonly serverProgress = signal<MediaFileProgress>({
+    status: 'pending',
+    loaded: 0,
+    total: null,
+    bytesPerSecond: null,
+  });
+  private readonly observationRevision = signal(0);
+  readonly currentKindIcon = computed(() => {
+    switch (this.current()?.kind) {
+      case 'image':
+        return 'image';
+      case 'video':
+        return 'movie';
+      case 'audio':
+        return 'audiotrack';
+      default:
+        return 'description';
+    }
+  });
   readonly loadErrors = signal<Set<number>>(new Set());
   readonly videoErrors = signal<Map<number, VideoPlaybackError>>(new Map());
   readonly chromeVisible = signal(true);
@@ -86,17 +120,14 @@ export class GalleryViewerComponent implements AfterViewInit, OnDestroy {
       this.images().length > 1 &&
       (!this.currentIsVideo() || !this.videoPlaying()),
   );
-  readonly currentStatus = computed<MediaStatus>(
-    () =>
-      this.registeredStatus() ?? this.current()?.status ?? MEDIA_STATUS.READY,
-  );
+  readonly currentStatus = computed(() => this.serverProgress().status);
   readonly currentLoadFailed = computed(() =>
     this.loadErrors().has(this.index()),
   );
   readonly currentUrl = computed(() =>
     this.current() ? this.downloads.displayUrl(this.current()!) : '',
   );
-  readonly currentTask = computed(() => {
+  readonly currentOriginalPreviewTask = computed(() => {
     this.downloads.tasks();
     const media = this.current();
     return media ? this.downloads.task(media) : undefined;
@@ -109,23 +140,6 @@ export class GalleryViewerComponent implements AfterViewInit, OnDestroy {
         this.shouldGate(media),
     );
   });
-  readonly currentProgress = computed(() => {
-    const task = this.currentTask();
-    return task && task.total > 0
-      ? Math.min(100, Math.round((task.loaded / task.total) * 100))
-      : null;
-  });
-  readonly currentProgressText = computed(() => {
-    const task = this.currentTask();
-    if (!task) return '';
-    const loaded = formatBytes(task.loaded);
-    const total = formatBytes(task.total || task.expectedSize);
-    return total
-      ? `${loaded || '0 B'} / ${total}`
-      : loaded
-        ? this.i18n.translate('gallery.downloadedBytes', { size: loaded })
-        : '';
-  });
   readonly saving = signal(false);
 
   private readonly retryKeys = new Map<number, number>();
@@ -135,12 +149,12 @@ export class GalleryViewerComponent implements AfterViewInit, OnDestroy {
   private readonly videoErrorLayers = new Map<number, HTMLElement>();
   private pswp: PhotoSwipe | null = null;
   private destroying = false;
+  private localizationAttempt = 0;
   private readonly renderedBlobUrls = new Map<number, string>();
 
-  private readonly mediaAvailability = inject(MediaAvailabilityService);
-  private mediaRegistration?: MediaAvailabilityRegistration;
-  private removeStatusListener?: () => void;
-  private removeWithdrawnListener?: () => void;
+  private readonly messageApi = inject(MsgService);
+  private readonly fileProgress = inject(MediaFileProgressService);
+  private readonly messages = inject(MessageRepository);
   private readonly i18n = inject(TranslocoService);
   private readonly downloadService = inject(DownloadService);
   private readonly toast = inject(ToastService);
@@ -158,13 +172,41 @@ export class GalleryViewerComponent implements AfterViewInit, OnDestroy {
   readonly formatBytes = formatBytes;
 
   constructor() {
-    effect(() => {
+    effect((onCleanup) => {
       const media = this.current();
-      this.replaceMediaRegistration(
-        this.threadId(),
-        media?.msgId,
-        media?.status ?? MEDIA_STATUS.READY,
-      );
+      this.observationRevision();
+      this.serverProgress.set({
+        status: 'pending',
+        loaded: 0,
+        total: null,
+        bytesPerSecond: null,
+      });
+      if (!media) return;
+      const progress = this.fileProgress.observe(media).subscribe({
+        next: (state) => {
+          this.serverProgress.set(state);
+          if (state.status === 'ready')
+            untracked(() => this.refreshReadySlide());
+        },
+        error: () =>
+          this.serverProgress.set({
+            status: 'failed',
+            loaded: 0,
+            total: null,
+            bytesPerSecond: null,
+          }),
+      });
+      // Timeline deletion coordinates are independent of download authorization.
+      const threadId = this.threadId();
+      const deletion = this.messages.deletedLive$.subscribe((event) => {
+        if (event.threadId !== threadId) return;
+        if (event.deletions.some((item) => item.seq === media.msgId))
+          this.close.emit();
+      });
+      onCleanup(() => {
+        progress.unsubscribe();
+        deletion.unsubscribe();
+      });
     });
     effect(() => {
       this.downloads.tasks();
@@ -277,13 +319,9 @@ export class GalleryViewerComponent implements AfterViewInit, OnDestroy {
     for (const media of this.images()) {
       const key = this.downloads.key(media);
       const task = this.downloads.task(media);
-      if (
-        this.ownedDownloads.has(key) &&
-        task?.status === 'downloading'
-      )
+      if (this.ownedDownloads.has(key) && task?.status === 'downloading')
         this.downloads.cancel(media);
     }
-    this.releaseMediaRegistration();
     this.destroyVideoPlayers();
     this.pswp?.destroy();
     this.pswp = null;
@@ -302,17 +340,11 @@ export class GalleryViewerComponent implements AfterViewInit, OnDestroy {
     this.chromeVisible.update((visible) => !visible);
   }
 
-  mediaUrl(media: AlbumMedia): string {
-    if (media.kind === 'video' && this.isAndroidApp)
-      return this.nativeVideo.thumbnailUrl(media.src);
-    return this.downloads.thumbnailUrl(media);
-  }
-
   async saveCurrent(event: MouseEvent): Promise<void> {
     event.stopPropagation();
     const media = this.current();
     if (!media || this.saving()) return;
-    await this.saveMedia(media, this.index());
+    await this.saveMedia(media);
   }
 
   loadCurrent(): void {
@@ -333,12 +365,6 @@ export class GalleryViewerComponent implements AfterViewInit, OnDestroy {
     if (!task || task.status === 'failed')
       this.ownedDownloads.add(this.downloads.key(media));
     this.downloads.start(media, this.threadId());
-  }
-
-  cancelCurrent(): void {
-    const media = this.current();
-    if (!media) return;
-    this.downloads.cancel(media);
   }
 
   retryCurrentDownload(): void {
@@ -377,26 +403,40 @@ export class GalleryViewerComponent implements AfterViewInit, OnDestroy {
   /** Retry backend localization for a federated media item. */
   async relocalizeCurrent(): Promise<void> {
     const image = this.current();
-    const threadId = this.threadId();
-    if (!image?.msgId || threadId === 0) return;
+    if (!image) return;
 
     const i = this.index();
+    const attempt = ++this.localizationAttempt;
+    const isCurrent = () =>
+      !this.destroying &&
+      this.localizationAttempt === attempt &&
+      this.current() === image;
     this.setLoadError(i, false);
 
     try {
-      const status = await this.mediaAvailability.retry(threadId, image.msgId);
-      if (status === MEDIA_STATUS.FAILED) {
+      const source = mediaSource(image.src);
+      if (source.kind === 'unmanaged') return;
+      const response = await firstValueFrom(
+        this.messageApi.relocalizeMedia(source.threadId, source.seq),
+      );
+      if (!isCurrent()) return;
+      if (response.code !== 0 || !response.data) {
+        throw new Error('media retry was rejected');
+      }
+      if (response.data.status === MEDIA_STATUS.FAILED) {
         this.setLoadError(i, true);
+      } else {
+        this.observationRevision.update((revision) => revision + 1);
       }
     } catch {
-      this.setLoadError(i, true);
+      if (isCurrent()) this.setLoadError(i, true);
     }
   }
 
   private toSlide(image: AlbumMedia, galleryIndex: number): GallerySlideData {
     if (image.kind === 'file' || image.kind === 'audio') {
       return {
-        html: `<div class="gv-unloaded-slide" aria-label="${escapeHtmlAttribute(image.name ?? 'file')}"><svg viewBox="0 0 24 24" width="72" height="72" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/></svg></div>`,
+        html: '<div class="gv-unloaded-slide"></div>',
         width: 280,
         height: 220,
         galleryIndex,
@@ -406,16 +446,16 @@ export class GalleryViewerComponent implements AfterViewInit, OnDestroy {
     if (image.kind === 'video') {
       return {
         html: this.videoSlideHtml(galleryIndex),
-        width: Math.max(1, image.w),
-        height: Math.max(1, image.h),
+        width: image.w,
+        height: image.h,
         galleryIndex,
         kind: image.kind,
       };
     }
     return {
       src: this.imageUrl(image, galleryIndex),
-      width: Math.max(1, image.w),
-      height: Math.max(1, image.h),
+      width: image.w,
+      height: image.h,
       alt: '',
       galleryIndex,
       kind: image.kind,
@@ -431,10 +471,6 @@ export class GalleryViewerComponent implements AfterViewInit, OnDestroy {
     const retryKey = this.retryKeys.get(index) ?? 0;
     if (retryKey === 0 || /^(blob:|data:)/.test(base)) return base;
     return `${base}${base.includes('?') ? '&' : '?'}_r=${retryKey}`;
-  }
-
-  private defaultFilename(media: AlbumMedia, index = this.index()): string {
-    return `media-${media.msgId ?? index + 1}.${media.kind === 'video' ? 'mp4' : 'jpg'}`;
   }
 
   private shouldGate(media: AlbumMedia): boolean {
@@ -459,39 +495,14 @@ export class GalleryViewerComponent implements AfterViewInit, OnDestroy {
     });
   }
 
-  private replaceMediaRegistration(
-    threadId: number,
-    seq: number | undefined,
-    initialStatus: MediaStatus,
-  ): void {
-    this.releaseMediaRegistration();
-    if (!seq || threadId === 0) {
-      this.registeredStatus.set(null);
-      return;
-    }
-    const registration = this.mediaAvailability.register(
-      threadId,
-      seq,
-      initialStatus,
-    );
-    this.mediaRegistration = registration;
-    this.registeredStatus.set(registration.status());
-    this.removeStatusListener = registration.subscribe((status) => {
-      this.registeredStatus.set(status);
-      if (status === MEDIA_STATUS.READY) this.retryLoad();
-    });
-    this.removeWithdrawnListener = registration.onWithdrawn(() =>
-      this.pswp?.close(),
-    );
-  }
-
-  private releaseMediaRegistration(): void {
-    this.removeStatusListener?.();
-    this.removeStatusListener = undefined;
-    this.removeWithdrawnListener?.();
-    this.removeWithdrawnListener = undefined;
-    this.mediaRegistration?.unregister();
-    this.mediaRegistration = undefined;
+  private refreshReadySlide(): void {
+    const media = this.current();
+    const index = this.index();
+    if (!media || !this.slides[index]) return;
+    this.setLoadError(index, false);
+    if (media.kind === 'image')
+      this.slides[index].src = this.imageUrl(media, index);
+    this.pswp?.refreshSlideContent(index);
   }
 
   private setLoadError(index: number, failed: boolean): void {
@@ -539,9 +550,11 @@ export class GalleryViewerComponent implements AfterViewInit, OnDestroy {
   private videoSlideHtml(index: number): string {
     if (this.isAndroidApp) {
       const media = this.images()[index];
-      const width = Math.max(1, media?.w ?? 1);
-      const height = Math.max(1, media?.h ?? 1);
-      const thumbnail = media ? this.nativeVideo.thumbnailUrl(media.src) : '';
+      if (media?.kind !== 'video')
+        throw new Error('Video slide requires video metadata');
+      const width = media.w;
+      const height = media.h;
+      const thumbnail = this.nativeVideo.thumbnailUrl(media.src);
       return `<div class="gv-native-video-shell" style="--gv-video-ratio:${width}/${height}">
         <div class="gv-slide-video gv-native-video-poster" data-gallery-index="${index}">
           ${thumbnail ? `<img class="gv-native-video-thumbnail" src="${thumbnail}" alt="">` : ''}
@@ -800,18 +813,18 @@ export class GalleryViewerComponent implements AfterViewInit, OnDestroy {
 
   private async saveVideo(index: number): Promise<void> {
     const media = this.images()[index];
-    if (media?.kind === 'video') await this.saveMedia(media, index);
+    if (media?.kind === 'video') await this.saveMedia(media);
   }
 
-  private async saveMedia(media: AlbumMedia, index: number): Promise<void> {
+  private async saveMedia(media: AlbumMedia): Promise<void> {
     if (this.saving()) return;
     this.saving.set(true);
     try {
       await this.downloadService.download({
         threadId: this.threadId(),
         path: media.src,
-        filename: media.name || this.defaultFilename(media, index),
-        mimeType: media.mimeType || 'application/octet-stream',
+        filename: media.name,
+        mimeType: media.mimeType,
       });
     } catch (error) {
       console.error('[gallery] save failed:', error);

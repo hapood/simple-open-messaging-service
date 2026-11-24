@@ -27,7 +27,7 @@ import {
 } from '@angular/core';
 import { TranslocoService } from '@jsverse/transloco';
 import { LanguageService } from '../../../services/language.service';
-import type { ChatMsgData } from '../chat-item';
+import type { SystemMessageItem } from '../chat-item';
 import { DateRowComponent } from '../date-row/date-row.component';
 
 @Component({
@@ -76,7 +76,7 @@ export class SystemRowComponent {
   private readonly transloco = inject(TranslocoService);
   private readonly language = inject(LanguageService);
 
-  readonly data = input.required<ChatMsgData>();
+  readonly data = input.required<SystemMessageItem>();
   readonly isShowHead = input(false);
   readonly isGroupStart = input(false);
   readonly showDate = input(false);
@@ -127,7 +127,7 @@ export class SystemRowComponent {
     });
   }
 
-  private profilePair(_data: ChatMsgData, identity: SystemEventAddress) {
+  private profilePair(_data: SystemMessageItem, identity: SystemEventAddress) {
     return {
       publisherNamespaceId: identity.publisherNamespaceId,
       profileNamespaceId: identity.profileNamespaceId,
@@ -135,7 +135,7 @@ export class SystemRowComponent {
   }
 
   private resolveIdentityDomain(
-    data: ChatMsgData,
+    data: SystemMessageItem,
     identity: SystemEventAddress,
     onCleanup: (callback: () => void) => void,
   ): void {
@@ -150,7 +150,7 @@ export class SystemRowComponent {
   }
 
   private profileDemand(
-    data: ChatMsgData,
+    data: SystemMessageItem,
     identity: SystemEventAddress,
     revision: number,
   ): ProfileDemand {
@@ -184,7 +184,7 @@ export class SystemRowComponent {
 
   /** Resolve an exact profile key from the participant body. */
   private resolveProfiledParticipant(
-    data: ChatMsgData,
+    data: SystemMessageItem,
     identity: SystemEventAddress,
     onCleanup: (callback: () => void) => void,
   ): void {
@@ -205,7 +205,9 @@ export class SystemRowComponent {
       if (!revision) return;
       void firstValueFrom(
         this.profiles.resolve(
-          unevidencedProfileDemand(this.profileDemand(data, identity, revision)),
+          unevidencedProfileDemand(
+            this.profileDemand(data, identity, revision),
+          ),
         ),
       )
         .then((profile) => {

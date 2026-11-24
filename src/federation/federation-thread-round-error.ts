@@ -1,3 +1,11 @@
+/** A queue is running a message direction the source does not use. */
+export class FederationThreadRoundDirectionError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'FederationThreadRoundDirectionError';
+  }
+}
+
 /** Stops a stale round from committing after the thread's authorization changes. */
 export class FederationThreadRoundAuthorizationEpochChangedError extends Error {
   constructor() {

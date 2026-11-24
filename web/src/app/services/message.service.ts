@@ -1,19 +1,9 @@
-import {
-  consumeSse,
-  SseDecoder,
-  type SseFrame,
-} from '../../../../shared/sse-client';
 import { WebUploadTransport } from './web-upload-transport';
 import { NativeUploadTransport } from './native-upload-transport.service';
 import { Injectable } from '@angular/core';
 import type { StoredNonMediaSendContent } from './send-outbox-storage';
 import { HttpClient, HttpContext } from '@angular/common/http';
-import {
-  defer,
-  firstValueFrom,
-  Observable,
-  switchMap,
-} from 'rxjs';
+import { defer, firstValueFrom, Observable, switchMap } from 'rxjs';
 import {
   Message,
   MessageQueryRow,
@@ -22,7 +12,10 @@ import {
 } from './model';
 import { apiPrefix } from './constants';
 import { isTauri } from './runtime';
-import type { UploadPartIdentity, UploadProgressHandler } from './upload-transport';
+import type {
+  UploadPartIdentity,
+  UploadProgressHandler,
+} from './upload-transport';
 import type { ThreadAliasApplied } from '../../../../shared/thread-attention';
 import {
   SessionLifecycleService,
@@ -255,12 +248,22 @@ export class MsgService {
     onProgress?: UploadProgressHandler,
   ): Observable<StandardResponse<T>> {
     if (this.canStream(file)) {
-      return this.nativeUpload.upload<T>({
-        path: (file as File & { path: string }).path,
-        name: file.name, mimeType: file.type || 'application/octet-stream', size: file.size,
-      }, identity, onProgress);
+      return this.nativeUpload.upload<T>(
+        {
+          path: (file as File & { path: string }).path,
+          name: file.name,
+          mimeType: file.type || 'application/octet-stream',
+          size: file.size,
+        },
+        identity,
+        onProgress,
+      );
     }
-    return new WebUploadTransport(this.http).upload<T>(file, identity, onProgress);
+    return new WebUploadTransport(this.http).upload<T>(
+      file,
+      identity,
+      onProgress,
+    );
   }
 
   /** True when the upload can stream from disk: the Tauri DESKTOP shell, where Tauri's `<input type=file>`
@@ -400,76 +403,6 @@ export class MsgService {
         status: 'pending' | 'downloading' | 'ready' | 'failed';
       }>
     >(`${apiPrefix()}/relocalize-media`, { threadId, seq });
-  }
-
-  mediaDownloadProgress(
-    threadId: number,
-    seq: number,
-  ): Observable<import('./model').MediaStatus> {
-    const url = `${apiPrefix()}/message/media-message-progress?threadId=${threadId}&seq=${seq}`;
-    return new Observable((subscriber) => {
-      let revision = 0;
-      const onFrame = (frame: SseFrame) => {
-        if (frame.event !== 'MEDIA_MESSAGE_DOWNLOAD_PROGRESS' || !frame.data)
-          return;
-        const data = JSON.parse(frame.data) as { status?: string };
-        if (
-          data.status === 'downloading' ||
-          data.status === 'ready' ||
-          data.status === 'failed'
-        ) {
-          revision += 1;
-          subscriber.next(data.status);
-        }
-      };
-      if (isTauri()) {
-        return this.http
-          .get(url, {
-            responseType: 'text',
-            headers: { Accept: 'text/event-stream' },
-          })
-          .subscribe({
-            next: (text) => new SseDecoder().push(text, onFrame),
-            error: (error) => subscriber.error(error),
-            complete: () => subscriber.complete(),
-          });
-      }
-      const aborter = new AbortController();
-      let snapshot: import('rxjs').Subscription | undefined;
-      void consumeSse(url, {
-        signal: aborter.signal,
-        onFrame,
-        onOpen: () => {
-          // Subscribe before reading the snapshot so completion during stream setup is not lost.
-          const before = revision;
-          snapshot = this.queryMediaStatus(threadId, [seq]).subscribe({
-            next: (response) => {
-              const status = response.data?.statuses.find(
-                (item) => item.seq === seq,
-              )?.status;
-              if (
-                response.code === 0 &&
-                status &&
-                revision === before &&
-                !subscriber.closed
-              ) {
-                subscriber.next(status);
-              }
-            },
-            error: () => undefined,
-          });
-        },
-      }).then(
-        () => subscriber.complete(),
-        (error: unknown) => {
-          if (!aborter.signal.aborted) subscriber.error(error);
-        },
-      );
-      return () => {
-        aborter.abort();
-        snapshot?.unsubscribe();
-      };
-    });
   }
 
   /** Read the authoritative federated media status for mounted messages. Used on mount and reconnect. */

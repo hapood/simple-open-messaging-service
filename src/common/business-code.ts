@@ -79,6 +79,7 @@ export enum BusinessCode {
   FORWARD_INVALID_BUNDLE = 30005, // malformed/missing/inaccessible forward bundle or source message
   CLIENT_FEED_CURSOR_UNAVAILABLE = 30006, // a message or tombstone body cursor is invalid; data carries integer resume bounds
   THREAD_FEED_CURSOR_INVALID = 30007, // attention range is ahead of the current account feed
+  HISTORY_INTERVAL_EVICTED = 30008, // global history-interval subscription capacity reached; oldest subscription evicted
 
   // 40xxx group domain
   GROUP_INVALID_TOKEN = 40003, // invalid invite token
@@ -87,6 +88,7 @@ export enum BusinessCode {
   GROUP_TARGET_NOT_MEMBER = 40006, // target is not an active member of the group
   GROUP_DISSOLVED = 40007, // terminal group state: history remains readable, sending/membership changes stop
   GROUP_FULL = 40008, // this origin server's local group-member capacity has been reached (not an S2S protocol limit)
+  GROUP_MEMBERS_NOT_READY = 40009, // retry after the mirror establishes its first committed roster
 
   // 50xxx federation (S2S). Ordinary operation outcomes use HTTP 200 and the code carries the
   // business meaning. Only malformed/authentication failures (400/401), temporary service

@@ -5,6 +5,8 @@ import { BusinessCode } from '../src/common/business-code.js';
 import { DatabaseModule } from '../src/database/database.module.js';
 import { DatabaseService } from '../src/database/database.service.js';
 import {
+  accountThreadState,
+  clientGroupMetaFeed,
   groupAccount as groupAccountTable,
   groupMeta,
   groupMetaMemberFeed,
@@ -120,6 +122,9 @@ describe('canonical Group Meta feed', () => {
 
   afterAll(async () => {
     await database.db.delete(message).where(eq(message.threadId, threadId));
+    await database.db
+      .delete(accountThreadState)
+      .where(eq(accountThreadState.threadId, threadId));
     await database.db
       .delete(relationshipPair)
       .where(eq(relationshipPair.threadId, threadId));
@@ -284,8 +289,13 @@ describe('canonical Group Meta feed', () => {
     await database.db.insert(groupMeta).values({
       threadId: groupId,
       metaEndId: 1,
+      clientMetaEndId: 1,
     });
-    await database.db.insert(groupMetaMemberFeed).values({
+    await database.db.insert(accountThreadState).values({
+      accountId: ownerUserId,
+      threadId: groupId,
+    }).onConflictDoNothing();
+    await database.db.insert(clientGroupMetaFeed).values({
       threadId: groupId,
       feedId: 1,
       operation: 'GROUP_ANNOUNCEMENT',
@@ -295,7 +305,6 @@ describe('canonical Group Meta feed', () => {
       ownerUserId,
       groupId,
       groupAccount,
-      'full',
       0,
       100,
       1,
@@ -361,12 +370,12 @@ describe('canonical Group Meta feed', () => {
     const published = await database.db.transaction((tx) =>
       feed.reconcileAnnouncementInTx(tx, groupId, 'Welcome'),
     );
-    expect(published).toEqual({ feedId: 2, changed: true });
+    expect(published).toEqual({ feedId: 1, changed: true });
     expect(
       await database.db.transaction((tx) =>
         feed.reconcileAnnouncementInTx(tx, groupId, 'Welcome'),
       ),
-    ).toEqual({ feedId: 2, changed: false });
+    ).toEqual({ feedId: 1, changed: false });
     expect((await read('full', 0, 1)).items).toEqual([]);
     expect((await read('delta', 1)).items).toEqual([
       {
@@ -381,7 +390,7 @@ describe('canonical Group Meta feed', () => {
       await database.db.transaction((tx) =>
         feed.reconcileAnnouncementInTx(tx, groupId, null),
       ),
-    ).toEqual({ feedId: 3, changed: true });
+    ).toEqual({ feedId: 2, changed: true });
     expect((await read('full', 0)).items).toEqual([
       {
         feedId: 3,
@@ -478,20 +487,25 @@ describe('canonical Group Meta feed', () => {
         },
       } as never,
       {
-        runWithRetry: (
-          _domain: string,
-          _name: string,
-          operation: () => Promise<unknown>,
-        ) => operation(),
+        captureActiveById: async () => ({
+          domain: peerDomain,
+          namespaceId: peerNamespaceId,
+          peerAssignedLocalNamespaceId: 1,
+          rootPublicKey: 'root',
+        }),
       } as never,
     );
     for (const mode of ['full', 'delta'] as const) {
-      const page = await client.fetchPage(peerDomain, {
-        account: groupAccount,
-        mode,
-        after: 0,
-        through: 5,
-      });
+      const page = await client.fetchPage(
+        peerNamespaceId,
+        {
+          account: groupAccount,
+          mode,
+          after: 0,
+          through: 5,
+        },
+        new AbortController().signal,
+      );
       for (const item of page.items) {
         operations.add(item.operation);
         expect(item).not.toHaveProperty('createdAt');
@@ -536,15 +550,19 @@ describe('canonical Group Meta feed', () => {
         { resolveDemand: async () => undefined } as never,
         {} as never,
       );
-      expect(await executor.run(mirror.id, peerDomain, peerNamespaceId)).toBe(
-        false,
-      );
+      expect(
+        await executor.run(
+          mirror.id,
+          peerNamespaceId,
+          new AbortController().signal,
+        ),
+      ).toBe(false);
       const state = await database.db.query.groupMeta.findFirst({
         where: eq(groupMeta.threadId, mirror.id),
       });
       expect(state).toMatchObject({
         metaProcessedThroughId: 5,
-        metaRecoveryThroughId: null,
+        metaRecoveryThroughId: 0,
       });
       const facts = await database.db.query.groupMetaMemberFeed.findMany({
         where: eq(groupMetaMemberFeed.threadId, mirror.id),

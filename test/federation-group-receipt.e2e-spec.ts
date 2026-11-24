@@ -14,7 +14,10 @@ import { DatabaseModule } from '../src/database/database.module.js';
 import { DatabaseService } from '../src/database/database.service.js';
 import * as tables from '../src/database/schema.js';
 import { DeletedMessageService } from '../src/message/deleted-message.service.js';
+import { ForwardBundleService } from '../src/forward/forward-bundle.service.js';
 import { FederationInboundMessagePageService } from '../src/federation/federation-inbound-message-page.service.js';
+import { FederationInboundMessagePreparationService } from '../src/federation/federation-inbound-message-preparation.service.js';
+import { FederationInboundMessageReceiptService } from '../src/federation/federation-inbound-message-receipt.service.js';
 import { FederationInboundMessageStoreService } from '../src/federation/federation-inbound-message-store.service.js';
 import { FederationInboundMessageRouteService } from '../src/federation/federation-inbound-message-route.service.js';
 import { FederationInboundMessageValidatorService } from '../src/federation/federation-inbound-message-validator.service.js';
@@ -45,6 +48,8 @@ describe('group origin rejects mirror copies as processing receipts', () => {
   let module: TestingModule;
   let database: DatabaseService;
   let pages: FederationInboundMessagePageService;
+  let preparation: FederationInboundMessagePreparationService;
+  let receipts: FederationInboundMessageReceiptService;
   let store: FederationInboundMessageStoreService;
   let namespaces: FederationNamespaceService;
   let threadId: number;
@@ -71,19 +76,34 @@ describe('group origin rejects mirror copies as processing receipts', () => {
       database,
       namespaces,
     );
+    const deletedMessages = new DeletedMessageService(database);
+    const routes = new FederationInboundMessageRouteService();
     store = new FederationInboundMessageStoreService(
       threadAccess,
       undefined as never,
       undefined as never,
-      new DeletedMessageService(database),
+      deletedMessages,
     );
-    vi.spyOn(store, 'applyProcessingReceipt');
+    receipts = new FederationInboundMessageReceiptService(
+      database,
+      routes,
+      threadAccess,
+      deletedMessages,
+    );
+    vi.spyOn(receipts, 'process');
     vi.spyOn(store, 'store');
     pages = new FederationInboundMessagePageService(
       threadAccess,
       new FederationInboundMessageValidatorService(),
-      new FederationInboundMessageRouteService(),
+      routes,
       store,
+      {} as ForwardBundleService,
+    );
+    preparation = new FederationInboundMessagePreparationService(
+      database,
+      pages,
+      routes,
+      receipts,
     );
   });
   afterAll(async () => module.close());
@@ -172,24 +192,29 @@ describe('group origin rejects mirror copies as processing receipts', () => {
     };
   }
 
-  async function apply(item = receipt(), reverse = false) {
+  async function apply(item = receipt()) {
     const token = await namespaces.captureActive(mirrorDomain);
+    const prepared = await preparation.prepare(
+      {
+        threadId,
+        peerDomain: mirrorDomain,
+        peerToken: token,
+        data: {
+          messages: [item],
+          scannedThrough: item.seq,
+          hasMore: false,
+        },
+      },
+      new Map(),
+      0,
+      new AbortController().signal,
+    );
+    if (prepared.length === 0) return [];
     return database.db.transaction(async (tx) => {
       const threadLock = await requireThreadContentLockInTx(tx, threadId);
-      return pages.apply(tx, mirrorDomain, [item], token, {
-        expectedThreadId: threadId,
+      return pages.applyPrepared(tx, prepared, token, {
         threadLock,
-        isolateMissingContext: true,
-        ...(reverse
-          ? {
-              sequencePolicy: {
-                kind: 'MAP_ORIGIN' as const,
-                beforeSeq: 100,
-                throughSeq: 40,
-                messageSeqOffset: 0,
-              },
-            }
-          : {}),
+        processedInterval: { left: item.seq - 1, right: item.seq },
       });
     });
   }
@@ -210,7 +235,7 @@ describe('group origin rejects mirror copies as processing receipts', () => {
       updatedAt: createdAt,
       federationPayloadVerification: 'UNVERIFIED',
     });
-    expect(store.applyProcessingReceipt).not.toHaveBeenCalled();
+    expect(receipts.process).not.toHaveBeenCalled();
     expect(store.store).not.toHaveBeenCalled();
     const thread = await database.db.query.messageThread.findFirst({
       where: eq(tables.messageThread.id, threadId),
@@ -325,20 +350,17 @@ describe('group origin rejects mirror copies as processing receipts', () => {
     },
   );
 
-  it.each([false, true])(
-    'skips a mirror copy and its replay without verifying or changing the original (reverse=%s)',
-    async (reverse) => {
-      expect(await apply(receipt(), reverse)).toEqual([]);
-      expect(await apply(receipt(), reverse)).toEqual([]);
-      expect(
-        await database.db.query.message.findMany({
-          where: eq(tables.message.id, messageId),
-          columns: { federationPayloadVerification: true },
-        }),
-      ).toMatchObject([{ federationPayloadVerification: 'UNVERIFIED' }]);
-      await expectOriginalUnchanged();
-    },
-  );
+  it('skips a mirror copy and its replay without verifying or changing the original', async () => {
+    expect(await apply(receipt())).toEqual([]);
+    expect(await apply(receipt())).toEqual([]);
+    expect(
+      await database.db.query.message.findMany({
+        where: eq(tables.message.id, messageId),
+        columns: { federationPayloadVerification: true },
+      }),
+    ).toMatchObject([{ federationPayloadVerification: 'UNVERIFIED' }]);
+    await expectOriginalUnchanged();
+  });
 
   it.each([
     'author',

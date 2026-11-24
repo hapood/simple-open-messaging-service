@@ -39,7 +39,10 @@ import type { CapturedThreadStateUpdate } from '../client-state-feed/capture-thr
 import { lockAccountFeedAllocatorsInTx } from '../common/locks/account-feed-allocator-lock.js';
 import { GroupRelationshipMutationService } from './membership-intent/shared/group-relationship-mutation.service.js';
 import { GroupMetaFeedService } from './meta/group-meta-feed.service.js';
-import { enqueueCurrentThreadFanoutsInTx } from '../message/thread-fanout-task.js';
+import {
+  enqueueCurrentThreadFanoutsInTx,
+  enqueueFederationThreadFanoutInTx,
+} from '../message/thread-fanout-task.js';
 import { ThreadFeedHeadWriter } from '../message/thread-feed-head.writer.js';
 import { MessageService } from '../message/message.service.js';
 import { SystemMessageType } from '../message/system-message.js';
@@ -345,7 +348,7 @@ export class GroupService {
             },
             [params.owner],
           );
-          await ThreadFeedHeadWriter.reconcileGroupMetaCoordinateInTx(tx, {
+          await ThreadFeedHeadWriter.reconcileGroupProfileInTx(tx, {
             threadId: result.threadId,
             userIds: [params.owner],
           });
@@ -532,7 +535,7 @@ export class GroupService {
         UPDATE "AccountThreadState" state
         SET "announcementReadFeedId" = GREATEST(state."announcementReadFeedId", ${params.feedId}),
           "updatedAt" = CURRENT_TIMESTAMP
-        FROM "GroupMetaMemberFeed" meta
+        FROM "ClientGroupMetaFeed" meta
         WHERE state."threadId" = ${params.threadId}
           AND state."accountId" = ${params.accountId}
           AND meta."threadId" = state."threadId"
@@ -611,8 +614,25 @@ export class GroupService {
         params.threadId,
         params.text,
       );
-      if (result.changed)
-        await enqueueCurrentThreadFanoutsInTx(tx, locked.threadLock);
+      if (result.changed) {
+        const head = await tx.execute<{
+          messageEndSeq: number;
+          tombstoneEndSeq: number;
+        }>(sql`
+          SELECT COALESCE(MAX(message.seq), 0)::integer AS "messageEndSeq",
+                 thread."tombstoneEndSeq" AS "tombstoneEndSeq"
+          FROM "MessageThread" thread
+          LEFT JOIN "Message" message ON message."threadId" = thread.id
+          WHERE thread.id = ${params.threadId}
+          GROUP BY thread.id, thread."tombstoneEndSeq"
+        `);
+        if (head.rows[0]) {
+          await enqueueFederationThreadFanoutInTx(tx, locked.threadLock, {
+            threadId: params.threadId,
+            ...head.rows[0],
+          });
+        }
+      }
       return { feedId: result.feedId };
     });
   }

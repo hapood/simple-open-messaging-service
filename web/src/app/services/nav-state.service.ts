@@ -50,7 +50,7 @@ export interface AsideEntry {
 }
 
 /** Transient pane kinds stacked above the chat/aside layers. The host template renders each by `kind`. */
-export type PaneKind = 'dialog' | 'gallery' | 'file-detail';
+export type PaneKind = 'dialog' | 'gallery';
 
 /** Rendering policy for a dialog pane. The root popup owns layout, motion, backdrop, focus, and safe-area
  * behavior for each policy, so individual dialog components only render their content. */
@@ -60,7 +60,7 @@ export type DialogDesktopHeight = 'content' | 'workspace';
 
 /**
  * One entry on the transient pane stack. `component`/`inputs`/`onResult` are dialog-specific (RootPopup
- * renders dialogs via `*ngComponentOutlet`); gallery/file-detail carry their payload
+ * renders dialogs via `*ngComponentOutlet`); attachment viewers carry their payload
  * in `payload` and are rendered by a host `@switch` on `kind`.
  */
 export interface PaneEntry {

@@ -4,17 +4,32 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type {
   FederationFeedHeadReceipt,
   FederationHealthObservation,
+  FederationPeerState,
 } from '@/types/api';
 import { PeerDetailPage } from './peer-detail-page';
 
-const state = vi.hoisted(() => ({
-  health: null as FederationHealthObservation | null,
+interface PeerDetailTestState {
+  health: FederationHealthObservation | null;
+  isAdmin: boolean;
+  namespaceError: Error | null;
+  receipt: FederationFeedHeadReceipt | null;
+  isSuper: boolean;
+  trustLevel: FederationPeerState['trustLevel'];
+  cooldown: FederationPeerState['cooldown'];
+  haltCode: number | null;
+  reviewEpochMatched: boolean;
+  reviewKind: string;
+}
+
+const state = vi.hoisted((): PeerDetailTestState => ({
+  health: null,
   isAdmin: false,
-  namespaceError: null as Error | null,
-  receipt: null as FederationFeedHeadReceipt | null,
+  namespaceError: null,
+  receipt: null,
   isSuper: false,
   trustLevel: 'available',
-  haltCode: null as number | null,
+  cooldown: null,
+  haltCode: null,
   reviewEpochMatched: true,
   reviewKind: 'root-rotation',
 }));
@@ -73,6 +88,7 @@ vi.mock('@/hooks/use-federation', () => ({
       degradationCount: 0,
       addedBy: null,
       degradationReason: null,
+      cooldown: state.cooldown,
       latestFeedHeadReceipt: state.receipt,
       feedProgress: {
         lastHandshakeAt: 1700000002000,
@@ -169,6 +185,7 @@ describe('PeerDetailPage authorization', () => {
     state.receipt = null;
     state.isSuper = false;
     state.trustLevel = 'available';
+    state.cooldown = null;
     state.haltCode = null;
     state.reviewEpochMatched = true;
     state.reviewKind = 'root-rotation';
@@ -183,6 +200,17 @@ describe('PeerDetailPage authorization', () => {
     approveReview.mutateAsync.mockReset().mockResolvedValue(undefined);
     rejectReview.mutateAsync.mockReset().mockResolvedValue(undefined);
     confirmMock.mockReset().mockReturnValue(true);
+  });
+
+  it('shows the runtime pause without disabling Health probes', () => {
+    state.isAdmin = true;
+    state.cooldown = { until: 1700000900000, reason: 'remote query rate limit' };
+    renderPage({ tab: 'health' });
+    expect(screen.getByText('federation.status.cooldown')).toBeInTheDocument();
+    expect(screen.getByText('remote query rate limit')).toBeInTheDocument();
+    expect(screen.getByTitle('1700000900000')).toBeInTheDocument();
+    expect(screen.getByText('federation.inspect.cooldownHint')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'federation.inspect.probe' })).toBeEnabled();
   });
 
   it('shows an empty receipt separately from synchronization progress', () => {

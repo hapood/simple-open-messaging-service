@@ -23,6 +23,16 @@ describe('common message quote envelope', () => {
     expect(JSON.parse(withoutMessageContentQuote(content))).toEqual(payload);
   });
 
+  it.each([{ seq: 42, namespaceId: 3 }, { originSeq: 42 }])(
+    'preserves the received coordinate discriminant: %j',
+    (coordinate) => {
+      const quote = { ...coordinate, digest: 'd'.repeat(64) };
+      const content = withMessageContentQuote('{"text":"reply"}', quote);
+      expect(parseMessageContentQuote(content)).toEqual(quote);
+      expect(readMessageContentQuote(content)).toEqual(quote);
+    },
+  );
+
   it('separates text parsing from common quote parsing', () => {
     const content = withMessageContentQuote('{"text":"reply"}', { seq: 42 });
     expect(parseTextMessageContent(content)).toEqual({ text: 'reply' });
@@ -32,6 +42,14 @@ describe('common message quote envelope', () => {
   it.each([
     null,
     [],
+    {},
+    { originSeq: 0 },
+    { originSeq: -1 },
+    { originSeq: 1.5 },
+    { originSeq: Number.MAX_SAFE_INTEGER },
+    { originSeq: 42, seq: 42 },
+    { originSeq: 42, namespaceId: 0 },
+    { originSeq: 42, sourceSeq: 42 },
     { seq: -1 },
     { seq: 1.5 },
     { seq: 1, digest: 'bad' },
@@ -54,6 +72,10 @@ describe('common message quote envelope', () => {
   );
 
   it('resolves durable coordinates without consulting the text schema', () => {
+    expect(storedQuoteCoordinate({ originSeq: 42 }, 7)).toEqual({
+      seq: 42,
+      namespaceId: 0,
+    });
     expect(storedQuoteCoordinate({ seq: 42, namespaceId: 3 }, 7)).toEqual({
       seq: 42,
       namespaceId: 3,

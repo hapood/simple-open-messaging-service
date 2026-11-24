@@ -1,379 +1,45 @@
-import { provideZonelessChangeDetection, signal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import {
   provideTransloco,
   provideTranslocoTranspiler,
 } from '@jsverse/transloco';
+import { of, Subject } from 'rxjs';
 import { CspSafeIcuTranspiler } from '../../../i18n/csp-safe-icu.transpiler';
 import { InlineTranslocoLoader } from '../../../i18n/transloco.loader';
 import {
-  ImageDownloadService,
-  type ImageDownloadTask,
-} from '../../../services/image-download.service';
-import type {
-  AlbumMedia,
-  AuthoredContentType,
-  AuthoredMessageItem,
-} from '../chat-item';
+  MediaFileProgressService,
+  type MediaFileProgress,
+} from '../../../services/media-file-progress.service';
+import type { AlbumMedia, ImageMedia, AuthoredMessageItem } from '../chat-item';
 import { MediaRowComponent } from './media-row.component';
-import { MEDIA_STATUS } from '../chat-item';
 
-describe('MediaRowComponent — deferred image loading', () => {
-  let downloads: FakeImageDownloads;
-
+describe('MediaRowComponent thumbnail composition', () => {
+  const observe = vi.fn();
   beforeEach(() => {
-    downloads = new FakeImageDownloads();
+    observe
+      .mockReset()
+      .mockReturnValue(
+        of({ status: 'ready', loaded: 100, total: 100, bytesPerSecond: null }),
+      );
     TestBed.configureTestingModule({
       imports: [MediaRowComponent],
       providers: [
-        provideZonelessChangeDetection(),
         provideTransloco({
-          config: {
-            availableLangs: ['en'],
-            defaultLang: 'en',
-          },
+          config: { availableLangs: ['en'], defaultLang: 'en' },
           loader: InlineTranslocoLoader,
         }),
         provideTranslocoTranspiler(CspSafeIcuTranspiler),
-        { provide: ImageDownloadService, useValue: downloads },
+        { provide: MediaFileProgressService, useValue: { observe } },
       ],
     });
   });
 
-  it.each(['IMAGE', 'VIDEO'] as const)(
-    'renders a clickable origin quote on %s without opening its media',
-    async (contentType) => {
-      const media = image(1, 4096);
-      const fixture = await render([media], contentType);
-      const anchor = { kind: 'origin' as const, namespaceId: 3, originSeq: 4 };
-      fixture.componentRef.setInput('data', {
-        ...message([media], contentType),
-        quote: { anchor },
-      });
-      fixture.detectChanges();
-      await fixture.whenStable();
-      const jumped = vi.fn();
-      const opened = vi.fn();
-      fixture.componentInstance.quoteJump.subscribe(jumped);
-      fixture.componentInstance.openImage.subscribe(opened);
-      const quote = fixture.nativeElement.querySelector(
-        'button.msg-quote',
-      ) as HTMLButtonElement;
-      expect(quote.textContent).toContain('Click to view quoted message');
-      quote.click();
-      expect(jumped).toHaveBeenCalledWith(anchor);
-      expect(opened).not.toHaveBeenCalled();
-      fixture.destroy();
-    },
-  );
-
-  it.each([false, true])(
-    'fades the entire completed video badge (confirmation marker: %s), including after remount',
-    async (confirmed) => {
-      const video: AlbumMedia = { ...image(1, 4096), kind: 'video' };
-      for (let mount = 0; mount < 2; mount++) {
-        const fixture = await render([video], 'VIDEO');
-        fixture.nativeElement.classList.toggle('cb-confirmed', confirmed);
-        fixture.componentRef.setInput('data', {
-          ...message([video], 'VIDEO'),
-          isSelf: true,
-          status: 'sending',
-        });
-        fixture.detectChanges();
-        const sending = fixture.nativeElement.querySelector('.msg-status');
-        expect(getComputedStyle(sending).animationName).toBe('none');
-        fixture.componentRef.setInput('data', {
-          ...message([video], 'VIDEO'),
-          isSelf: true,
-          status: 'sent',
-        });
-        fixture.detectChanges();
-        const badge = fixture.nativeElement.querySelector('.msg-status');
-        const animation = badge
-          .getAnimations()
-          .find(
-            (entry: Animation) =>
-              entry instanceof CSSAnimation &&
-              entry.animationName.includes('msg-media-sent-badge'),
-          );
-        expect(animation).toBeDefined();
-        animation.finish();
-        expect(getComputedStyle(badge).opacity).toBe('0');
-        fixture.destroy();
-      }
-    },
-  );
-
-  it('waits for video readiness before probing a first frame, then mounts without a refresh', async () => {
-    const video: AlbumMedia = {
-      ...image(1, 4096),
-      kind: 'video',
-      status: 'downloading',
-    };
-    const fixture = await render([video], 'VIDEO');
-    expect(fixture.nativeElement.querySelector('video')).toBeNull();
-    fixture.componentRef.setInput(
-      'data',
-      message([{ ...video, status: 'ready' }], 'VIDEO'),
-    );
-    fixture.detectChanges();
-    await fixture.whenStable();
-    const element = fixture.nativeElement.querySelector(
-      'video',
-    ) as HTMLVideoElement;
-    expect(element).toBeNull();
-    expect(
-      fixture.nativeElement.querySelector('.msg-media-video--thumbnail'),
-    ).not.toBeNull();
-    fixture.destroy();
-  });
-
-  it('does not carry a failed optimistic video probe to the authoritative source', async () => {
-    const video: AlbumMedia = {
-      ...image(1, 4096),
-      kind: 'video',
-      src: 'blob:pending-video',
-    };
-    const fixture = await render([video], 'VIDEO');
-    fixture.componentInstance.onVideoError(0);
-    fixture.detectChanges();
-    expect(fixture.nativeElement.querySelector('video')).toBeNull();
-    fixture.componentRef.setInput(
-      'data',
-      message([{ ...video, src: '/uploads/final-video' }], 'VIDEO'),
-    );
-    fixture.detectChanges();
-    await fixture.whenStable();
-    expect(fixture.nativeElement.querySelector('video')).toBeNull();
-    expect(fixture.componentInstance.cells()[0].unplayable).toBe(false);
-    fixture.destroy();
-  });
-
-  it('opens the viewer without rendering the old click-to-load copy', async () => {
-    const images = [image(1, 4096)];
-    const fixture = await render(images);
-    const opened = vi.fn().mockName('opened');
-    fixture.componentInstance.openImage.subscribe(opened);
-
-    const gate = fixture.nativeElement.querySelector(
-      '.msg-media-tap',
-    ) as HTMLElement;
-    expect(gate).toBeNull();
-
-    (
-      fixture.nativeElement.querySelector('.msg-media-cell') as HTMLElement
-    ).click();
-    expect(opened).toHaveBeenCalledWith({ images, index: 0 });
-  });
-
-  it('renders only a passive determinate rail in the chat card', async () => {
-    const media = image(1, 4096);
-    downloads.set(task(media, 'downloading', 400, 1000));
-    const fixture = await render([media]);
-
-    const rail = fixture.nativeElement.querySelector(
-      '.msg-media-progress',
-    ) as HTMLElement;
-    expect(rail).not.toBeNull();
-    expect((rail.querySelector('span') as HTMLElement).style.width).toBe('40%');
-    expect(
-      fixture.nativeElement.querySelector('.msg-media-cell button'),
-    ).toBeNull();
-  });
-
-  it('updates the mounted image message when a shared download reports progress', async () => {
-    const media = image(1, 4096);
-    const fixture = await render([media]);
-
-    expect(
-      fixture.nativeElement.querySelector('.msg-media-download-progress'),
-    ).toBeNull();
-
-    downloads.set(task(media, 'downloading', 400, 1000));
-    await fixture.whenStable();
-
-    const progress = fixture.nativeElement.querySelector(
-      '.msg-media-download-progress',
-    ) as HTMLElement;
-    expect(progress).toBeNull();
-    expect(
-      (
-        fixture.nativeElement.querySelector(
-          '.msg-media-progress > span',
-        ) as HTMLElement
-      ).style.width,
-    ).toBe('40%');
-  });
-
-  it('renders a gallery as a compact fixed-width attachment card with stacked type icons', async () => {
-    const fixture = await render(
-      [file(1, 'notes.pdf'), image(2, 1024), image(3, 4096)],
-      'GALLERY',
-    );
-    const bubble = fixture.nativeElement.querySelector(
-      '.msg-media',
-    ) as HTMLElement;
-
-    expect(bubble.classList).toContain('msg-media--gallery');
-    expect(
-      getComputedStyle(fixture.nativeElement.querySelector('.msg-media-frame'))
-        .width,
-    ).toBe('280px');
-    expect(
-      fixture.nativeElement.querySelectorAll('.msg-gallery-icon').length,
-    ).toBe(3);
-    expect(
-      fixture.nativeElement.querySelectorAll('.msg-gallery-thumbnail').length,
-    ).toBe(2);
-    const thumbnail = fixture.nativeElement.querySelector(
-      '.msg-gallery-thumbnail',
-    ) as HTMLImageElement;
-    thumbnail.dispatchEvent(new Event('load'));
-    expect(thumbnail.style.opacity).toBe('1');
-    expect(
-      fixture.nativeElement.querySelector(
-        '.msg-gallery-icon--image:not(:has(.msg-gallery-thumbnail)) .msg-gallery-icon-svg',
-      ),
-    ).toBeNull();
-    expect(
-      fixture.nativeElement.querySelector('.msg-gallery-row mat-icon'),
-    ).toBeNull();
-    expect(
-      fixture.nativeElement
-        .querySelector('.msg-gallery-title')
-        ?.textContent?.trim(),
-    ).toBe('File set');
-    expect(fixture.nativeElement.querySelector('.msg-media-cell')).toBeNull();
-    expect(fixture.nativeElement.querySelector('.msg-media-image')).toBeNull();
-    expect(
-      fixture.nativeElement.querySelector('.msg-media-meta-count')?.textContent,
-    ).toContain('3 Files');
-  });
-
-  it('opens a mixed file group at its first image', async () => {
-    const images = [file(2, 'notes.pdf'), image(1, 1024), image(3, 1024)];
-    const fixture = await render(images, 'GALLERY');
-    const opened = vi.fn().mockName('opened');
-    fixture.componentInstance.openImage.subscribe(opened);
-
-    (
-      fixture.nativeElement.querySelector('.msg-gallery-row') as HTMLElement
-    ).click();
-    expect(opened).toHaveBeenCalledWith({ images, index: 1 });
-  });
-
-  it('uses an already-cached thumbnail for an oversized image icon', async () => {
-    const oversized = image(1, 4096);
-    downloads.cache(oversized);
-    const fixture = await render([oversized, file(2, 'notes.pdf')], 'GALLERY');
-    const thumbnail = fixture.nativeElement.querySelector(
-      '.msg-gallery-thumbnail',
-    ) as HTMLImageElement;
-
-    expect(thumbnail).not.toBeNull();
-    expect(thumbnail.getAttribute('src')).toBe('/uploads/1.jpg');
-  });
-
-  it('shows an oversized local blob preview without applying the remote cache gate', async () => {
-    const local = { ...image(1, 4096), src: 'blob:local-preview' };
-    const fixture = await render([local, file(2, 'notes.pdf')], 'GALLERY');
-    const markLoaded = vi
-      .spyOn(fixture.componentInstance, 'onImageLoad')
-      .mockReturnValue(undefined);
-    const thumbnail = fixture.nativeElement.querySelector(
-      '.msg-gallery-thumbnail',
-    ) as HTMLImageElement;
-
-    expect(thumbnail.getAttribute('src')).toBe('blob:local-preview');
-    thumbnail.dispatchEvent(new Event('load'));
-    expect(thumbnail.style.opacity).toBe('1');
-    expect(markLoaded).not.toHaveBeenCalled();
-  });
-
-  it('uses one top-right federated spinner without changing bubble height', async () => {
-    const images = [image(1, 1024)];
-    const fixture = await render(images);
-    const bubble = fixture.nativeElement.querySelector(
-      '.msg-bubble',
-    ) as HTMLElement;
-    const height = bubble.offsetHeight;
-    fixture.componentRef.setInput('data', {
-      ...message(images, 'IMAGE'),
-      mediaStatus: MEDIA_STATUS.DOWNLOADING,
-    });
-    fixture.detectChanges();
-    await fixture.whenStable();
-    expect(
-      fixture.nativeElement.querySelectorAll(
-        'app-federated-download-status .downloading',
-      ),
-    ).toHaveLength(1);
-    expect(
-      fixture.nativeElement.querySelector('mat-progress-spinner'),
-    ).toBeNull();
-    expect(
-      fixture.nativeElement.querySelector('.msg-media-overlay[role="status"]'),
-    ).not.toBeNull();
-    expect(bubble.offsetHeight).toBe(height);
-    const status = fixture.nativeElement.querySelector(
-      'app-federated-download-status',
-    ) as HTMLElement;
-    expect(getComputedStyle(status).position).toBe('absolute');
-    expect(getComputedStyle(status).top).toBe('8px');
-    expect(getComputedStyle(status).right).toBe('8px');
-  });
-
-  it.each(['GALLERY', 'AUDIO'] as const)(
-    'shows federated download feedback for %s without changing height',
-    async (contentType) => {
-      const media: AlbumMedia =
-        contentType === 'AUDIO'
-          ? { ...file(1, 'voice.ogg'), kind: 'audio', duration: 12 }
-          : file(1, 'report.pdf');
-      const fixture = await render([media], contentType);
-      const bubble = fixture.nativeElement.querySelector(
-        '.msg-bubble',
-      ) as HTMLElement;
-      const height = bubble.offsetHeight;
-      fixture.componentRef.setInput('data', {
-        ...message([media], contentType),
-        mediaStatus: MEDIA_STATUS.DOWNLOADING,
-      });
-      fixture.detectChanges();
-      await fixture.whenStable();
-      expect(
-        fixture.nativeElement.querySelectorAll(
-          'app-federated-download-status .downloading',
-        ),
-      ).toHaveLength(1);
-      expect(bubble.offsetHeight).toBe(height);
-    },
-  );
-
-  it('treats an absent federated media status as ready', async () => {
-    const fixture = await render([image(1, 1024)]);
-
-    expect(fixture.nativeElement.querySelector('.msg-media-status')).toBeNull();
-    expect(fixture.nativeElement.textContent).not.toContain('Download failed');
-  });
-
-  it('uses five type icons plus an ellipsis when a group contains more than six files', async () => {
-    const images = Array.from({ length: 7 }, (_, index) =>
-      index % 2 === 0
-        ? image(index + 1, 1024)
-        : file(index + 1, `file-${index + 1}.pdf`),
-    );
-    const fixture = await render(images, 'GALLERY');
-    const icons = fixture.nativeElement.querySelectorAll('.msg-gallery-icon');
-
-    expect(icons.length).toBe(6);
-    expect(icons[5].classList).toContain('msg-gallery-icon--more');
-    expect(icons[5].querySelectorAll('circle').length).toBe(3);
-  });
-
   async function render(
     images: AlbumMedia[],
-    contentType: AuthoredContentType = 'IMAGE',
+    contentType: Extract<
+      AuthoredMessageItem,
+      { images: AlbumMedia[] }
+    >['contentType'] = 'IMAGE',
   ) {
     const fixture = TestBed.createComponent(MediaRowComponent);
     fixture.componentRef.setInput('data', message(images, contentType));
@@ -381,95 +47,291 @@ describe('MediaRowComponent — deferred image loading', () => {
     await fixture.whenStable();
     return fixture;
   }
+
+  it.each(['IMAGE', 'VIDEO'] as const)(
+    'keeps quote navigation separate from opening %s',
+    async (kind) => {
+      const images = [image(1)];
+      const fixture = await render(images, kind);
+      const anchor = { kind: 'origin' as const, namespaceId: 3, originSeq: 4 };
+      fixture.componentRef.setInput('data', {
+        ...message(images, kind),
+        quote: { anchor },
+      });
+      await fixture.whenStable();
+      const jump = vi.fn();
+      const open = vi.fn();
+      fixture.componentInstance.quoteJump.subscribe(jump);
+      fixture.componentInstance.openImage.subscribe(open);
+      fixture.nativeElement.querySelector('button.msg-quote').click();
+      expect(jump).toHaveBeenCalledWith(anchor);
+      expect(open).not.toHaveBeenCalled();
+      fixture.destroy();
+    },
+  );
+
+  it('composes album cells without observing original client downloads', async () => {
+    const images = [
+      image(1),
+      { ...image(2), kind: 'video' as const, duration: 12 },
+    ];
+    const fixture = await render(images);
+    expect(
+      fixture.nativeElement.querySelectorAll('app-album-media-cell'),
+    ).toHaveLength(2);
+    expect(observe).toHaveBeenCalledTimes(2);
+    expect(fixture.nativeElement.querySelector('video')).toBeNull();
+    const opened = vi.fn();
+    fixture.componentInstance.openImage.subscribe(opened);
+    fixture.nativeElement.querySelector('app-album-media-cell').click();
+    expect(opened).toHaveBeenCalledWith({ images, index: 0 });
+    fixture.destroy();
+  });
+
+  it.each(['pending', 'downloading', 'failed', 'ready'] as const)(
+    'opens video details regardless of stale message status %s',
+    async (status) => {
+      const images: AlbumMedia[] = [
+        { ...image(1), kind: 'video', duration: 12 },
+      ];
+      const fixture = await render(images, 'VIDEO');
+      fixture.componentRef.setInput('data', {
+        ...message(images, 'VIDEO'),
+        mediaStatus: status,
+      });
+      await fixture.whenStable();
+      const opened = vi.fn();
+      fixture.componentInstance.openImage.subscribe(opened);
+      fixture.nativeElement.querySelector('app-album-media-cell').click();
+      expect(opened).toHaveBeenCalledExactlyOnceWith({ images, index: 0 });
+      fixture.destroy();
+    },
+  );
+
+  it('opens audio details without intercepting playback controls', async () => {
+    const images: AlbumMedia[] = [{ ...image(1), kind: 'audio', duration: 12 }];
+    const fixture = await render(images, 'AUDIO');
+    const opened = vi.fn();
+    fixture.componentInstance.openImage.subscribe(opened);
+    const root: HTMLElement = fixture.nativeElement;
+    const cell = root.querySelector('app-album-media-cell');
+    const rate = root.querySelector<HTMLButtonElement>('.ap-rate');
+    if (!cell || !rate)
+      throw new Error('Audio cell and controls must be mounted');
+    rate.click();
+    await fixture.whenStable();
+    expect(rate.textContent).toContain('1.5');
+    rate.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }),
+    );
+    expect(opened).not.toHaveBeenCalled();
+    cell.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }),
+    );
+    expect(opened).toHaveBeenCalledExactlyOnceWith({ images, index: 0 });
+    fixture.destroy();
+  });
+
+  it('uses independent file progress even when the message status is stale', async () => {
+    const first = new Subject<MediaFileProgress>();
+    const second = new Subject<MediaFileProgress>();
+    observe.mockImplementation((media: AlbumMedia) =>
+      media.msgId === 1 ? first : second,
+    );
+    const images = [image(1), image(2)];
+    const fixture = await render(images);
+    fixture.componentRef.setInput('data', {
+      ...message(images, 'IMAGE'),
+      mediaStatus: 'downloading',
+    });
+    await fixture.whenStable();
+    const root: HTMLElement = fixture.nativeElement;
+    const height = root.offsetHeight;
+    const cells = root.querySelectorAll('app-album-media-cell');
+    first.next({
+      status: 'ready',
+      loaded: 100,
+      total: 100,
+      bytesPerSecond: null,
+    });
+    second.next({
+      status: 'downloading',
+      loaded: 50,
+      total: 100,
+      bytesPerSecond: 2048,
+    });
+    await fixture.whenStable();
+    expect(cells[0].querySelector('.mask')).toBeNull();
+    expect(
+      cells[1]
+        .querySelector('[role="progressbar"]')
+        ?.getAttribute('aria-valuenow'),
+    ).toBe('50');
+    expect(root.querySelector('app-federated-download-status')).toBeNull();
+    expect(root.querySelector('.msg-media-status')).toBeNull();
+    expect(root.querySelector('.speed')).toBeNull();
+    second.next({
+      status: 'ready',
+      loaded: 100,
+      total: 100,
+      bytesPerSecond: null,
+    });
+    await fixture.whenStable();
+    expect(root.querySelector('.mask')).toBeNull();
+    expect(root.offsetHeight).toBe(height);
+    fixture.destroy();
+    expect(first.observed).toBe(false);
+    expect(second.observed).toBe(false);
+  });
+
+  it('keeps the file caption clear of the shared icon and progress surface', async () => {
+    const progress = new Subject<MediaFileProgress>();
+    observe.mockReturnValue(progress);
+    const files: AlbumMedia[] = [
+      {
+        kind: 'file',
+        src: '/uploads/empty.abc',
+        name: 'empty.abc',
+        size: 0,
+        mimeType: 'application/x-abc',
+        senderName: null,
+        sentAt: null,
+        msgId: 1,
+      },
+    ];
+    const fixture = await render(files);
+    const root: HTMLElement = fixture.nativeElement;
+    const cell = root.querySelector<HTMLElement>('app-album-media-cell');
+    const caption = root.querySelector<HTMLElement>('.msg-media-file');
+    if (!cell || !caption)
+      throw new Error('File cell and caption must be mounted');
+    const height = root.offsetHeight;
+    expect(caption.textContent).toContain('empty.abc');
+    expect(root.querySelector('.msg-media-size')?.textContent).toBe('0 B');
+    expect(cell.querySelector('.unknown-mark')).not.toBeNull();
+    expect(caption.offsetTop).toBeGreaterThan(cell.offsetHeight / 2 + 22);
+    expect(caption.offsetHeight).toBe(20);
+    expect(getComputedStyle(caption).pointerEvents).toBe('none');
+    expect(cell.querySelector('[role="progressbar"]')).not.toBeNull();
+    progress.next({
+      status: 'failed',
+      loaded: 0,
+      total: 0,
+      bytesPerSecond: null,
+    });
+    await fixture.whenStable();
+    expect(cell.querySelector('.mask mat-icon')?.textContent).toContain(
+      'error_outline',
+    );
+    progress.next({
+      status: 'ready',
+      loaded: 0,
+      total: 0,
+      bytesPerSecond: null,
+    });
+    await fixture.whenStable();
+    expect(cell.querySelector('.mask')).toBeNull();
+    expect(cell.querySelector('.unknown-mark')).not.toBeNull();
+    expect(root.offsetHeight).toBe(height);
+    fixture.destroy();
+  });
+
+  it.each([6, 7, 8, 10, 104, 105])(
+    'uses projected metadata for %s files with at most six slots',
+    async (count) => {
+      const images = Array.from({ length: count }, (_, index) =>
+        image(index + 1),
+      );
+      const fixture = await render(images, 'GALLERY');
+      const slots = fixture.nativeElement.querySelectorAll('.msg-gallery-icon');
+      expect(slots).toHaveLength(6);
+      expect(
+        fixture.nativeElement.querySelectorAll('app-album-media-cell'),
+      ).toHaveLength(count > 6 ? 5 : 6);
+      expect(observe).toHaveBeenCalledTimes(count > 6 ? 5 : 6);
+      expect(slots[5].classList.contains('msg-gallery-icon--more')).toBe(
+        count > 6,
+      );
+      if (count > 6) {
+        expect(slots[5].textContent.trim()).toBe(
+          count > 104 ? '…' : `+${count - 5}`,
+        );
+        expect(slots[5].querySelector('app-album-media-cell')).toBeNull();
+        expect(slots[5].querySelector('[role="progressbar"]')).toBeNull();
+        expect(observe.mock.calls.map(([media]) => media.msgId)).toEqual([
+          1, 2, 3, 4, 5,
+        ]);
+      }
+      expect(
+        fixture.nativeElement.querySelector('.msg-gallery-row').offsetHeight,
+      ).toBe(62);
+      expect(
+        fixture.nativeElement.querySelector('.msg-media-meta-count')
+          .textContent,
+      ).toContain(String(count));
+      fixture.destroy();
+    },
+  );
+
+  it('uses cells for every file kind and opens the full mixed group at its first image', async () => {
+    const images: AlbumMedia[] = [
+      { ...image(1), kind: 'file', name: 'notes.pdf' },
+      { ...image(2), kind: 'audio', duration: 12 },
+      image(3),
+      { ...image(4), kind: 'video', duration: 12 },
+    ];
+    const fixture = await render(images, 'GALLERY');
+    expect(observe).toHaveBeenCalledTimes(4);
+    expect(
+      fixture.nativeElement.querySelectorAll('app-album-media-cell'),
+    ).toHaveLength(4);
+    expect(fixture.nativeElement.querySelector('.speed')).toBeNull();
+    const opened = vi.fn();
+    fixture.componentInstance.openImage.subscribe(opened);
+    fixture.nativeElement.querySelector('.msg-gallery-row').click();
+    expect(opened).toHaveBeenCalledWith({ images, index: 2 });
+    fixture.destroy();
+  });
+
+  it('keeps persisted self messages free of send-task controls after remount', async () => {
+    const images = [{ ...image(1), kind: 'video' as const, duration: 12 }];
+    for (let mount = 0; mount < 2; mount++) {
+      const fixture = await render(images, 'VIDEO');
+      fixture.componentRef.setInput('data', {
+        ...message(images, 'VIDEO'),
+        isSelf: true,
+      });
+      await fixture.whenStable();
+      expect(fixture.nativeElement.querySelector('.msg-status')).toBeNull();
+      expect(
+        fixture.nativeElement.querySelector('.msg-failed-actions'),
+      ).toBeNull();
+      expect(fixture.nativeElement.querySelector('.msg-sending')).toBeNull();
+      fixture.destroy();
+    }
+  });
 });
 
-class FakeImageDownloads {
-  readonly tasks = signal<ImageDownloadTask[]>([]);
-  readonly thumbnailVersion = signal(0);
-  private readonly byKey = new Map<string, ImageDownloadTask>();
-  private readonly cached = new Set<string>();
-
-  key(media: Pick<AlbumMedia, 'msgId' | 'src'>): string {
-    return `${media.msgId ?? 0}:${media.src}`;
-  }
-
-  task(
-    media: Pick<AlbumMedia, 'msgId' | 'src'>,
-  ): ImageDownloadTask | undefined {
-    return this.byKey.get(this.key(media));
-  }
-
-  displayUrl(media: AlbumMedia): string {
-    return this.task(media)?.blobUrl ?? media.src;
-  }
-
-  thumbnailUrl(media: AlbumMedia): string {
-    return media.src;
-  }
-
-  cachedThumbnailUrl(media: AlbumMedia): string {
-    return this.cached.has(this.key(media)) ? `cache:${media.src}` : '';
-  }
-
-  cache(media: AlbumMedia): void {
-    this.cached.add(this.key(media));
-    this.thumbnailVersion.update((value) => value + 1);
-  }
-
-  set(value: ImageDownloadTask): void {
-    this.byKey.set(value.key, value);
-    this.tasks.set([...this.byKey.values()]);
-  }
-}
-
-function image(msgId: number, size: number): AlbumMedia {
+function image(msgId: number): ImageMedia {
   return {
     kind: 'image',
     src: `/uploads/${msgId}.jpg`,
     w: 400,
     h: 300,
-    size,
+    size: 1024,
+    name: `${msgId}.jpg`,
+    mimeType: 'image/jpeg',
+    senderName: null,
+    sentAt: null,
     msgId,
   };
 }
-
-function file(msgId: number, name: string): AlbumMedia {
-  return {
-    kind: 'file',
-    src: `/uploads/${msgId}`,
-    w: 0,
-    h: 0,
-    size: 512,
-    name,
-    mimeType: 'application/pdf',
-    msgId,
-  };
-}
-
-function task(
-  media: AlbumMedia,
-  status: ImageDownloadTask['status'],
-  loaded: number,
-  total: number,
-): ImageDownloadTask {
-  return {
-    key: `${media.msgId}:${media.src}`,
-    threadId: 1,
-    msgId: media.msgId ?? 0,
-    src: media.src,
-    name: `${media.msgId}.jpg`,
-    expectedSize: media.size ?? 0,
-    loaded,
-    total,
-    status,
-    blobUrl: status === 'loaded' ? `blob:${media.msgId}` : null,
-    startedAt: 1,
-  };
-}
-
 function message(
   images: AlbumMedia[],
-  contentType: AuthoredContentType = 'IMAGE',
+  contentType: Extract<
+    AuthoredMessageItem,
+    { images: AlbumMedia[] }
+  >['contentType'],
 ): AuthoredMessageItem {
   return {
     type: 'msg',

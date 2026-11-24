@@ -1,6 +1,6 @@
 /**
  * Shared FILE-message presentational helpers — pure functions over a {@link FileInfo}-like payload, used by both the
- * file row (the compact bubble) and the file-detail overlay (the fullscreen inspector). Extracted so the icon tint,
+ * file row (the compact bubble) and the immersive attachment viewer. Extracted so the icon tint,
  * the extension badge, and the human-readable size render identically in the two places that show a file.
  */
 
@@ -76,9 +76,8 @@ export function categorizeFilename(name: string): FileCategory {
   return 'unknown';
 }
 
-/** Human-readable byte size (B / KB / MB / GB). Empty for 0/unknown. */
+/** Human-readable size for the required nonnegative byte count, including empty files. */
 export function formatBytes(n: number): string {
-  if (!n || n <= 0) return '';
   const units = ['B', 'KB', 'MB', 'GB'];
   let i = 0;
   let v = n;

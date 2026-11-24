@@ -19,56 +19,49 @@ export interface PeerStateFeedPullCallbacks {
 export class PeerStateFeedPullService {
   private readonly logger = new Logger(PeerStateFeedPullService.name);
   private readonly running = new Map<string, Promise<void>>();
-  private readonly pending = new Set<string>();
   private readonly advertised = new Map<string, bigint>();
 
   constructor(private readonly database: DatabaseService) {}
 
-  advertise(peerDomain: string, namespaceId: number, rev: bigint): void {
+  advertise(namespaceId: number, rev: bigint): void {
     if (rev < 0n) throw new Error('state feed rev must be non-negative');
-    const key = this.key(peerDomain, namespaceId);
+    const key = this.key(namespaceId);
     const current = this.advertised.get(key);
     if (current === undefined || rev > current) this.advertised.set(key, rev);
   }
 
-  run(
-    peerDomain: string,
+  async run(
     namespaceId: number,
+    signal: AbortSignal,
     callbacks: PeerStateFeedPullCallbacks,
   ): Promise<void> {
-    const key = this.key(peerDomain, namespaceId);
-    this.pending.add(key);
-    const active = this.running.get(key);
-    if (active) return active;
-    const task = this.loop(peerDomain, namespaceId, callbacks).finally(() => {
-      this.running.delete(key);
-      if (this.pending.has(key))
-        queueMicrotask(
-          () =>
-            void this.run(peerDomain, namespaceId, callbacks).catch(
-              (e: unknown) =>
-                this.logger.warn(
-                  `state drain failed for ${peerDomain}: ${(e as Error).message}`,
-                ),
-            ),
-        );
+    const key = this.key(namespaceId);
+    // A restored drain must wait for the cancelled transaction to unwind, not
+    // join its result or reuse its callbacks. Scheduling belongs to the caller.
+    while (this.running.has(key)) {
+      await Promise.allSettled([this.running.get(key)!]);
+      signal.throwIfAborted();
+    }
+    signal.throwIfAborted();
+    const task = this.loop(namespaceId, signal, callbacks).finally(() => {
+      if (this.running.get(key) === task) this.running.delete(key);
     });
     this.running.set(key, task);
     return task;
   }
 
   private async loop(
-    peerDomain: string,
     namespaceId: number,
+    signal: AbortSignal,
     callbacks: PeerStateFeedPullCallbacks,
   ): Promise<void> {
-    const key = this.key(peerDomain, namespaceId);
-    this.pending.delete(key);
+    const key = this.key(namespaceId);
     let drainTarget: bigint | undefined;
     for (;;) {
+      signal.throwIfAborted();
       const applied = await this.applyOnePage(
-        peerDomain,
         namespaceId,
+        signal,
         callbacks,
         drainTarget,
       );
@@ -79,10 +72,7 @@ export class PeerStateFeedPullService {
       if (applied.scannedThrough !== drainTarget)
         throw new Error('peer ended state drain before its fixed target');
       await callbacks.afterDrain?.(drainTarget);
-      const pulledThrough = await this.readPulledThrough(
-        peerDomain,
-        namespaceId,
-      );
+      const pulledThrough = await this.readPulledThrough(namespaceId);
       if (pulledThrough === undefined) return;
       const advertised = this.advertised.get(key);
       if (advertised !== undefined && advertised > pulledThrough) {
@@ -90,17 +80,12 @@ export class PeerStateFeedPullService {
         continue;
       }
       if (advertised !== undefined) this.advertised.delete(key);
-      if (this.pending.delete(key)) {
-        drainTarget = undefined;
-        continue;
-      }
       return;
     }
   }
 
   /** NULL inbound progress means the feed was never bootstrapped. */
   private async readPulledThrough(
-    peerDomain: string,
     namespaceId: number,
   ): Promise<bigint | undefined> {
     const [row] = await this.database.db
@@ -110,13 +95,13 @@ export class PeerStateFeedPullService {
       .from(federationFeedState)
       .where(eq(federationFeedState.namespaceId, namespaceId))
       .limit(1);
-    if (!row) throw new Error(`peer ${peerDomain} has no namespace row`);
+    if (!row) throw new Error(`namespace ${namespaceId} has no state-feed row`);
     return row.pulledThrough ?? undefined;
   }
 
   private async applyOnePage(
-    peerDomain: string,
     namespaceId: number,
+    signal: AbortSignal,
     callbacks: PeerStateFeedPullCallbacks,
     through?: bigint,
   ) {
@@ -143,24 +128,27 @@ export class PeerStateFeedPullService {
       // rejecting committed progress is an invariant violation, not a rebuild.
       if (initialized)
         throw new Error(
-          `initialized state-feed cursor rejected by peer ${peerDomain} (namespace ${namespaceId}, committedThrough=${committedThrough}, resumeAfter=${error.resumeAfter}, resumeBefore=${error.resumeBefore}); progress retained`,
+          `initialized state-feed cursor rejected for namespace ${namespaceId} (committedThrough=${committedThrough}, resumeAfter=${error.resumeAfter}, resumeBefore=${error.resumeBefore}); progress retained`,
           { cause: error },
         );
       if (error.resumeAfter !== 0n || error.resumeBefore <= 0n)
         throw new Error('peer returned an invalid state-feed bootstrap cursor');
       await this.database.db.transaction(async (tx) => {
+        signal.throwIfAborted();
         await tx
           .update(federationFeedState)
           .set({
             inboundStateFeedPulledThrough: sql`COALESCE(${federationFeedState.inboundStateFeedPulledThrough}, ${error.resumeAfter})`,
           })
           .where(eq(federationFeedState.namespaceId, namespaceId));
+        signal.throwIfAborted();
       });
       this.logger.log(
-        `initialized state-feed cursor for peer ${peerDomain} (namespace ${namespaceId}) at 0`,
+        `initialized state-feed cursor for namespace ${namespaceId} at 0`,
       );
       return { cursorInitialized: true };
     }
+    signal.throwIfAborted();
     if (!initialized)
       throw new Error('peer returned a state page without bootstrap cursor');
 
@@ -195,8 +183,9 @@ export class PeerStateFeedPullService {
         hasMore: feedId < scanEnd,
       };
       const applied = await this.database.db.transaction(async (tx) => {
+        signal.throwIfAborted();
         const lock = await tx.execute<{ locked: boolean }>(
-          sql`SELECT pg_try_advisory_xact_lock(hashtextextended(${`${peerDomain}:${namespaceId}`}, 912774)) AS locked`,
+          sql`SELECT pg_try_advisory_xact_lock(hashtextextended(${namespaceId.toString()}, 912774)) AS locked`,
         );
         if (!lock.rows[0]?.locked)
           throw new Error('state-feed database single-flight is busy');
@@ -211,6 +200,7 @@ export class PeerStateFeedPullService {
           throw new Error('state-feed pull namespace row disappeared');
         const currentThrough = current.pulledThrough ?? 0n;
         if (currentThrough >= feedId) return false;
+        signal.throwIfAborted();
         await callbacks.apply(tx, itemPage);
         await tx
           .update(federationFeedState)
@@ -219,6 +209,7 @@ export class PeerStateFeedPullService {
             stateFeedSourceGeneratedAt: item.generatedAt,
           })
           .where(eq(federationFeedState.namespaceId, namespaceId));
+        signal.throwIfAborted();
         return true;
       });
       if (applied) await callbacks.afterCommit?.(itemPage);
@@ -226,8 +217,9 @@ export class PeerStateFeedPullService {
 
     const appliedThrough = items.at(-1)?.feedId ?? committedThrough;
     await this.database.db.transaction(async (tx) => {
+      signal.throwIfAborted();
       const lock = await tx.execute<{ locked: boolean }>(
-        sql`SELECT pg_try_advisory_xact_lock(hashtextextended(${`${peerDomain}:${namespaceId}`}, 912774)) AS locked`,
+        sql`SELECT pg_try_advisory_xact_lock(hashtextextended(${namespaceId.toString()}, 912774)) AS locked`,
       );
       if (!lock.rows[0]?.locked)
         throw new Error('state-feed database single-flight is busy');
@@ -252,6 +244,7 @@ export class PeerStateFeedPullService {
           inboundStateFeedPulledThrough: scannedThrough,
         })
         .where(eq(federationFeedState.namespaceId, namespaceId));
+      signal.throwIfAborted();
     });
     return {
       requestedAfter: committedThrough,
@@ -267,7 +260,7 @@ export class PeerStateFeedPullService {
     return BigInt(value);
   }
 
-  private key(peerDomain: string, namespaceId: number): string {
-    return JSON.stringify([peerDomain, namespaceId]);
+  private key(namespaceId: number): string {
+    return namespaceId.toString();
   }
 }

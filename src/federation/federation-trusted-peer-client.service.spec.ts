@@ -6,12 +6,15 @@ import { FederationTrustedPeerClient } from './federation-trusted-peer-client.se
 function makeSubject() {
   const peerHttp = { get: vi.fn() };
   const peerLifecycle = {
-    checkOutboundReady: vi.fn().mockResolvedValue(undefined),
+    checkOutboundReady: vi.fn().mockResolvedValue(7),
   };
+  const runtime = { enterCooldown: vi.fn().mockResolvedValue(undefined) };
   return {
+    runtime,
     subject: new FederationTrustedPeerClient(
       peerHttp as never,
       peerLifecycle as never,
+      runtime as never,
     ),
     peerHttp,
     peerLifecycle,
@@ -19,6 +22,35 @@ function makeSubject() {
 }
 
 describe('FederationTrustedPeerClient', () => {
+  it('records namespace cooldown before propagating a rate limit without retrying', async () => {
+    const { subject, runtime } = makeSubject();
+    const error = new S2sResponseError(
+      'limited',
+      429,
+      BusinessCode.RATE_LIMITED,
+      { retryAfter: 120 },
+    );
+    const operation = vi.fn().mockRejectedValue(error);
+    await expect(subject.run('peer.example', operation)).rejects.toBe(error);
+    expect(runtime.enterCooldown).toHaveBeenCalledExactlyOnceWith(
+      7,
+      'limited',
+      120,
+    );
+    expect(operation).toHaveBeenCalledOnce();
+  });
+
+  it('does not reinterpret transport failure as cooldown', async () => {
+    const { subject, runtime } = makeSubject();
+    const error = new Error('timeout');
+    await expect(
+      subject.run('peer.example', async () => {
+        throw error;
+      }),
+    ).rejects.toBe(error);
+    expect(runtime.enterCooldown).not.toHaveBeenCalled();
+  });
+
   it('checks trust before running an operation', async () => {
     const { subject, peerLifecycle } = makeSubject();
     const operation = vi.fn().mockResolvedValue('ok');

@@ -42,7 +42,6 @@ describe('GroupRevokeFanoutService', () => {
       taskType: 'REVOKE_FORBIDDEN_GROUP',
       payload: {
         threadId: 12,
-        peerDomain: 'peer.test',
         namespaceId: 5,
         expectedAuthorizationEpoch: 8,
       },

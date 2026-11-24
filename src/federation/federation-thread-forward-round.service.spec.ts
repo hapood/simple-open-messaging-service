@@ -5,14 +5,17 @@ function harness(overrides: Record<string, unknown> = {}) {
   const state = {
     authorizationEpoch: 3,
     messageTargetSeq: 12,
+    messageReservedThroughSeq: 0,
     deletionTargetSeq: 7,
     messageProcessedThroughSeq: 4,
     deletionProcessedThroughSeq: 2,
-    deletionRecoveryThroughSeq: null,
-    deletionRecoveryMaxMessageSeq: null,
     ...overrides,
   };
-  const states = { require: vi.fn().mockResolvedValue(state) };
+  const states = {
+    require: vi.fn().mockResolvedValue(state),
+    prepareMessageRound: vi.fn().mockResolvedValue(undefined),
+    readCurrentMessageSeq: vi.fn().mockResolvedValue(8),
+  };
   const service = new FederationThreadForwardRoundService(states as never);
   const messageDriver = {
     process: vi.fn().mockResolvedValue(undefined),
@@ -30,19 +33,17 @@ describe('FederationThreadForwardRoundService', () => {
     const { service, states, messageDriver, tombstoneDriver } = harness();
 
     await expect(
-      service.runMessages(31, 'peer.test', 7, messageDriver),
+      service.runMessages(31, 7, messageDriver, new AbortController().signal),
     ).resolves.toEqual({ targetSeq: 12, processed: true });
 
     expect(messageDriver.process).toHaveBeenCalledWith({
       threadId: 31,
-      peerDomain: 'peer.test',
       after: 4,
       through: 12,
       take: 50,
     });
     expect(messageDriver.complete).toHaveBeenCalledWith({
       threadId: 31,
-      peerDomain: 'peer.test',
       authorizationEpoch: 3,
       targetSeq: 12,
     });
@@ -51,50 +52,92 @@ describe('FederationThreadForwardRoundService', () => {
     expect(states.require).toHaveBeenCalledWith(31, 7);
   });
 
-  it('omits the message cutoff during ordinary tombstone consumption', async () => {
+  it('uses the current stored message cutoff during ordinary consumption', async () => {
     const { service, tombstoneDriver } = harness();
 
     await expect(
-      service.runTombstones(31, 'peer.test', 7, tombstoneDriver),
+      service.runTombstones(
+        31,
+        7,
+        tombstoneDriver,
+        new AbortController().signal,
+      ),
     ).resolves.toEqual({
       targetSeq: 7,
-      maxMessageSeq: undefined,
+      maxMessageSeq: 8,
       processed: true,
     });
     expect(tombstoneDriver.process).toHaveBeenCalledWith({
       threadId: 31,
-      peerDomain: 'peer.test',
       after: 2,
       through: 7,
-      maxMessageSeq: undefined,
+      maxMessageSeq: 8,
       take: 50,
     });
   });
 
-  it('keeps the persisted reauthorization target and cutoff frozen', async () => {
-    const { service, tombstoneDriver } = harness({
+  it('reads the current cutoff and latest tuple even after reauthorization', async () => {
+    const { service, states, tombstoneDriver } = harness({
       deletionTargetSeq: 12,
-      deletionRecoveryThroughSeq: 9,
-      deletionRecoveryMaxMessageSeq: 4,
     });
 
     await expect(
-      service.runTombstones(31, 'peer.test', 7, tombstoneDriver),
+      service.runTombstones(
+        31,
+        7,
+        tombstoneDriver,
+        new AbortController().signal,
+      ),
     ).resolves.toEqual({
-      targetSeq: 9,
-      maxMessageSeq: 4,
+      targetSeq: 12,
+      maxMessageSeq: 8,
       processed: true,
     });
+    states.readCurrentMessageSeq.mockResolvedValueOnce(99);
+    await service.runTombstones(
+      31,
+      7,
+      tombstoneDriver,
+      new AbortController().signal,
+    );
+    expect(tombstoneDriver.process).toHaveBeenLastCalledWith(
+      expect.objectContaining({ after: 2, through: 12, maxMessageSeq: 99 }),
+    );
+  });
+
+  it('sends zero when the database has no message rows despite a reserved head', async () => {
+    const { service, states, tombstoneDriver } = harness({
+      messageTargetSeq: 1000,
+    });
+    states.readCurrentMessageSeq.mockResolvedValueOnce(0);
+    await service.runTombstones(
+      31,
+      7,
+      tombstoneDriver,
+      new AbortController().signal,
+    );
     expect(tombstoneDriver.process).toHaveBeenCalledWith(
-      expect.objectContaining({ through: 9, maxMessageSeq: 4 }),
+      expect.objectContaining({ after: 2, through: 7, maxMessageSeq: 0 }),
     );
   });
 
   it('passes independent scheduler-selected page sizes to each stream', async () => {
     const { service, messageDriver, tombstoneDriver } = harness();
 
-    await service.runMessages(31, 'peer.test', 7, messageDriver, 80);
-    await service.runTombstones(31, 'peer.test', 7, tombstoneDriver, 30);
+    await service.runMessages(
+      31,
+      7,
+      messageDriver,
+      new AbortController().signal,
+      80,
+    );
+    await service.runTombstones(
+      31,
+      7,
+      tombstoneDriver,
+      new AbortController().signal,
+      30,
+    );
 
     expect(messageDriver.process).toHaveBeenCalledWith(
       expect.objectContaining({ take: 80 }),
@@ -111,13 +154,18 @@ describe('FederationThreadForwardRoundService', () => {
     });
 
     await expect(
-      service.runMessages(31, 'peer.test', 7, messageDriver),
+      service.runMessages(31, 7, messageDriver, new AbortController().signal),
     ).resolves.toEqual({ targetSeq: 12, processed: false });
     await expect(
-      service.runTombstones(31, 'peer.test', 7, tombstoneDriver),
+      service.runTombstones(
+        31,
+        7,
+        tombstoneDriver,
+        new AbortController().signal,
+      ),
     ).resolves.toEqual({
       targetSeq: 7,
-      maxMessageSeq: undefined,
+      maxMessageSeq: 8,
       processed: false,
     });
     expect(messageDriver.process).not.toHaveBeenCalled();
@@ -135,7 +183,7 @@ describe('FederationThreadForwardRoundService', () => {
       driver.process.mockRejectedValueOnce(new Error('network unavailable'));
 
       await expect(
-        service[method](31, 'peer.test', 7, driver as never),
+        service[method](31, 7, driver as never, new AbortController().signal),
       ).rejects.toMatchObject({
         name: 'FederationThreadRoundRemoteError',
         authorizationEpoch: 3,

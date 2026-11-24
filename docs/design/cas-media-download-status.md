@@ -1,6 +1,9 @@
 # CAS Media Download Status and Client Refresh
 
-Status: implemented. All review checkpoints were accepted before implementation.
+Status: historical design. Attachment presentation and progress ownership are superseded by
+[shared media presentation](chat-media-thumbnail-presentation.md). The message-level
+progress stream and its client registration service have been removed; the sections
+below retain the original review decisions, not a description of the current schema.
 
 ## 1. Purpose and scope
 

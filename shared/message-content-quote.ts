@@ -1,8 +1,16 @@
-export interface MessageContentQuote {
-  seq: number;
+export type MessageContentQuote = MessageContentQuoteFields &
+  (
+    | {
+        seq: number;
+        originSeq?: never;
+        namespaceId?: number;
+        sourceSeq?: number;
+      }
+    | { originSeq: number; seq?: never; namespaceId?: never; sourceSeq?: never }
+  );
+
+interface MessageContentQuoteFields {
   digest?: string;
-  namespaceId?: number;
-  sourceSeq?: number;
   status?: 'PENDING' | 'NOT_FOUND';
   author?: string;
   body?: string;
@@ -20,6 +28,10 @@ export function storedQuoteCoordinate(
   quote: MessageContentQuote,
   publisherNamespaceId: number,
 ): { seq: number; namespaceId: number } {
+  // originSeq was received in this server's coordinate space. Resolve it here,
+  // without changing the durable wire discriminant into a local seq.
+  if (quote.originSeq !== undefined)
+    return { seq: quote.originSeq, namespaceId: 0 };
   if (quote.namespaceId !== undefined)
     return { seq: quote.seq, namespaceId: quote.namespaceId };
   return quote.sourceSeq === undefined
@@ -46,7 +58,17 @@ function parseQuoteValue(quote: unknown): MessageContentQuote | undefined {
   if (!quote || typeof quote !== 'object' || Array.isArray(quote))
     return undefined;
   const record = quote as Record<string, unknown>;
-  if (!Number.isSafeInteger(record['seq']) || Number(record['seq']) < 0)
+  if (Object.hasOwn(record, 'originSeq')) {
+    if (
+      Object.hasOwn(record, 'seq') ||
+      Object.hasOwn(record, 'namespaceId') ||
+      Object.hasOwn(record, 'sourceSeq') ||
+      !Number.isSafeInteger(record['originSeq']) ||
+      Number(record['originSeq']) <= 0 ||
+      Number(record['originSeq']) >= Number.MAX_SAFE_INTEGER
+    )
+      return undefined;
+  } else if (!Number.isSafeInteger(record['seq']) || Number(record['seq']) < 0)
     return undefined;
   if (
     record['digest'] !== undefined &&

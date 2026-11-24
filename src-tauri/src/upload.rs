@@ -1,4 +1,4 @@
-#[cfg(not(desktop))]
+#[cfg(any(target_os = "android", target_os = "ios"))]
 use crate::proxy::send_with_headers_deadline;
 use crate::*;
 
@@ -120,7 +120,7 @@ async fn upload_stream_path_core(
                 tokio::fs::File::open(&path).await.map_err(|_| "Attachment unavailable. Please cancel and upload again.".to_string())?
             }
         }
-        #[cfg(not(target_os = "android"))]
+        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows", target_os = "ios"))]
         { tokio::fs::File::open(&path).await.map_err(|_| "Attachment unavailable. Please cancel and upload again.".to_string())? }
     };
     let actual_size = file
@@ -605,19 +605,19 @@ mod resumable_part_tests {
     }
 }
 
-#[cfg(any(not(desktop), test))]
+#[cfg(any(target_os = "android", target_os = "ios", test))]
 fn native_voice_stage_body(thread_id: i64, client_message_id: &str, retry: bool) -> serde_json::Value {
     serde_json::json!({ "threadId": thread_id, "contentType": "AUDIO", "clientMessageId": client_message_id, "retry": retry })
 }
 
-#[cfg(any(not(desktop), test))]
+#[cfg(any(target_os = "android", target_os = "ios", test))]
 fn native_voice_upload_fields(part_id: &str) -> std::collections::HashMap<String, String> {
     std::collections::HashMap::from([
         ("partId".into(), part_id.into()), ("position".into(), "0".into()), ("intent".into(), "AUDIO".into()),
     ])
 }
 
-#[cfg(not(desktop))]
+#[cfg(any(target_os = "android", target_os = "ios"))]
 #[derive(Clone)]
 pub(crate) struct NativeVoicePending {
     owner: Arc<crate::login_connection::LoginConnection>,

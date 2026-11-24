@@ -11,9 +11,6 @@ export interface ThreadFeedSnapshot extends ThreadStateSnapshot {
   alias: string | null;
   profileRev: number;
   messageEndSeq: number;
-  tombstoneEndSeq: number;
-  /** Canonical Group Meta coordinate; null for P2P threads. */
-  groupMetaFeedEndId: string | null;
   /** Latest join-application projection coordinate for this manager. */
   joinRequestEndFeedId: number;
   /** -1 for non-managers; otherwise the consumed join-application coordinate. */
@@ -72,17 +69,11 @@ export function mergeThreadAttention(
   coordinate(incoming.threadFeedId, 'feed ID', 1);
   coordinate(incoming.profileRev, 'profile revision');
   coordinate(incoming.messageEndSeq, 'message end');
-  coordinate(incoming.tombstoneEndSeq, 'tombstone end');
   coordinate(incoming.joinRequestEndFeedId, 'join request end');
   coordinate(incoming.joinRequestReadFeedId, 'join request read', -1);
   coordinate(incoming.groupInviteEndFeedId, 'group invite end');
   if (incoming.joinRequestReadFeedId > incoming.joinRequestEndFeedId)
     throw new Error('Invalid attention join request read position');
-  if (
-    incoming.groupMetaFeedEndId !== null &&
-    !/^(0|[1-9]\d*)$/.test(incoming.groupMetaFeedEndId)
-  )
-    throw new Error('Invalid attention Group Meta end');
   coordinate(incoming.lastReadSeq, 'server read position');
   coordinate(incoming.announcementReadFeedId, 'announcement read position');
   coordinate(incoming.unreadCount, 'unread count');
@@ -191,7 +182,6 @@ export function threadNotificationChanged(
     !previous ||
     (!previous.blocked && next.blocked) ||
     previous.messageEndSeq !== next.messageEndSeq ||
-    previous.tombstoneEndSeq !== next.tombstoneEndSeq ||
     previous.lastReadSeq !== next.lastReadSeq ||
     previous.unreadCount !== next.unreadCount ||
     previous.lastMentionSeq !== next.lastMentionSeq

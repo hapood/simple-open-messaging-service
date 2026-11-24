@@ -1,8 +1,5 @@
-import {
-  SSE_HEARTBEAT_EVENT,
-  SSE_IDLE_TIMEOUT_MS,
-  SSE_OPEN_TIMEOUT_MS,
-} from './sse-policy.js';
+import { SSE_HEARTBEAT_EVENT, SSE_MAX_FRAME_CHARS } from './sse-policy.js';
+import type { HttpStreamTransport } from './http-stream.js';
 
 export interface SseFrame {
   event: string;
@@ -15,6 +12,7 @@ export class SseDecoder {
   private event = '';
   private data: string[] = [];
   private skipLf = false;
+  private frameChars = 0;
 
   push(text: string, onFrame: (frame: SseFrame) => void): void {
     let start = 0;
@@ -26,6 +24,9 @@ export class SseDecoder {
           start = i + 1;
           continue;
         }
+      }
+      if (++this.frameChars > SSE_MAX_FRAME_CHARS) {
+        throw new Error('SSE frame exceeds maximum size');
       }
       if (c !== '\r' && c !== '\n') continue;
       const line = this.buffer + text.slice(start, i);
@@ -39,6 +40,7 @@ export class SseDecoder {
 
   private line(line: string, onFrame: (frame: SseFrame) => void): void {
     if (!line) {
+      this.frameChars = 0;
       const frame = {
         event: this.event,
         data: this.data.length ? this.data.join('\n') : undefined,
@@ -65,72 +67,29 @@ export async function consumeSse(
   url: string,
   options: {
     signal: AbortSignal;
+    transport: HttpStreamTransport;
     credentials?: 'same-origin' | 'include' | 'omit';
     onResponse?: (response: Response) => void;
     onOpen?: () => void;
     onFrame: (frame: SseFrame) => void;
   },
 ): Promise<void> {
-  const controller = new AbortController();
-  const abort = () => controller.abort(options.signal.reason);
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
-  const cancelReader = () => {
-    void reader?.cancel().catch(() => undefined);
-  };
-  const arm = (ms: number) => {
-    clearTimeout(timer);
-    timer = setTimeout(() => {
-      controller.abort(new Error(`SSE received no data for ${ms}ms`));
-    }, ms);
-  };
-  options.signal.addEventListener('abort', abort, { once: true });
-  controller.signal.addEventListener('abort', cancelReader, { once: true });
-  try {
-    if (options.signal.aborted) abort();
-    controller.signal.throwIfAborted();
-    arm(SSE_OPEN_TIMEOUT_MS);
-    const response = await fetch(url, {
-      signal: controller.signal,
-      credentials: options.credentials ?? 'same-origin',
-      headers: { Accept: 'text/event-stream' },
-      cache: 'no-store',
-    });
-    controller.signal.throwIfAborted();
-    options.onResponse?.(response);
-    controller.signal.throwIfAborted();
-    if (!response.ok || !response.body) {
-      throw new Error(`SSE open failed: ${response.status}`);
-    }
-    reader = response.body.getReader();
-    arm(SSE_IDLE_TIMEOUT_MS);
-    options.onOpen?.();
-    const decoder = new SseDecoder();
-    const text = new TextDecoder();
-    for (;;) {
-      controller.signal.throwIfAborted();
-      const { value, done } = await reader.read();
-      controller.signal.throwIfAborted();
-      if (done) break;
-      if (!value.byteLength) continue;
-      arm(SSE_IDLE_TIMEOUT_MS);
-      decoder.push(text.decode(value, { stream: true }), (frame) => {
-        if (!controller.signal.aborted) options.onFrame(frame);
-      });
-    }
-    // A trailing unterminated event is incomplete and is deliberately discarded.
-  } finally {
-    clearTimeout(timer);
-    options.signal.removeEventListener('abort', abort);
-    controller.signal.removeEventListener('abort', cancelReader);
-    controller.abort();
-    if (reader) {
-      try {
-        await reader.cancel();
-      } catch {
-        /* Already aborted or errored. */
-      }
-      reader.releaseLock();
-    }
-  }
+  const decoder = new SseDecoder();
+  const text = new TextDecoder();
+  await options.transport(url, {
+    signal: options.signal,
+    credentials: options.credentials,
+    headers: { Accept: 'text/event-stream' },
+    onResponse: (response) => {
+      options.onResponse?.(response);
+      options.signal.throwIfAborted();
+      if (!response.ok) throw new Error(`SSE open failed: ${response.status}`);
+      options.onOpen?.();
+    },
+    onChunk: (bytes) =>
+      decoder.push(text.decode(bytes, { stream: true }), (frame) => {
+        if (!options.signal.aborted) options.onFrame(frame);
+      }),
+  });
+  // A trailing unterminated event is incomplete and deliberately discarded.
 }

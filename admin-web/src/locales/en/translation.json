@@ -600,6 +600,7 @@
     "namespaceFilterPlaceholder": "Namespace ID",
     "status": {
       "all": "All",
+      "cooldown": "Cooldown",
       "available": "Available",
       "establishing": "Establishing",
       "pending": "Pending review",
@@ -649,6 +650,7 @@
       "none": "none",
       "trustedAt": "Current trust epoch established at",
       "lastSuccessAt": "Last successful contact",
+      "cooldownUntil": "Paused until",
       "degradedAt": "Degraded at",
       "degradationCount": "Degradation count",
       "addedBy": "Set by",
@@ -693,6 +695,7 @@
       "remoteServiceReachable": "Peer currently reachable",
       "yes": "Yes",
       "no": "No",
+      "cooldownHint": "All business synchronization is paused. Only a successful periodic Health check after this deadline can resume it; refreshing this page or probing manually does not end the pause.",
       "healthHint": "These are local relationship observations, not the last Health response. Successful contact is a coarse liveness watermark (up to 60 seconds), not a Health-check timestamp.",
       "manualHealth": "Latest Health check",
       "probe": "Check now",

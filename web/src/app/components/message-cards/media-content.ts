@@ -1,10 +1,52 @@
-import type { AlbumMedia, FileInfo } from './chat-item';
-import { VOICE_BAR_H, VOICE_BAR_W } from './media-row/layout';
+import type {
+  AlbumMedia,
+  ImageMedia,
+  VideoMedia,
+  AudioMedia,
+  FileInfo,
+  AuthoredContentType,
+  AuthoredMessageContent,
+} from './chat-item';
+
+/** Project content and attribution together so attachment presence follows contentType. */
+export function projectMessageContent(
+  contentType: AuthoredContentType,
+  content: string,
+  attribution: { msgId: number; senderName: string; sentAt: number },
+  resolveUrl: MediaUrlResolver = defaultUrlResolver,
+): AuthoredMessageContent {
+  let images: AlbumMedia[];
+  switch (contentType) {
+    case 'FILE':
+      return {
+        contentType,
+        images: null,
+        file: parseFileContent(content, resolveUrl),
+      };
+    case 'IMAGE':
+      images = [parseImageContent(content, resolveUrl)];
+      break;
+    case 'VIDEO':
+      images = [parseVideoContent(content, resolveUrl)];
+      break;
+    case 'AUDIO':
+      images = [parseAudioContent(content, resolveUrl)];
+      break;
+    case 'GALLERY':
+      images = parseGalleryContent(content, resolveUrl);
+      break;
+    default:
+      return { contentType, images: null, file: null };
+  }
+  return {
+    contentType,
+    images: images.map((resource) => ({ ...resource, ...attribution })),
+    file: null,
+  };
+}
 
 export type MediaUrlResolver = (item: Record<string, unknown>) => string;
-
-const defaultUrlResolver: MediaUrlResolver = (item) =>
-  typeof item['url'] === 'string' ? item['url'] : '';
+const defaultUrlResolver: MediaUrlResolver = (item) => item['url'] as string;
 
 const BARE_CAS_URL_RE =
   /^\/uploads\/msg-assets\/[0-9a-f]{2}\/[0-9a-f]{2}\/[0-9a-f]{64}$/;
@@ -15,7 +57,7 @@ export function contextualMediaUrl(
   threadId: number,
   seq: number,
 ): string {
-  const url = typeof item['url'] === 'string' ? item['url'] : '';
+  const url = item['url'] as string;
   return BARE_CAS_URL_RE.test(url)
     ? `${url}?threadId=${threadId}&seq=${seq}`
     : url;
@@ -27,8 +69,7 @@ export function contextualLinkContent(
   threadId: number,
   seq: number,
 ): string {
-  const item = parseRecord(content);
-  if (!item) return content;
+  const item = JSON.parse(content) as Record<string, unknown>;
   return JSON.stringify({
     ...item,
     ...(typeof item['image'] === 'string'
@@ -40,112 +81,107 @@ export function contextualLinkContent(
   });
 }
 
-export function parseImageContent(
-  content: string,
-  resolveUrl: MediaUrlResolver = defaultUrlResolver,
-): AlbumMedia {
-  const item = parseRecord(content);
+/** Server-authored content contract. This projection does not repair or discard protocol data. */
+type ResourceContent = Record<string, unknown> & {
+  url: string;
+  name: string;
+  size: number;
+  mimeType: string;
+};
+type ImageContent = ResourceContent & { w: number; h: number };
+type VideoContent = ImageContent & { duration: number };
+type AudioContent = ResourceContent & { duration: number };
+type GalleryEntry =
+  | (ImageContent & { kind: 'IMAGE' })
+  | (VideoContent & { kind: 'VIDEO' })
+  | (AudioContent & { kind: 'AUDIO' })
+  | (ResourceContent & { kind: 'FILE' });
+
+function metadata(item: ResourceContent, resolveUrl: MediaUrlResolver) {
   return {
-    kind: 'image',
-    src: item ? resolveUrl(item) : '',
-    w: Number(item?.['w']) || 0,
-    h: Number(item?.['h']) || 0,
-    size: Number(item?.['size']) || 0,
+    src: resolveUrl(item),
+    name: item.name,
+    size: item.size,
+    mimeType: item.mimeType,
+    senderName: null,
+    sentAt: null,
+  };
+}
+function image(item: ImageContent, resolveUrl: MediaUrlResolver): ImageMedia {
+  return { ...metadata(item, resolveUrl), kind: 'image', w: item.w, h: item.h };
+}
+function video(item: VideoContent, resolveUrl: MediaUrlResolver): VideoMedia {
+  return {
+    ...metadata(item, resolveUrl),
+    kind: 'video',
+    w: item.w,
+    h: item.h,
+    duration: item.duration,
+  };
+}
+function audio(item: AudioContent, resolveUrl: MediaUrlResolver): AudioMedia {
+  return {
+    ...metadata(item, resolveUrl),
+    kind: 'audio',
+    duration: item.duration,
   };
 }
 
+export function parseImageContent(
+  content: string,
+  resolveUrl: MediaUrlResolver = defaultUrlResolver,
+): ImageMedia {
+  return image(JSON.parse(content) as ImageContent, resolveUrl);
+}
 export function parseVideoContent(
   content: string,
   resolveUrl: MediaUrlResolver = defaultUrlResolver,
-): AlbumMedia | null {
-  return parseSingleMedia('video', content, resolveUrl);
+): VideoMedia {
+  return video(JSON.parse(content) as VideoContent, resolveUrl);
 }
-
 export function parseAudioContent(
   content: string,
   resolveUrl: MediaUrlResolver = defaultUrlResolver,
-): AlbumMedia | null {
-  return parseSingleMedia('audio', content, resolveUrl);
+): AudioMedia {
+  return audio(JSON.parse(content) as AudioContent, resolveUrl);
 }
-
 export function parseGalleryContent(
   content: string,
   resolveUrl: MediaUrlResolver = defaultUrlResolver,
 ): AlbumMedia[] {
-  const parsed = parseRecord(content);
-  if (!Array.isArray(parsed?.['items'])) return [];
-  return parsed['items'].flatMap((value): AlbumMedia[] => {
-    if (typeof value !== 'object' || value === null || Array.isArray(value))
-      return [];
-    const item = value as Record<string, unknown>;
-    const kind = String(item['kind'] ?? '').toLowerCase();
-    if (!isMediaKind(kind)) return [];
-    const src = resolveUrl(item);
-    if (!src) return [];
-    return [toAlbumImage(kind, item, src)];
+  const gallery = JSON.parse(content) as { items: GalleryEntry[] };
+  return gallery.items.map((item) => {
+    switch (item.kind) {
+      case 'IMAGE':
+        return image(item, resolveUrl);
+      case 'VIDEO':
+        return video(item, resolveUrl);
+      case 'AUDIO':
+        return audio(item, resolveUrl);
+      case 'FILE':
+        return { ...metadata(item, resolveUrl), kind: 'file' };
+      default:
+        return unsupportedKind(item);
+    }
   });
+}
+function unsupportedKind(item: never): never {
+  throw new Error(`Unsupported gallery resource: ${JSON.stringify(item)}`);
 }
 
 export function parseFileContent(
   content: string,
   resolveUrl: MediaUrlResolver = defaultUrlResolver,
-): FileInfo | null {
-  const item = parseRecord(content);
-  if (!item) return null;
-  const url = resolveUrl(item);
-  if (!url) return null;
-  const meta = item['meta'] as Record<string, unknown> | undefined;
-  return {
-    url,
-    ...(meta?.['thumbnail']
-      ? { thumbnail: url.replace('/msg-assets/', '/thumbnails/') }
-      : {}),
-    name: String(item['name'] ?? 'file'),
-    size: Number(item['size']) || 0,
-    mimeType: String(item['mimeType'] ?? ''),
+): FileInfo {
+  const item = JSON.parse(content) as ResourceContent & {
+    name: string;
+    size: number;
+    mimeType: string;
   };
-}
-
-function parseSingleMedia(
-  kind: 'video' | 'audio',
-  content: string,
-  resolveUrl: MediaUrlResolver,
-): AlbumMedia | null {
-  const item = parseRecord(content);
-  if (!item) return null;
-  const src = resolveUrl(item);
-  return src ? toAlbumImage(kind, item, src) : null;
-}
-
-function toAlbumImage(
-  kind: AlbumMedia['kind'],
-  item: Record<string, unknown>,
-  src: string,
-): AlbumMedia {
   return {
-    kind,
-    src,
-    w: kind === 'audio' ? VOICE_BAR_W : Number(item['w']) || 0,
-    h: kind === 'audio' ? VOICE_BAR_H : Number(item['h']) || 0,
-    size: Number(item['size']) || 0,
-    duration: Number(item['duration']) || 0,
-    name: typeof item['name'] === 'string' ? item['name'] : '',
-    mimeType:
-      typeof item['mimeType'] === 'string' ? item['mimeType'] : undefined,
+    url: resolveUrl(item),
+    name: item.name,
+    size: item.size,
+    mimeType: item.mimeType,
   };
-}
-
-function parseRecord(content: string): Record<string, unknown> | null {
-  try {
-    const value: unknown = JSON.parse(content);
-    return typeof value === 'object' && value !== null && !Array.isArray(value)
-      ? (value as Record<string, unknown>)
-      : null;
-  } catch {
-    return null;
-  }
-}
-
-function isMediaKind(value: string): value is AlbumMedia['kind'] {
-  return ['image', 'video', 'audio', 'file'].includes(value);
 }

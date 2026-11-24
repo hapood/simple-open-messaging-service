@@ -487,7 +487,7 @@ impl NativeEvents {
         app: Option<&tauri::AppHandle>,
         work: Option<crate::login_connection::DatabaseWork>,
     ) -> Self {
-        #[cfg(not(desktop))]
+        #[cfg(any(target_os = "android", target_os = "ios"))]
         let _ = app;
         let run = WORK_RUN.try_with(Clone::clone).ok();
         #[cfg(target_os = "android")]

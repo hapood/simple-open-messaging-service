@@ -58,4 +58,25 @@ describe('FederationPeerHttp terminal expiry', () => {
     expect(buildBody).toHaveBeenCalledOnce();
     expect(release).toHaveBeenCalledOnce();
   });
+
+  it('does not degrade a caller-cancelled GET as a transport failure', async () => {
+    const degraded = vi.fn();
+    const controller = new AbortController();
+    controller.abort();
+    const http = new FederationPeerHttp(
+      { signOutbound: vi.fn().mockResolvedValue({}) } as never,
+      {
+        resolveBase: vi.fn().mockResolvedValue('https://peer.example'),
+        acquireRequestSlot: vi.fn(async () => vi.fn()),
+        request: vi.fn(),
+      } as never,
+      { markTransportDegraded: degraded } as never,
+      { get: () => ({}) } as never,
+      { markContactSuccess: vi.fn() } as never,
+    );
+    await expect(
+      http.get('/resource', 'peer.example', undefined, controller.signal),
+    ).rejects.toMatchObject({ name: 'AbortError' });
+    expect(degraded).not.toHaveBeenCalled();
+  });
 });

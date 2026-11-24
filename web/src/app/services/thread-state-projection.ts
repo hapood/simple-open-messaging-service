@@ -35,7 +35,6 @@ export function applyThreadStateSnapshot(
     ...base,
     threadFeedId: feedId,
     messageEndSeq: snapshot.messageEndSeq,
-    groupMetaFeedEndId: snapshot.groupMetaFeedEndId,
     visible: true,
     publisherNamespaceId: snapshot.publisherNamespaceId,
     selfMentionNamespaceId: snapshot.selfMentionNamespaceId,

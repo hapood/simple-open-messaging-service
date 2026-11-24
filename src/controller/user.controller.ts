@@ -54,9 +54,12 @@ import { GroupService } from '../group/group.service.js';
 import { ProfileNamespaceFeedService } from '../federation/profile-namespace-feed.service.js';
 import { parseGroupMetaFeedDemand } from '../../shared/group-meta-demand.js';
 
+import type { ClientStateFeedItemType } from '../../shared/client-state-feed.js';
+
 /** One item in the device-facing compacted state feed. */
 type ClientStateFeedItem = {
   feedId: number;
+  type: ClientStateFeedItemType;
   body: unknown;
 };
 
@@ -289,6 +292,7 @@ export class UserController {
       await this.clientStateFeed.query(me, mode, after, scanEnd)
     ).map((item) => ({
       feedId: item.feedId,
+      type: item.type,
       body: item.body,
     })) satisfies ClientStateFeedItem[];
     candidates.sort((a, b) => a.feedId - b.feedId);
@@ -321,13 +325,12 @@ export class UserController {
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Get('user/group-meta')
-  @ApiOperation({ summary: 'Fetch one client-visible group member feed' })
+  @ApiOperation({ summary: 'Fetch one client-visible group meta feed' })
   async queryGroupMeta(
     @Request() req: FastifyRequest,
     @Query('threadId') threadIdParam?: string,
     @Query('account') accountParam?: string,
     @Query('namespaceId') namespaceIdParam?: string,
-    @Query('mode') modeParam?: string,
     @Query('after') afterParam?: string,
     @Query('take') takeParam?: string,
     @Query('through') throughParam?: string,
@@ -348,13 +351,6 @@ export class UserController {
         );
       return parsed;
     };
-    const mode = modeParam ?? 'delta';
-    if (mode !== 'full' && mode !== 'delta')
-      throw new BusinessException(
-        BusinessCode.VALIDATION_FAILED,
-        'mode must be full or delta',
-        HttpStatus.BAD_REQUEST,
-      );
     if (afterParam === undefined)
       throw new BusinessException(
         BusinessCode.CLIENT_FEED_CURSOR_UNAVAILABLE,
@@ -390,7 +386,6 @@ export class UserController {
       req.user.userId,
       target.groupId,
       target.account,
-      mode,
       parseCursor(afterParam, 'after'),
       takeParam === undefined ? 100 : Number(parseCursor(takeParam, 'take')),
       throughParam === undefined

@@ -76,6 +76,12 @@ export class FederationNamespaceService {
       : null;
   }
 
+  async captureActiveById(namespaceId: number): Promise<FederationContext> {
+    return this.database.db.transaction((tx) =>
+      this.captureActiveByIdInTx(tx, namespaceId),
+    );
+  }
+
   async captureActive(domain: string): Promise<FederationContext> {
     return this.database.db.transaction((tx) =>
       this.captureActiveInTx(tx, domain),

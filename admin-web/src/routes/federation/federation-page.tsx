@@ -10,7 +10,7 @@ import {
 import { useListParams } from '@/hooks/use-list-params';
 import { useIsSuperAdmin } from '@/hooks/use-me';
 import { useQuotaNodes } from '@/hooks/use-quotas';
-import type { FederationPeerState, FederationTrustLevel } from '@/types/api';
+import type { FederationPeerState, FederationPeerRuntimeStatus } from '@/types/api';
 import { Button, buttonVariants } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
@@ -36,11 +36,12 @@ import { PeerStatusBadge } from './peer-status-badge';
 import { quotaRisk } from './peer-quota-panel';
 
 const PAGE_SIZE = 20;
-const FILTERS: (FederationTrustLevel | undefined)[] = [
+const FILTERS: (FederationPeerRuntimeStatus | undefined)[] = [
   undefined,
   'unrecognized',
   'establishing',
   'available',
+  'cooldown',
   'degraded',
   'halted',
 ];
@@ -67,7 +68,7 @@ export function FederationPage() {
   const namespaceId = /^[1-9]\d*$/.test(namespaceIdParam)
     ? Number(namespaceIdParam)
     : undefined;
-  const status = (filter || undefined) as FederationTrustLevel | undefined;
+  const status = (filter || undefined) as FederationPeerRuntimeStatus | undefined;
 
   const { data, isLoading, isFetching, error } = useFederationPeers({
     skip,
@@ -198,7 +199,7 @@ export function FederationPage() {
                     {p.domain}
                   </TableCell>
                   <TableCell>
-                    <PeerStatusBadge level={p.trustLevel} />
+                    <PeerStatusBadge level={p.trustLevel === 'available' && p.cooldown !== null ? 'cooldown' : p.trustLevel} />
                   </TableCell>
                   <TableCell>
                     {!p.active ? (

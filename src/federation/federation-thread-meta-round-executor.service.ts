@@ -39,8 +39,8 @@ export interface MetaRoundPlan {
   groupAccount: string;
   metaTargetId: number;
   metaProcessedThroughId: number;
-  /** The open recovery drain's fixed through; null selects delta. */
-  metaRecoveryThroughId: number | null;
+  /** The open recovery drain's fixed source through; zero selects delta. */
+  metaRecoveryThroughId: number;
 }
 
 /** One bounded Group Meta round for a mirrored group, driven by the federation
@@ -64,68 +64,77 @@ export class FederationThreadMetaRoundExecutorService {
    * mid-pull, or the applied cursor still trails the target after completing. */
   async run(
     threadId: number,
-    peerDomain: string,
     namespaceId: number,
+    signal: AbortSignal,
   ): Promise<boolean> {
-    const plan = await this.plan(threadId, peerDomain, namespaceId);
+    signal.throwIfAborted();
+    const plan = await this.plan(threadId, namespaceId);
     if (!plan) return false;
     if (plan.metaTargetId <= plan.metaProcessedThroughId) return false;
-    const windowed = plan.metaRecoveryThroughId !== null;
-    const through = plan.metaRecoveryThroughId ?? plan.metaTargetId;
+    const windowed = plan.metaRecoveryThroughId > 0;
+    const through = windowed ? plan.metaRecoveryThroughId : plan.metaTargetId;
     const group: MirrorGroupAddress = {
       account: plan.groupAccount,
-      domain: peerDomain,
       publisherNamespaceId: namespaceId,
     };
     try {
-      if (windowed) await this.runFullWindow(group, through, plan);
-      else if (await this.runDeltaPages(group, plan)) return true;
+      if (windowed) await this.runFullWindow(group, through, plan, signal);
+      else if (await this.runDeltaPages(group, plan, signal)) return true;
     } catch (error) {
+      signal.throwIfAborted();
       if (error instanceof RemoteGroupMetaCursorUnavailableError) {
         // Compaction can invalidate either a delta cursor or a fixed full
         // boundary. Re-open at the source's current end before any commit.
-        await this.database.db.transaction(async (tx) =>
-          reopenMirrorMetaRecoveryInTx(tx, group, error.resumeBefore - 1),
-        );
+        await this.database.db.transaction(async (tx) => {
+          signal.throwIfAborted();
+          await reopenMirrorMetaRecoveryInTx(tx, group, error.resumeBefore - 1);
+          signal.throwIfAborted();
+        });
         return true;
       }
       throw error;
     }
-    const next = await this.plan(threadId, peerDomain, namespaceId);
+    signal.throwIfAborted();
+    const next = await this.plan(threadId, namespaceId);
     return next !== null && next.metaTargetId > next.metaProcessedThroughId;
   }
 
   private async plan(
     threadId: number,
-    peerDomain: string,
     namespaceId: number,
   ): Promise<MetaRoundPlan | null> {
     const result = await this.database.db.execute<{
       groupAccount: string;
-      metaEndId: number | null;
-      metaTargetId: number | null;
-      metaProcessedThroughId: number | null;
-      metaRecoveryThroughId: number | null;
+      metaEndId: number;
+      clientMetaEndId: number;
+      metaTargetId: number;
+      metaProcessedThroughId: number;
+      metaRecoveryThroughId: number;
     }>(sql`
       SELECT ${groupStateFields.account} AS "groupAccount",
         feed."metaEndId" AS "metaEndId",
+        feed."clientMetaEndId" AS "clientMetaEndId",
         feed."metaTargetId" AS "metaTargetId",
         feed."metaProcessedThroughId" AS "metaProcessedThroughId",
         feed."metaRecoveryThroughId" AS "metaRecoveryThroughId"
       FROM "MessageThread" thread
       JOIN ${groupStateSql} group_state ON group_state.id = thread.id
-      LEFT JOIN "GroupMeta" feed ON feed."threadId" = thread.id
+      JOIN "GroupMeta" feed ON feed."threadId" = thread.id
       WHERE thread.id = ${threadId}
         AND thread."federationRoundsEnabled" = true
         AND ${groupStateFields.namespaceId} = ${namespaceId}
       LIMIT 1
     `);
     const row = result.rows[0];
-    if (!row || row.metaEndId === null) return null;
+    if (!row) throw new Error('group-meta mirror cursor is missing');
+    if (row.metaEndId !== 0)
+      throw new Error(
+        'mirror group meta does not allocate canonical coordinates',
+      );
     return {
       groupAccount: row.groupAccount,
-      metaTargetId: row.metaTargetId!,
-      metaProcessedThroughId: row.metaProcessedThroughId!,
+      metaTargetId: row.metaTargetId,
+      metaProcessedThroughId: row.metaProcessedThroughId,
       metaRecoveryThroughId: row.metaRecoveryThroughId,
     };
   }
@@ -135,15 +144,21 @@ export class FederationThreadMetaRoundExecutorService {
   private async runDeltaPages(
     group: MirrorGroupAddress,
     plan: MetaRoundPlan,
+    signal: AbortSignal,
   ): Promise<boolean> {
     let after = plan.metaProcessedThroughId;
     for (let page = 0; page < META_ROUND_PAGE_BUDGET; page += 1) {
-      const fetched = await this.client.fetchPage(group.domain, {
-        account: group.account,
-        mode: 'delta',
-        after,
-        through: plan.metaTargetId,
-      });
+      signal.throwIfAborted();
+      const fetched = await this.client.fetchPage(
+        group.publisherNamespaceId,
+        {
+          account: group.account,
+          mode: 'delta',
+          after,
+          through: plan.metaTargetId,
+        },
+        signal,
+      );
       if (fetched.groupMetaFeedEndId < plan.metaTargetId)
         throw new Error('group-meta page did not reach its fixed target');
       const items = fetched.items.map((item) =>
@@ -151,25 +166,33 @@ export class FederationThreadMetaRoundExecutorService {
       );
       const reachedBoundary = !fetched.hasMore;
       if (items.length === 0 && reachedBoundary) {
-        await this.database.db.transaction(async (tx) =>
-          finalizeDeltaMirrorMetaRoundInTx(tx, {
+        signal.throwIfAborted();
+        await this.database.db.transaction(async (tx) => {
+          signal.throwIfAborted();
+          await finalizeDeltaMirrorMetaRoundInTx(tx, {
             group,
             through: plan.metaTargetId,
-          }),
-        );
+          });
+          signal.throwIfAborted();
+        });
 
         return false;
       }
       for (const [index, item] of items.entries()) {
-        const effect = await this.database.db.transaction(async (tx) =>
-          applyDeltaMirrorMetaItemInTx(tx, {
+        signal.throwIfAborted();
+        const effect = await this.database.db.transaction(async (tx) => {
+          signal.throwIfAborted();
+          const applied = await applyDeltaMirrorMetaItemInTx(tx, {
             group,
             item,
             through: plan.metaTargetId,
             reachedBoundary: reachedBoundary && index === items.length - 1,
             messages: this.messages,
-          }),
-        );
+          });
+          signal.throwIfAborted();
+          return applied;
+        });
+        if (signal.aborted) return false;
         await this.prefetchProfiles(
           effect.profileDemand ? [effect.profileDemand] : [],
         );
@@ -191,31 +214,42 @@ export class FederationThreadMetaRoundExecutorService {
     group: MirrorGroupAddress,
     through: number,
     _plan: MetaRoundPlan,
+    signal: AbortSignal,
   ): Promise<void> {
     let after = 0;
     const snapshot: MirrorMetaReplicatedItem[] = [];
     for (let pages = 0; ; pages += 1) {
-      const page = await this.client.fetchPage(group.domain, {
-        account: group.account,
-        mode: 'full',
-        after,
-        through,
-      });
+      signal.throwIfAborted();
+      const page = await this.client.fetchPage(
+        group.publisherNamespaceId,
+        {
+          account: group.account,
+          mode: 'full',
+          after,
+          through,
+        },
+        signal,
+      );
       const items = page.items.map((item) =>
         validateOriginGroupMetaItem(item, 'full'),
       );
       const reachedBoundary = !page.hasMore;
       snapshot.push(...items);
       if (reachedBoundary) {
-        const effect = await this.database.db.transaction(async (tx) =>
-          applyFullMirrorMetaBatchInTx(tx, {
+        signal.throwIfAborted();
+        const effect = await this.database.db.transaction(async (tx) => {
+          signal.throwIfAborted();
+          const applied = await applyFullMirrorMetaBatchInTx(tx, {
             group,
             items: snapshot,
             through,
             scannedThrough: page.scannedThrough,
             reachedBoundary: true,
-          }),
-        );
+          });
+          signal.throwIfAborted();
+          return applied;
+        });
+        if (signal.aborted) return;
         await this.prefetchProfiles(effect.profileDemands);
 
         return;

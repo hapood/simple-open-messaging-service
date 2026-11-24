@@ -9,7 +9,6 @@ import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import { DatabaseService } from '../database/database.service.js';
 import * as tables from '../database/schema.js';
-import { SseService } from '../gateway/sse.service.js';
 import { requireInboundPendingMedia } from '../message/pending-media-row.js';
 import { FederationInboundFileSync } from './federation-inbound-file-sync.js';
 import { FederationMediaRangeClient } from './federation-media-range-client.js';
@@ -78,7 +77,6 @@ export class FederationInboundMediaBatchService {
     private readonly fileSync: FederationInboundFileSync,
     private readonly promoter: FederationPendingMediaPromoter,
     private readonly mediaRanges: FederationMediaRangeClient,
-    private readonly sse: SseService,
   ) {}
 
   async runFileSyncBatch(
@@ -95,10 +93,6 @@ export class FederationInboundMediaBatchService {
       fetchChunksFor,
       (id) => this.promotePendingMessage(id),
       (id) => this.failPendingMessage(id),
-      async (id) => {
-        const progress = await this.readBatchProgressSummary(id);
-        if (progress) this.publishMessageProgress(progress, 'downloading');
-      },
     );
   }
 
@@ -109,9 +103,8 @@ export class FederationInboundMediaBatchService {
   }
 
   private async stopInboundBatchLocked(batchId: string): Promise<void> {
-    let stopped: boolean | undefined;
     await this.fileSync.stopBatch(batchId, async () => {
-      stopped = await this.database.db.transaction(async (tx) => {
+      await this.database.db.transaction(async (tx) => {
         const owner = await tx.query.fileSyncProgress.findFirst({
           where: eq(tables.fileSyncProgress.batchId, batchId),
           columns: { messageId: true },
@@ -163,9 +156,6 @@ export class FederationInboundMediaBatchService {
         return false;
       });
     });
-    if (!stopped) return;
-    const completion = await this.readBatchProgressSummary(batchId);
-    if (completion) this.completeProgressTargets(completion, 'failed');
   }
 
   async retryInboundBatch(
@@ -290,15 +280,11 @@ export class FederationInboundMediaBatchService {
 
   /** Materialize an existing message after its attachments complete. */
   async promotePendingMessage(batchId: string): Promise<void> {
-    const completion = await this.readBatchProgressSummary(batchId);
-    const promoted = await this.promoter.promote(batchId);
-    if (!promoted) return;
-    if (completion) this.completeProgressTargets(completion, 'ready');
+    await this.promoter.promote(batchId);
   }
 
   private async failPendingMessage(batchId: string): Promise<void> {
-    const completion = await this.readBatchProgressSummary(batchId);
-    const failed = await this.database.db.transaction(async (tx) => {
+    await this.database.db.transaction(async (tx) => {
       const owner = await tx.query.fileSyncProgress.findFirst({
         where: and(
           eq(tables.fileSyncProgress.batchId, batchId),
@@ -332,90 +318,6 @@ export class FederationInboundMediaBatchService {
         )
         .returning({ id: tables.message.id });
       return transitioned;
-    });
-    if (failed) {
-      if (completion) this.completeProgressTargets(completion, 'failed');
-    }
-  }
-
-  private async readBatchProgressSummary(batchId: string): Promise<{
-    message: { threadId: number; seq: number };
-    completedFiles: number;
-    totalFiles: number;
-  } | null> {
-    const task = await this.database.db.query.fileSyncProgress.findFirst({
-      where: eq(tables.fileSyncProgress.batchId, batchId),
-      columns: { messageId: true },
-    });
-    // File tasks retain ownership after materialization removes coordination.
-    // Coordination remains a fallback for diagnosing a batch with missing tasks.
-    const owner =
-      task ??
-      (await this.database.db.query.pendingMedia.findFirst({
-        where: and(
-          eq(tables.pendingMedia.batchId, batchId),
-          eq(tables.pendingMedia.direction, 'INBOUND'),
-        ),
-        columns: { messageId: true },
-      }));
-    if (!owner?.messageId) return null;
-    const message = await this.database.db.query.message.findFirst({
-      where: eq(tables.message.id, owner.messageId),
-      columns: { threadId: true, seq: true },
-    });
-    if (!message) return null;
-    if (
-      !this.sse.hasMediaMessageProgressSubscriber(message.threadId, message.seq)
-    )
-      return null;
-    const [counts] = await this.database.db
-      .select({
-        totalFiles: sql<number>`COUNT(*)::int`,
-        completedFiles: sql<number>`COUNT(*) FILTER (WHERE ${tables.fileSyncProgress.status} = 'COMPLETED')::int`,
-      })
-      .from(tables.fileSyncProgress)
-      .where(eq(tables.fileSyncProgress.batchId, batchId));
-    return {
-      message,
-      completedFiles: counts?.completedFiles ?? 0,
-      totalFiles: counts?.totalFiles ?? 0,
-    };
-  }
-
-  private publishMessageProgress(
-    completion: {
-      message: { threadId: number; seq: number };
-      completedFiles: number;
-      totalFiles: number;
-    },
-    status: 'downloading' | 'ready' | 'failed',
-  ): void {
-    this.sse.onMediaMessageDownloadProgress({
-      threadId: completion.message.threadId,
-      seq: completion.message.seq,
-      status,
-      completedFiles: completion.completedFiles,
-      totalFiles: completion.totalFiles,
-      activeFile: null,
-    });
-  }
-
-  private completeProgressTargets(
-    completion: {
-      message: { threadId: number; seq: number };
-      completedFiles: number;
-      totalFiles: number;
-    },
-    status: 'ready' | 'failed',
-  ): void {
-    this.sse.completeMediaMessageDownloadProgress({
-      threadId: completion.message.threadId,
-      seq: completion.message.seq,
-      status,
-      completedFiles:
-        status === 'ready' ? completion.totalFiles : completion.completedFiles,
-      totalFiles: completion.totalFiles,
-      activeFile: null,
     });
   }
 

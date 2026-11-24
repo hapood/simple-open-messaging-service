@@ -32,21 +32,33 @@ struct Envelope {
     data: Option<Value>,
 }
 
-fn cursor(conn: &Connection, user_id: i64) -> Result<(i64, Option<i64>), String> {
-    let (cursor, full_through) = conn
+fn cursor(conn: &Connection, user_id: i64) -> Result<(i64, Option<i64>, i64), String> {
+    let (cursor, full_through, target) = conn
         .query_row(
-            "SELECT COALESCE(state_feed_id,0),state_feed_full_through
+            "SELECT COALESCE(state_feed_id,0),state_feed_full_through,state_feed_target
          FROM account_state WHERE user_id=?1",
             [user_id],
-            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Option<i64>>(1)?)),
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Option<i64>>(1)?, row.get::<_, i64>(2)?)),
         )
         .optional()
         .map_err(|e| format!("read state-feed coordinates: {e}"))?
-        .unwrap_or((0, None));
-    if cursor < 0 || full_through.is_some_and(|boundary| boundary <= cursor) {
+        .unwrap_or((0, None, 0));
+    if cursor < 0 || target < 0 || full_through.is_some_and(|boundary| boundary < 0) {
         return Err("invalid state-feed cursor or full boundary".into());
     }
-    Ok((cursor, full_through))
+    Ok((cursor, full_through, target))
+}
+
+async fn retain_target(work: &crate::login_connection::DatabaseWork, user_id: i64, target: i64) -> Result<(), String> {
+    if target < 0 { return Err("invalid state-feed target".into()); }
+    spawn_owned_database(Ok(work.clone()), move |conn| {
+        conn.execute(
+            "INSERT INTO account_state(user_id,state_feed_target) VALUES(?1,?2)
+             ON CONFLICT(user_id) DO UPDATE SET state_feed_target=MAX(state_feed_target,excluded.state_feed_target)",
+            rusqlite::params![user_id, target],
+        ).map_err(|e| e.to_string())?;
+        Ok(())
+    }).await.map_err(|e| e.to_string())?
 }
 
 fn validate(page: &Page, mode: &str, after: i64, through: i64) -> Result<(), String> {
@@ -121,7 +133,7 @@ pub(crate) async fn synchronize_owned(
         lane = STATE_FEED_SYNC.lock() => lane,
     };
     work.assert_current().map_err(|e| e.to_string())?;
-    let (mut after, persisted_full) =
+    let (mut after, persisted_full, persisted_target) =
         spawn_owned_database(Ok(work.clone()), move |conn| cursor(conn, user_id))
             .await
             .map_err(|e| format!("join state-feed cursor read: {e}"))??;
@@ -140,13 +152,16 @@ pub(crate) async fn synchronize_owned(
         if page.state_feed_end_id < 0 || page.scanned_through != 0 || !page.items.is_empty() || page.has_more { return Err("invalid state-feed head".into()); }
         target = page.state_feed_end_id;
     }
+    target = target.max(persisted_target);
+    retain_target(&work, user_id, target).await?;
     let mut full_through = persisted_full.or_else(|| (after == 0 && target > 0).then_some(target));
     target = target.max(full_through.unwrap_or(0));
     let mut recovery_attempted = false;
     while after < target {
         work.assert_current().map_err(|e| e.to_string())?;
-        let through = full_through.unwrap_or(target);
-        let mode = if full_through.is_some() {
+        let full = full_through.is_some_and(|boundary| after < boundary);
+        let through = if full { full_through.unwrap() } else { target };
+        let mode = if full {
             "full"
         } else {
             "delta"
@@ -177,10 +192,11 @@ pub(crate) async fn synchronize_owned(
                 return Err("invalid state-feed recovery window".into());
             }
             after = recovery.resume_after;
-            target = recovery.resume_before - 1;
-            full_through = (after < target).then_some(target);
+            full_through = Some(recovery.resume_before - 1);
+            target = target.max(recovery.resume_before - 1);
+            retain_target(&work, user_id, target).await?;
             recovery_attempted = true;
-            if target == after {
+            {
                 spawn_owned_database(Ok(work.clone()), move |conn| {
                     apply_state_feed_page_with_resume(
                         conn,
@@ -188,11 +204,12 @@ pub(crate) async fn synchronize_owned(
                         Vec::new(),
                         after,
                         Vec::new(),
-                        Some(None),
+                        full_through,
+                        Some(target),
                     )
                 })
                 .await
-                .map_err(|e| format!("join empty state-feed recovery: {e}"))??;
+                .map_err(|e| format!("join state-feed recovery coordinates: {e}"))??;
             }
             continue;
         }
@@ -204,8 +221,7 @@ pub(crate) async fn synchronize_owned(
         validate(&page, mode, after, through)?;
         let scanned = page.scanned_through;
         let head = page.state_feed_end_id;
-        let next_full = full_through.filter(|boundary| scanned < *boundary);
-        let full_marker = full_through.map(|_| next_full);
+        let full_marker = full_through;
         spawn_owned_database(Ok(work.clone()), move |conn| {
             apply_state_feed_page_with_resume(
                 conn,
@@ -214,14 +230,12 @@ pub(crate) async fn synchronize_owned(
                 scanned,
                 Vec::new(),
                 full_marker,
+                Some(head),
             )
         })
         .await
         .map_err(|e| format!("join state-feed page commit: {e}"))??;
         after = scanned;
-        if full_through.is_some_and(|boundary| after >= boundary) {
-            full_through = None;
-        }
         target = target.max(head);
         if !page.has_more && after < through {
             return Err("state-feed response ended before requested boundary".into());
@@ -246,6 +260,7 @@ mod tests {
                 .map(|id| {
                     serde_json::from_value(serde_json::json!({
                         "feedId": id,
+                        "type": "REQUEST_HEAD",
                         "body": { "requestEndId": id.to_string(), "requestReadId": "0" },
                     }))
                     .unwrap()
@@ -255,16 +270,16 @@ mod tests {
     }
 
     #[test]
-    fn full_snapshot_boundary_survives_restart_and_clears_with_last_page() {
+    fn full_snapshot_boundary_and_target_remain_after_completion() {
         let mut conn = Connection::open_in_memory().unwrap();
         conn.execute_batch("CREATE TABLE client_preferences(scope TEXT,key TEXT,value_json TEXT,updated_at INTEGER,PRIMARY KEY(scope,key));").unwrap();
         super::super::create_cache_schema(&conn).unwrap();
-        apply_state_feed_page_with_resume(&mut conn, 1, Vec::new(), 1, Vec::new(), Some(Some(3)))
+        apply_state_feed_page_with_resume(&mut conn, 1, Vec::new(), 1, Vec::new(), Some(3), Some(5))
             .unwrap();
-        assert_eq!(cursor(&conn, 1).unwrap(), (1, Some(3)));
-        apply_state_feed_page_with_resume(&mut conn, 1, Vec::new(), 3, Vec::new(), Some(None))
+        assert_eq!(cursor(&conn, 1).unwrap(), (1, Some(3), 5));
+        apply_state_feed_page_with_resume(&mut conn, 1, Vec::new(), 3, Vec::new(), Some(3), Some(3))
             .unwrap();
-        assert_eq!(cursor(&conn, 1).unwrap(), (3, None));
+        assert_eq!(cursor(&conn, 1).unwrap(), (3, Some(3), 5));
     }
 
     #[test]

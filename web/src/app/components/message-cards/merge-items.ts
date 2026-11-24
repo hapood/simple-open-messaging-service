@@ -26,8 +26,10 @@ import type { ChatItemData, ChatMsgData } from './chat-item';
 export const ALBUM_MAX = 6;
 
 /** Whether a content type participates in album aggregation (IMAGE + VIDEO; AUDIO is a standalone bubble). */
-function isAlbumMedia(t: ChatMsgData['contentType']): boolean {
-  return t === 'IMAGE' || t === 'VIDEO';
+function isAlbumMedia(
+  message: ChatMsgData,
+): message is Extract<ChatMsgData, { images: unknown[] }> {
+  return message.contentType === 'IMAGE' || message.contentType === 'VIDEO';
 }
 
 /** Collect the member msgIds of an album's images (for kernel jump resolution + the dev badge / viewer). Undefined when
@@ -66,12 +68,7 @@ export function mergeAlbumItems(
   while (i < items.length) {
     const it = items[i];
     const msg = it.data;
-    if (
-      msg.type === 'msg' &&
-      isAlbumMedia(msg.contentType) &&
-      msg.images &&
-      !msg.quote
-    ) {
+    if (msg.type === 'msg' && isAlbumMedia(msg) && !msg.quote) {
       const imgs = [...msg.images];
       let boundary = it.boundary; // head's boundary wins
       let j = i + 1;
@@ -80,11 +77,11 @@ export function mergeAlbumItems(
         if (
           nj.type !== 'msg' ||
           !!nj.quote ||
-          !isAlbumMedia(nj.contentType) ||
+          !isAlbumMedia(nj) ||
           nj.creator !== msg.creator
         )
           break; // break: not album media, or sender changed
-        const nextImgs = nj.images ?? [];
+        const nextImgs = nj.images;
         if (imgs.length + nextImgs.length > ALBUM_MAX) break; // cap: absorbing would exceed it -> remaining same-creator
         // images start a fresh album (the outer loop resumes from j).
         imgs.push(...nextImgs);
@@ -150,8 +147,8 @@ export function absorbAlbumTail(
   if (
     t.type !== 'msg' ||
     ic.type !== 'msg' ||
-    !isAlbumMedia(t.contentType) ||
-    !isAlbumMedia(ic.contentType) ||
+    !isAlbumMedia(t) ||
+    !isAlbumMedia(ic) ||
     !!t.quote ||
     !!ic.quote
   ) {
@@ -160,8 +157,8 @@ export function absorbAlbumTail(
   if (t.creator !== ic.creator) {
     return null;
   }
-  const tImgs = t.images ?? [],
-    icImgs = ic.images ?? [];
+  const tImgs = t.images,
+    icImgs = ic.images;
   if (tImgs.length + icImgs.length > ALBUM_MAX) {
     return null;
   }

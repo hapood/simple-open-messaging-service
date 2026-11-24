@@ -32,8 +32,6 @@ export interface ThreadFeedState {
   threadId: number;
   threadFeedId: number;
   messageEndSeq: number;
-  tombstoneEndSeq: number;
-  groupMetaFeedEndId: string | null;
   joinRequestEndFeedId: number;
   joinRequestReadFeedId: number;
   groupInviteEndFeedId: number;
@@ -89,14 +87,13 @@ export class ThreadFeedService {
         }
         const take = request.take ?? 100;
         const resultRows = await tx.execute<
-          Omit<ThreadFeedState, 'groupMetaFeedEndId' | 'profileAccount'> & {
-            groupMetaFeedEndId: number | null;
+          Omit<ThreadFeedState, 'profileAccount'> & {
             profileAccount: string;
             profileRev: number;
           }
         >(sql`
-        SELECT s."threadId", s."threadFeedId", s.alias, s."messageEndSeq", s."tombstoneEndSeq",
-               s."groupMetaFeedEndId", s."joinRequestEndFeedId",
+        SELECT s."threadId", s."threadFeedId", s.alias, s."messageEndSeq",
+               s."joinRequestEndFeedId",
                s."joinRequestReadFeedId", s."groupInviteEndFeedId",
                s."threadProfileRev" AS "profileRev", s."lastReadSeq", s."announcementReadFeedId",
                s."unreadCount", s."lastMentionSeq", t.type, t."authorityNamespaceId" AS "publisherNamespaceId",
@@ -126,10 +123,6 @@ export class ThreadFeedService {
           .map(({ profileAccount, ...item }) => ({
             ...item,
             profileAccount,
-            groupMetaFeedEndId:
-              item.groupMetaFeedEndId === null
-                ? null
-                : String(item.groupMetaFeedEndId),
           }));
         if (previewCount > 0) {
           for (const item of items) {

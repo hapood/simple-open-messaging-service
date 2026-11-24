@@ -22,7 +22,7 @@ import {
   messageThread,
   message,
   durableTask,
-  deletedMessage,
+  messageTombstone,
   relationshipPair,
 } from '../src/database/schema.js';
 import { ThreadFeedService } from '../src/message/thread-feed.service.js';
@@ -449,7 +449,7 @@ describe('transactional thread attention', () => {
         tombstoneEndSeq: number;
       }>(sql`
         SELECT COALESCE((SELECT max(seq) FROM "Message" WHERE "threadId" = ${threadId}), 0) AS "messageEndSeq",
-          COALESCE((SELECT max("deletionSeq") FROM "DeletedMessage" WHERE "threadId" = ${threadId}), 0) AS "tombstoneEndSeq"`);
+          COALESCE((SELECT max("deletionSeq") FROM "MessageTombstone" WHERE "threadId" = ${threadId} AND "deletionSeq" IS NOT NULL), 0) AS "tombstoneEndSeq"`);
       return ThreadFeedHeadWriter.advanceInTx(tx, userId, {
         threadId,
         ...heads.rows[0],
@@ -459,11 +459,14 @@ describe('transactional thread attention', () => {
   async function retractMention(seq: number, deletionSeq: number) {
     await db.db.transaction(async (tx) => {
       await requireThreadContentLockInTx(tx, threadId);
-      await tx.insert(deletedMessage).values({
+      await tx.insert(messageTombstone).values({
         threadId,
-        messageSeq: seq,
+        provenance: 'LOCAL',
+        publisherNamespaceId: 0,
+        localMessageSeq: seq,
         deletionSeq,
         type: 'USER_RETRACTION',
+        consumed: true,
       });
       await tx
         .update(message)
@@ -578,8 +581,16 @@ describe('transactional thread attention', () => {
       await db.db.transaction(async (tx) => {
         await requireThreadContentLockInTx(tx, threadId);
         await tx
-          .insert(deletedMessage)
-          .values({ threadId, messageSeq: 7, deletionSeq: 1, type });
+          .insert(messageTombstone)
+          .values({
+            threadId,
+            provenance: 'LOCAL',
+            publisherNamespaceId: 0,
+            localMessageSeq: 7,
+            deletionSeq: 1,
+            type,
+            consumed: true,
+          });
         await tx
           .update(message)
           .set({ isDeleted: true })

@@ -175,7 +175,6 @@ describe('Privacy-safe media administration', () => {
       transfers,
       {
         hasMediaFileProgressSubscriber: () => false,
-        hasMediaMessageProgressSubscriber: () => false,
       } as never,
     );
     const run = (content: Buffer, offsets: number[]) =>
@@ -332,10 +331,6 @@ describe('Privacy-safe media administration', () => {
       } as never,
       {} as never,
       {} as never,
-      {
-        hasMediaMessageProgressSubscriber: () => false,
-        completeMediaMessageDownloadProgress: () => {},
-      } as never,
     );
     await batches.stopInboundBatch(batchId);
     expect(await database.db.query.pendingMedia.findMany()).toEqual([]);

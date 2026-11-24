@@ -120,14 +120,6 @@ export class GroupMembershipProjectionService {
         applicationEndId: sql<number>`(SELECT ${groupMeta.applicationEndId} FROM ${groupMeta} WHERE ${groupMeta.threadId} = ${params.threadId})`,
         invitationEndId: sql<number>`(SELECT ${groupMeta.invitationEndId} FROM ${groupMeta} WHERE ${groupMeta.threadId} = ${params.threadId})`,
       };
-      // A locally authoritative group creates its first Group Meta facts in
-      // this same transaction. Seed the participant cursor with that exact
-      // coordinate so the first thread-feed snapshot pulls the owner roster.
-      // Mirrors use their replicated cursor and must not read the origin's
-      // metaEndId here.
-      const groupMetaFeedEndId = params.hostedLocally
-        ? sql<number>`(SELECT ${groupMeta.metaEndId} FROM ${groupMeta} WHERE ${groupMeta.threadId} = ${params.threadId})`
-        : undefined;
       // New participant cursors use the group's declaration to this member,
       // independently of whether the group authority is local or mirrored.
       // During local creation that declaration carries revision zero.
@@ -156,7 +148,6 @@ export class GroupMembershipProjectionService {
           threadId: params.threadId,
           role,
           threadProfileRev: declaredGroupProfileRev,
-          ...(groupMetaFeedEndId !== undefined ? { groupMetaFeedEndId } : {}),
           ...initialManagerProjection,
           updatedAt: new Date(),
         })
@@ -164,13 +155,10 @@ export class GroupMembershipProjectionService {
           target: [accountThreadState.accountId, accountThreadState.threadId],
           set: {
             role,
-            ...(groupMetaFeedEndId !== undefined
-              ? {
-                  groupMetaFeedEndId: sql<number>`GREATEST(COALESCE("AccountThreadState"."groupMetaFeedEndId", 0), ${groupMetaFeedEndId})`,
-                }
-              : {}),
             ...managerProjection,
             messageVisibleThroughSeq: null,
+            tombstoneVisibleThroughSeq: null,
+            groupMetaVisibleThroughId: null,
             updatedAt: new Date(),
           },
         });

@@ -9,11 +9,12 @@ import {
   lstat,
 } from 'node:fs/promises';
 import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { describe, expect, it, onTestFinished } from 'vitest';
 import { writeCheckpoint } from './write-checkpoint.js';
 
 async function fixture() {
-  const root = await mkdtemp('/tmp/opencode/checkpoint-write-');
+  const root = await mkdtemp(join(tmpdir(), 'checkpoint-write-'));
   onTestFinished(() => rm(root, { recursive: true, force: true }));
   const source = join(root, 'task.part');
   await writeFile(source, 'abcdefgh');

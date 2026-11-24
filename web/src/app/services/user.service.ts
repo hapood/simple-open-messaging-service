@@ -1,8 +1,5 @@
-import {
-  consumeSse,
-  SseDecoder,
-  type SseFrame,
-} from '../../../../shared/sse-client';
+import type { SseFrame } from '../../../../shared/sse-client';
+import { consumeAppSse } from './sse-client';
 import { ThreadSendOutbox } from './thread-send-outbox.service';
 import type { RequestSnapshot } from '../../../../shared/request-snapshot';
 import type { RequestRevocationStatus } from '../../../../shared/request-projection-status';
@@ -102,10 +99,7 @@ export class FederatedResolveError extends Error {
   }
 }
 
-export interface ClientStateFeedItem {
-  feedId: number;
-  body: IncomingRequestHead;
-}
+export type { ClientStateFeedItem } from '../../../../shared/client-state-feed';
 
 /** The persisted last-logged-in userId (device-scoped preference) — the client's sole pre-HELLO source
  *  of its own userId (the session token is opaque, server-side-lookup only). Set on establishSession,
@@ -748,35 +742,10 @@ export class UserService {
       }
       return undefined;
     };
-    // HttpClient is intentional: browser requests use the httpOnly cookie and
-    // TauriHttpBackend routes native requests through Rust, which injects its
-    // in-memory Bearer. The response is terminal and server-closed, so native
-    // may safely deliver the complete SSE body as one IPC response.
-    if (isTauri())
-      return this.http
-        .get(
-          `${apiPrefix()}/user/resolve-federated-stream?${query.toString()}`,
-          {
-            responseType: 'text',
-            headers: { Accept: 'text/event-stream' },
-          },
-        )
-        .pipe(
-          map((text) => {
-            let result: FederatedResolveResult | undefined;
-            new SseDecoder().push(text, (frame) => {
-              if (!result) result = decodeFrame(frame);
-            });
-            if (!result)
-              throw new Error('resolve stream ended without a terminal event');
-            return result;
-          }),
-        );
-
     return new Observable<FederatedResolveResult>((subscriber) => {
       const aborter = new AbortController();
       void (async () => {
-        await consumeSse(
+        await consumeAppSse(
           `${apiPrefix()}/user/resolve-federated-stream?${query.toString()}`,
           {
             signal: aborter.signal,

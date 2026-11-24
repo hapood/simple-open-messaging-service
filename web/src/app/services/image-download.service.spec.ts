@@ -16,6 +16,7 @@ describe('ImageDownloadService', () => {
     w: 800,
     h: 600,
     size: 2000,
+    name: 'photo.jpg', mimeType: 'image/jpeg', senderName: null, sentAt: null,
     msgId: 42,
   };
   let events: Subject<ImageDownloadEvent>;

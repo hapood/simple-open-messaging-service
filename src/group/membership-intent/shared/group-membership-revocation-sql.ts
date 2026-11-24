@@ -19,6 +19,8 @@ export interface GroupMembershipRevocationInput {
    * so both the direction and the role derive from these two identities. */
   author: { account: string; namespaceId: number };
   receiver: { account: string; namespaceId: number };
+  /** Optional revocation note (≤255 chars). */
+  note?: string;
   /** Alternate validated writer used by received peer intents: the wire
    * snapshot replaces the locally derived authored write. Consumed by
    * `groupMembershipRevocationIntentWrite`. */
@@ -46,7 +48,7 @@ export function groupMembershipRevocationIntentWrite(
       receiver: input.receiver,
       threadId: input.threadId,
       status: 'REVOKED',
-      note: '',
+      note: (input.note ?? '').slice(0, 255),
       statusChangedAt: new Date(),
       expiresAt: null,
     })
@@ -141,7 +143,11 @@ export function groupMembershipRevocationSql(
       FROM seq_alloc s
       RETURNING seq
     ), member_watermark AS (
-      UPDATE "AccountThreadState" a SET "messageVisibleThroughSeq" = m.seq, "updatedAt" = CURRENT_TIMESTAMP
+      UPDATE "AccountThreadState" a
+      SET "messageVisibleThroughSeq" = m.seq,
+        "tombstoneVisibleThroughSeq" = (SELECT "tombstoneEndSeq" FROM seq_alloc),
+        "groupMetaVisibleThroughId" = COALESCE((SELECT "clientMetaEndId" FROM "GroupMeta" WHERE "threadId" = ${input.threadId}), 0),
+        "updatedAt" = CURRENT_TIMESTAMP
       FROM system_message m
       WHERE a."threadId" = ${input.threadId} AND a."accountId" = ${input.localMemberId}
       RETURNING a."accountId"
@@ -157,7 +163,6 @@ export function groupMembershipRevocationSql(
         (SELECT id FROM "Account" WHERE account = '$system'),
         jsonb_build_object('threadId', ${input.threadId}::integer,
           'messageEndSeq', (SELECT seq FROM system_message),
-          'tombstoneEndSeq', (SELECT "tombstoneEndSeq" FROM seq_alloc),
           'accountId', ${input.localMemberId}::integer),
         ${accountScope}, 'PENDING'::"DurableTaskStatus"
       FROM pair_change p

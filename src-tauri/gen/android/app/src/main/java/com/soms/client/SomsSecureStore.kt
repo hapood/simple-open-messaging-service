@@ -134,6 +134,31 @@ object SomsSecureStore {
         }
     }
 
+    /** Execute Rust-authorized logout cleanup without re-entering the lifecycle coordinator. */
+    @androidx.annotation.Keep
+    @JvmStatic
+    fun clearEndedSession(sessionUuid: String) {
+        val ctx = SomsApplication.appContext
+        require(sessionUuid.isNotBlank()) { "sessionUuid must not be blank" }
+        var releaseResources: (() -> Unit)? = null
+        try {
+            synchronized(this) {
+                val current = getLoginSessionId(ctx)
+                check(current == null || current == sessionUuid) { "Native login superseded" }
+                releaseResources = CallController.prepareSessionResourceRelease()
+                check(prefs(ctx).edit()
+                    .remove(KEY_SESSION_TOKEN)
+                    .remove(KEY_LOGIN_SESSION_ID)
+                    .remove(KEY_CURRENT_USER_ID)
+                    .remove("session_id")
+                    .commit()) { "Credential cleanup persistence failed" }
+            }
+            SomsMessagingService.clearSessionMessageNotifs(ctx)
+        } finally {
+            releaseResources?.invoke()
+        }
+    }
+
     /** Clear an unauthenticated/residual credential that failed Rust restoration on cold start. */
     fun discardResidualToken(ctx: Context) {
         var releaseResources: (() -> Unit)? = null

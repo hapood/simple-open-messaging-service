@@ -55,10 +55,7 @@ type ThreadWorkScope = Readonly<{
   projectionReset: AbortSignal;
 }>;
 
-type ThreadContentHead = Pick<
-  ThreadFeedSnapshot,
-  'threadId' | 'messageEndSeq' | 'tombstoneEndSeq'
->;
+type ThreadContentHead = Pick<ThreadFeedSnapshot, 'threadId' | 'messageEndSeq'>;
 
 /**
  * In-memory conversation-list projection. The database Worker or Rust runtime owns state-feed
@@ -227,7 +224,6 @@ export class ThreadRepository {
       .subscribe((data) => {
         if (data.userId !== this.userService.sessionUserId()) return;
         this.applyGroupMetaPatches(data.patches);
-        this.prefetchGroupProfiles(data.threadIds);
         this.memberProfiles.notifyChanged(
           data.threadIds.filter((threadId) =>
             this._items().some(
@@ -471,16 +467,7 @@ export class ThreadRepository {
   /** Set/clear the open thread (UI layer drives this on open/close; used for unread suppression). */
   async setOpenThread(threadId: number | undefined): Promise<void> {
     this._openThreadId.set(threadId);
-    if (threadId === undefined) {
-      // Stop signal: the worker finishes the current page and commits it,
-      // then the guard prevents the next page.
-      await this.persistOpenThreadState(null);
-      return;
-    }
-    // Open the thread and wake both drains; they read their current targets
-    // from durable state. The worker reports committed tombstone pages via
-    // tombstoneCommitted$ → deletedSignal$ / slotsChanged.
-    await this.persistOpenThreadState(threadId);
+    await this.persistOpenThreadState(threadId ?? null);
   }
 
   /** Persisting the open-thread UI state is best-effort: callers fire it and
@@ -491,7 +478,7 @@ export class ThreadRepository {
    *  still propagate. */
   private async persistOpenThreadState(threadId: number | null): Promise<void> {
     try {
-      await this.webdb.drainThreadMisc(threadId);
+      await this.webdb.setOpenThread(threadId);
     } catch (error) {
       if (
         error instanceof Error &&
@@ -812,17 +799,6 @@ export class ThreadRepository {
     await this.refreshCommittedThreadFeed();
     if (!this.isCurrentWork(scope)) return;
     this._navigationReady.set(true);
-    // Cold/warm boots with an already-caught-up Group Meta cursor produce no
-    // committed pages, so boot also warms once over the active groups; the
-    // demand machinery dedups against any concurrent commits.
-    this.prefetchGroupProfiles(
-      this._items()
-        .filter(
-          (item) =>
-            item.type === 'GROUP' && item.conversationState === 'ACTIVE',
-        )
-        .map((item) => item.threadId),
-    );
   }
 
   private async refreshCommittedStateFeed(): Promise<void> {
@@ -945,14 +921,6 @@ export class ThreadRepository {
           this.pendingUnknownContentHeads.delete(state.threadId);
           this.applyContentHeadToKnownThread(pending);
         }
-        // Drain-open feedback loop: a committed state for the open thread
-        // re-wakes the per-thread Group Meta + tombstone drains. Each round
-        // re-reads its target from storage (a current cursor → no-op → no
-        // further notification), so this terminates.
-        if (this._openThreadId() === state.threadId)
-          void this.webdb
-            .drainThreadMisc(state.threadId)
-            .catch(() => undefined);
       }
       const projection = await this.projectThreadAttention(state.threadId);
       if (!this.isCurrentWork(scope)) return;
@@ -994,77 +962,6 @@ export class ThreadRepository {
     )
       return;
     return projection;
-  }
-
-  /** Patch committed Group Meta facts straight into the in-memory conversations.
-   *  The payload was produced inside the committing transaction, so memory and
-   *  the durable row agree without a database re-read; isGroupMetaCurrent() and
-   *  the group-info member reload react to the advanced cursor immediately. */
-  /** Warming is optional and runs only after committed facts reach the UI. */
-  private prefetchGroupProfiles(threadIds: number[]): void {
-    const scope = this.captureWork();
-    const selected = new Set(threadIds);
-    void this.webdb
-      .getUnresolvedGroupMetaProfiles()
-      .then((references) => {
-        if (!this.isCurrentWork(scope)) return;
-        for (const reference of references) {
-          if (!selected.has(reference.threadId)) continue;
-          const thread = this._items().find(
-            (item) => item.threadId === reference.threadId,
-          );
-          if (thread?.type !== 'GROUP' || thread.conversationState !== 'ACTIVE')
-            continue;
-          if (reference.type === 'GROUP') {
-            this.profiles.prefetch(
-              homeProfileDemand(
-                reference.account,
-                reference.namespaceId,
-                reference.rev,
-              ),
-            );
-            continue;
-          }
-          // The roster reads member snapshots at the member-home key
-          // [namespaceId, namespaceId], while a GROUP_MEMBER_PROFILE demand
-          // is authorized by — and echoes — the group's publisher namespace.
-          // Land the resolved profile through the reference contract so the
-          // member row converges instead of re-issuing forever.
-          this.profiles.prefetch(
-            {
-              publisherNamespaceId: thread.publisherNamespaceId,
-              lookup: 'GROUP_MEMBER_PROFILE',
-              groupAccount: thread.account,
-              target: {
-                profileNamespaceId: reference.namespaceId,
-                account: reference.account,
-                rev: reference.rev,
-              },
-            },
-            (profile) => {
-              void this.webdb
-                .commitResolvedGroupMetaProfile(reference, {
-                  namespaceId: reference.namespaceId,
-                  account: reference.account,
-                  rev: reference.rev,
-                  name: profile.name,
-                  bio: profile.bio,
-                  avatarBase64: null,
-                })
-                .then((committed) => {
-                  if (committed)
-                    this.memberProfiles.notifyChanged([reference.threadId]);
-                })
-                .catch((error) =>
-                  console.warn('[profile] group member landing failed', error),
-                );
-            },
-          );
-        }
-      })
-      .catch((error) =>
-        console.warn('[profile] group prefetch discovery failed', error),
-      );
   }
 
   private applyGroupMetaPatches(patches: GroupMetaCommitPatch[]): void {
@@ -1195,9 +1092,7 @@ export class ThreadRepository {
             item.joinRequestReadFeedId === snapshot.joinRequestReadFeedId &&
             item.groupInviteEndFeedId === snapshot.groupInviteEndFeedId &&
             (item.announcementReadFeedId ?? 0) >=
-              (snapshot.announcementReadFeedId ?? 0) &&
-            (item.type !== 'GROUP' ||
-              item.groupMetaFeedEndId === snapshot.groupMetaFeedEndId))
+              (snapshot.announcementReadFeedId ?? 0))
         )
           return item;
         changed = {
@@ -1209,9 +1104,6 @@ export class ThreadRepository {
             item.announcementReadFeedId ?? 0,
             snapshot.announcementReadFeedId ?? 0,
           ),
-          ...(item.type === 'GROUP'
-            ? { groupMetaFeedEndId: snapshot.groupMetaFeedEndId }
-            : {}),
         };
         return changed;
       }),

@@ -3,7 +3,10 @@ import { Test, type TestingModule } from '@nestjs/testing';
 import { and, eq } from 'drizzle-orm';
 import { AppModule } from '../src/app.module.js';
 import { DatabaseService } from '../src/database/database.service.js';
-import { MessageDeleteType } from '../src/database/enums.js';
+import {
+  MessageDeleteType,
+  MessageTombstoneProvenance,
+} from '../src/database/enums.js';
 import { DeletedMessageService } from '../src/message/deleted-message.service.js';
 import * as tables from '../src/database/schema.js';
 import { FederationInboundMessageCommitService } from '../src/federation/federation-inbound-message-commit.service.js';
@@ -110,6 +113,83 @@ describe('member-home tombstone authority', () => {
     );
   }
 
+  it('stores only a pending fact when an active member deletion precedes its message', async () => {
+    await database.db
+      .delete(tables.message)
+      .where(eq(tables.message.threadId, threadId));
+    expect((await apply(MessageDeleteType.USER_RETRACTION)).deletions).toEqual(
+      [],
+    );
+    expect(
+      await database.db.query.messageTombstone.findMany({
+        where: (row, { isNotNull }) => isNotNull(row.deletionSeq),
+      }),
+    ).toEqual([]);
+    expect(await database.db.query.message.findMany()).toEqual([]);
+    expect(
+      await database.db.query.messageTombstone.findMany({
+        where: eq(
+          tables.messageTombstone.provenance,
+          MessageTombstoneProvenance.FEDERATED,
+        ),
+      }),
+    ).toMatchObject([
+      {
+        threadId,
+        publisherNamespaceId: namespaceId,
+        remoteMessageSeq: 7,
+        remoteDeletionSeq: 3,
+      },
+    ]);
+  });
+
+  it('does not confuse a confirmed local coordinate with a member-home submission', async () => {
+    await database.db
+      .update(tables.message)
+      .set({
+        publisherNamespaceId: 0,
+        profileNamespaceId: 0,
+        creatorAccount: 'local-author',
+        originServerTime: new Date(),
+      })
+      .where(eq(tables.message.threadId, threadId));
+    expect(
+      (await apply(MessageDeleteType.MODERATION_REMOVAL)).deletions,
+    ).toEqual([]);
+    expect((await database.db.query.message.findFirst())?.isDeleted).toBe(
+      false,
+    );
+    expect(
+      await database.db.query.messageTombstone.findMany({
+        where: (row, { isNotNull }) => isNotNull(row.deletionSeq),
+      }),
+    ).toEqual([]);
+    expect(
+      await database.db.query.messageTombstone.findMany({
+        where: eq(
+          tables.messageTombstone.provenance,
+          MessageTombstoneProvenance.FEDERATED,
+        ),
+      }),
+    ).toMatchObject([
+      { threadId, publisherNamespaceId: namespaceId, remoteMessageSeq: 7 },
+    ]);
+  });
+
+  it('does not retain an absent-message tombstone from an inactive member home', async () => {
+    await database.db
+      .delete(tables.message)
+      .where(eq(tables.message.threadId, threadId));
+    await database.db
+      .update(tables.relationshipPair)
+      .set({ active: false })
+      .where(eq(tables.relationshipPair.threadId, threadId));
+    await expect(apply(MessageDeleteType.USER_RETRACTION)).rejects.toThrow(
+      'tombstone has no retained local group thread',
+    );
+    expect(await database.db.query.messageTombstone.findMany()).toEqual([]);
+  });
+
   it.each([
     MessageDeleteType.USER_RETRACTION,
     MessageDeleteType.MODERATION_REMOVAL,
@@ -127,12 +207,18 @@ describe('member-home tombstone authority', () => {
         ),
       });
       expect(target?.isDeleted).toBe(true);
-      const facts = await database.db.query.deletedMessage.findMany({
-        where: eq(tables.deletedMessage.threadId, threadId),
+      const facts = await database.db.query.messageTombstone.findMany({
+        where: and(
+          eq(tables.messageTombstone.threadId, threadId),
+          eq(
+            tables.messageTombstone.provenance,
+            MessageTombstoneProvenance.LOCAL,
+          ),
+        ),
       });
       expect(facts).toHaveLength(1);
       expect(facts[0]).toMatchObject({
-        messageSeq: 42,
+        localMessageSeq: 42,
         publisherNamespaceId: 0,
         type,
       });
@@ -166,7 +252,9 @@ describe('member-home tombstone authority', () => {
       const row = await database.db.query.message.findFirst({
         where: eq(tables.message.threadId, threadId),
       });
-      const facts = await database.db.query.deletedMessage.findMany();
+      const facts = await database.db.query.messageTombstone.findMany({
+        where: (row, { isNotNull }) => isNotNull(row.deletionSeq),
+      });
       if (type === MessageDeleteType.USER_RETRACTION) {
         expect(first.deletions).toEqual([]);
         expect(row?.isDeleted).toBe(false);
@@ -175,13 +263,22 @@ describe('member-home tombstone authority', () => {
         expect(first.deletions).toEqual([{ messageSeq: 42, deletionSeq: 1 }]);
         expect(row?.isDeleted).toBe(true);
         expect(facts).toMatchObject([
-          { messageSeq: 42, type, publisherNamespaceId: namespaceId },
+          { localMessageSeq: 42, type, publisherNamespaceId: namespaceId },
         ]);
         expect((await apply(type)).deletions).toEqual([]);
       }
       expect(
-        await database.db.query.federatedMessageTombstone.findMany(),
-      ).toEqual([]);
+        await database.db.query.messageTombstone.findMany({
+          where: eq(
+            tables.messageTombstone.provenance,
+            MessageTombstoneProvenance.FEDERATED,
+          ),
+        }),
+      ).toMatchObject(
+        type === MessageDeleteType.USER_RETRACTION
+          ? []
+          : [{ remoteMessageSeq: 7, type, consumed: true }],
+      );
     },
   );
 
@@ -205,27 +302,44 @@ describe('member-home tombstone authority', () => {
       })
       .where(eq(tables.message.threadId, threadId))
       .returning({ id: tables.message.id });
-    await database.db.insert(tables.deletedMessage).values({
+    await database.db.insert(tables.messageTombstone).values({
       threadId,
-      messageSeq: 42,
+      provenance: MessageTombstoneProvenance.LOCAL,
+      localMessageSeq: 42,
       deletionSeq: 1,
       type: MessageDeleteType.USER_RETRACTION,
       publisherNamespaceId: 0,
+      consumed: true,
       updatedAt: new Date(),
     });
     expect(
       (await apply(MessageDeleteType.MODERATION_REMOVAL)).deletions,
     ).toEqual([]);
-    expect(await database.db.query.deletedMessage.findMany()).toMatchObject([
+    expect(
+      await database.db.query.messageTombstone.findMany({
+        where: (row, { isNotNull }) => isNotNull(row.deletionSeq),
+      }),
+    ).toMatchObject([
       {
-        messageSeq: 42,
+        localMessageSeq: 42,
         type: MessageDeleteType.USER_RETRACTION,
         publisherNamespaceId: 0,
       },
     ]);
     expect(
-      await database.db.query.federatedMessageTombstone.findMany(),
-    ).toEqual([]);
+      await database.db.query.messageTombstone.findMany({
+        where: eq(
+          tables.messageTombstone.provenance,
+          MessageTombstoneProvenance.FEDERATED,
+        ),
+      }),
+    ).toMatchObject([
+      {
+        remoteMessageSeq: 7,
+        type: MessageDeleteType.MODERATION_REMOVAL,
+        consumed: true,
+      },
+    ]);
   });
 
   it.each([
@@ -252,7 +366,12 @@ describe('member-home tombstone authority', () => {
         .returning({ id: tables.message.id });
       expect((await apply(type)).deletions).toEqual([]);
       expect(
-        await database.db.query.federatedMessageTombstone.findMany(),
+        await database.db.query.messageTombstone.findMany({
+          where: eq(
+            tables.messageTombstone.provenance,
+            MessageTombstoneProvenance.FEDERATED,
+          ),
+        }),
       ).toHaveLength(1);
       await database.db.transaction(async (tx) => {
         const resolvedMessage = await tx.query.message.findFirst({
@@ -261,7 +380,6 @@ describe('member-home tombstone authority', () => {
         await module.get(DeletedMessageService).applyPendingReceiptInTx(tx, {
           threadId,
           peerSeq: 7,
-          peerDomain,
           namespaceId,
           authority: 'GROUP_ORIGIN',
           resolvedMessage: resolvedMessage!,
@@ -276,14 +394,25 @@ describe('member-home tombstone authority', () => {
         seq: 42,
       });
       expect(
-        await database.db.query.federatedMessageTombstone.findMany(),
-      ).toEqual([]);
-      const facts = await database.db.query.deletedMessage.findMany();
+        await database.db.query.messageTombstone.findMany({
+          where: eq(
+            tables.messageTombstone.provenance,
+            MessageTombstoneProvenance.FEDERATED,
+          ),
+        }),
+      ).toMatchObject(
+        type === MessageDeleteType.USER_RETRACTION
+          ? []
+          : [{ remoteMessageSeq: 7, type, consumed: true }],
+      );
+      const facts = await database.db.query.messageTombstone.findMany({
+        where: (row, { isNotNull }) => isNotNull(row.deletionSeq),
+      });
       if (type === MessageDeleteType.USER_RETRACTION) {
         expect(facts).toEqual([]);
       } else {
         expect(facts).toMatchObject([
-          { messageSeq: 42, type, publisherNamespaceId: namespaceId },
+          { localMessageSeq: 42, type, publisherNamespaceId: namespaceId },
         ]);
       }
     },
@@ -309,8 +438,8 @@ describe('member-home tombstone authority', () => {
       await expect(apply(type)).rejects.toThrow(
         'tombstone has no retained local group thread',
       );
-      const facts = await database.db.query.deletedMessage.findMany({
-        where: eq(tables.deletedMessage.threadId, threadId),
+      const facts = await database.db.query.messageTombstone.findMany({
+        where: eq(tables.messageTombstone.threadId, threadId),
       });
       expect(facts).toEqual([]);
       const target = await database.db.query.message.findFirst({

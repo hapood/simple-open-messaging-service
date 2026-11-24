@@ -6,8 +6,9 @@ import { BusinessCode } from './biz-code';
 import { coalesceThreadFeedWakes } from './thread-feed-sync';
 import { TrailingSingleFlight } from '../../../../shared/trailing-single-flight';
 import { parseNotificationTarget } from '../../../../shared/notification-target';
-import { GroupMetaSyncError, syncGroupMetaThread } from './group-meta-sync';
-import { syncTombstoneThread } from './tombstone-sync';
+import { syncGroupMetaPage } from './group-meta-sync';
+import { syncTombstonePage } from './tombstone-sync';
+import { ThreadResourceScheduler } from './thread-resource-scheduler';
 import { syncPushState } from './push-state-sync';
 import { syncPushThreads, type PushThreadResult } from './push-thread-sync';
 import { PreferenceStorage } from './preference-storage';
@@ -18,18 +19,18 @@ import {
 import { apiPrefix } from './constants';
 import en from '../i18n/en.json';
 import zh from '../i18n/zh-CN.json';
-import type { DeletedMessageItem } from './model';
 import {
   type ProfileDemand,
   type ProfileKey,
 } from '../../../../shared/profile-demand';
 
-const storage = new WebdbStorage();
+const storage = new WebdbStorage(() => null);
 const preferences = new PreferenceStorage();
 
-storage.messageDbCommitted$.subscribe((event) =>
-  postMessage({ type: 'message-db-committed', ...event }),
-);
+storage.messageDbCommitted$.subscribe((event) => {
+  postMessage({ type: 'message-db-committed', ...event });
+  resourceScheduler.wakeTomb(event.threadId);
+});
 
 // API endpoints are worker-local configuration, not per-event payload. Same-origin
 // relative paths work in the worker scope; the dev proxy / Tauri backend match them.
@@ -54,20 +55,104 @@ const idleWaiters: Array<() => void> = [];
 
 let feedPort: MessagePort | null = null;
 
-/** The thread the UI currently has open, or null when none. Each per-thread drain
- *  checks this after committing a page and before starting the next: a page
- *  already in flight finishes and commits; this only prevents the NEXT page. */
-let openThreadId: number | null = null;
 storage.threadFeedCommitted$.subscribe(({ userId, states }) => {
   postMessage({ type: 'thread-feed-committed', userId, states });
+  if (openedUserId === String(userId)) {
+    void withUserStorage(String(userId), () =>
+      schedulePendingThreadResources(),
+    ).catch(() => undefined);
+  }
 });
 
-/** Per-thread Group Meta drains. Different threads run concurrently; the same
- *  thread coalesces into one in-flight round plus one trailing round. The
- *  trigger is a bare wake signal; every round reads its target from storage. */
-const groupMetaDrains = new Map<number, TrailingSingleFlight<void>>();
-/** Per-thread tombstone drains, same coalescing policy as Group Meta. */
-const tombstoneDrains = new Map<number, TrailingSingleFlight<void>>();
+const resourceScheduler = new ThreadResourceScheduler({
+  runTombPage: async (threadId) => {
+    const userId = openedUserId;
+    if (!userId) return { status: 'DONE' };
+    return withUserStorage(userId, async () => {
+      const heads = await storage.getThreadResourceHeads();
+      const target =
+        heads.find((item) => item.threadId === threadId)?.tombstoneEndSeq ??
+        null;
+      if (target === null) return { status: 'DONE' };
+      const result = await syncTombstonePage(
+        storage,
+        requestTombstone,
+        threadId,
+        target,
+      );
+      if (result.committed.length > 0) {
+        postMessage({
+          type: 'tombstone-committed',
+          threadId,
+          tombstones: result.committed.map((item) => ({
+            seq: item.messageSeq,
+            type: item.type,
+          })),
+        });
+      }
+      if (result.status === 'CUTOFF_STALLED') {
+        return {
+          status: 'CUTOFF_STALLED',
+          target: result.target,
+          cutoff: result.cutoff,
+        };
+      }
+      return { status: result.status };
+    });
+  },
+  runMetaPage: async (threadId) => {
+    const userId = openedUserId;
+    if (!userId) return { status: 'DONE' };
+    return withUserStorage(userId, async () => {
+      const result = await syncGroupMetaPage(
+        storage,
+        requestGroupMeta,
+        threadId,
+      );
+      if (result.changed) {
+        postMessage({
+          type: 'group-meta-committed',
+          userId: Number(userId),
+          threadIds: [threadId],
+          patches: result.patch ? [result.patch] : [],
+        });
+      }
+      return { status: result.status };
+    });
+  },
+  readTombProgress: async (threadId) => {
+    const userId = openedUserId;
+    if (!userId) return null;
+    return withUserStorage(userId, async () => {
+      const heads = await storage.getThreadResourceHeads();
+      const target =
+        heads.find((item) => item.threadId === threadId)?.tombstoneEndSeq ??
+        null;
+      if (target === null) return null;
+      const [hwm, cutoff] = await Promise.all([
+        storage.getDeletedHwm(threadId),
+        storage.getTombstoneCutoff(threadId),
+      ]);
+      return { target, hwm, cutoff };
+    });
+  },
+  onError: (lane, threadId, error) => {
+    console.warn(
+      `[${lane === 'tomb' ? 'tombstone' : 'group-meta'}] scheduled round failed for thread ${threadId}; retrying with backoff`,
+      error,
+    );
+  },
+});
+
+async function schedulePendingThreadResources(): Promise<void> {
+  const pending = await storage.getPendingThreadResourceWork();
+  for (const threadId of pending.tombThreadIds) {
+    resourceScheduler.wakeTomb(threadId);
+  }
+  for (const threadId of pending.metaThreadIds) {
+    resourceScheduler.wakeMeta(threadId);
+  }
+}
 
 type StorageRelease = () => void;
 
@@ -93,7 +178,6 @@ async function acquireUserStorage(userId: string): Promise<StorageRelease> {
       if (openedUserId !== null) await storage.close();
       if (workerLogin?.id) await storage.openExistingForUser(userId);
       else await storage.openForUser(userId);
-      openThreadId = null;
       openedUserId = userId;
     }
     activeStorageUsers += 1;
@@ -278,14 +362,12 @@ const requestThreadFeed = async (body: unknown) => {
 
 const requestGroupMeta = async (input: {
   threadId: number;
-  mode: 'full' | 'delta';
   after: string;
   through: string;
   take: number;
 }) => {
   const query = new URLSearchParams({
     threadId: String(input.threadId),
-    mode: input.mode,
     after: input.after,
     through: input.through,
     take: String(input.take),
@@ -338,7 +420,7 @@ type Request = { cacheDescriptor?: SessionCacheDescriptor | null } & (
     }
   | {
       id: number;
-      type: 'drain-thread-misc';
+      type: 'tombstone-cutoff-grown';
       userId: string;
       threadId: number | null;
     }
@@ -422,6 +504,7 @@ addEventListener('message', ({ data }: MessageEvent<Request>) => {
                     type: 'state-feed-committed',
                     userId: Number(data.userId),
                   });
+                  await schedulePendingThreadResources();
                 }
                 if (result.error) throw result.error;
               } catch (error) {
@@ -491,6 +574,10 @@ addEventListener('message', ({ data }: MessageEvent<Request>) => {
             if (typeof message.target === 'number') wake(message.target);
           };
           port.start();
+          const account = await storage.readAccountState();
+          if (account.stateFeedTarget > (account.stateFeedId ?? 0))
+            wakeState(account.stateFeedTarget);
+          await schedulePendingThreadResources();
           postMessage({ id: data.id, ok: true });
           return;
         }
@@ -503,101 +590,8 @@ addEventListener('message', ({ data }: MessageEvent<Request>) => {
           postMessage({ id: data.id, ok: true, result });
           return;
         }
-        if (data.type === 'drain-thread-misc') {
-          if (data.threadId === null) {
-            // Stop signal: the current page finishes and commits; the guard
-            // prevents the next page once `openThreadId` no longer matches.
-            openThreadId = null;
-            postMessage({ id: data.id, ok: true });
-            return;
-          }
-          openThreadId = data.threadId;
-          const threadId = data.threadId;
-          const guard = () => openThreadId === threadId;
-          // Group Meta drain (groups only; non-groups no-op inside).
-          let groupMetaFlight = groupMetaDrains.get(threadId);
-          if (!groupMetaFlight) {
-            groupMetaFlight = new TrailingSingleFlight<void>(async () => {
-              try {
-                const committed = await syncGroupMetaThread(
-                  storage,
-                  requestGroupMeta,
-                  threadId,
-                  guard,
-                );
-                if (committed.threadIds.length)
-                  postMessage({
-                    type: 'group-meta-committed',
-                    userId: Number(data.userId),
-                    threadIds: committed.threadIds,
-                    patches: committed.patches,
-                  });
-              } catch (error) {
-                // Earlier pages are durable even if a later page failed.
-                // Deliver their facts before leaving retry pressure to the next wake.
-                if (
-                  error instanceof GroupMetaSyncError &&
-                  error.threadIds.length
-                )
-                  postMessage({
-                    type: 'group-meta-committed',
-                    userId: Number(data.userId),
-                    threadIds: error.threadIds,
-                    patches: error.patches,
-                  });
-                console.warn(
-                  '[group-meta] per-thread drain failed; next wake retries',
-                  error,
-                );
-              }
-            });
-            groupMetaDrains.set(threadId, groupMetaFlight);
-          }
-          // Tombstone drain.
-          let tombstoneFlight = tombstoneDrains.get(threadId);
-          if (!tombstoneFlight) {
-            tombstoneFlight = new TrailingSingleFlight<void>(async () => {
-              try {
-                // The wake signal carries no coordinates: read the current
-                // target from the durable thread state on every round.
-                const states = await storage.getThreadStates();
-                const target =
-                  states.find((item) => item.threadId === threadId)
-                    ?.tombstoneEndSeq ?? null;
-                if (target === null) return;
-                const committed = await syncTombstoneThread(
-                  storage,
-                  requestTombstone,
-                  threadId,
-                  target,
-                  undefined,
-                  guard,
-                );
-                if (committed.length)
-                  postMessage({
-                    type: 'tombstone-committed',
-                    threadId,
-                    tombstones: committed.map((item) => ({
-                      seq: item.messageSeq,
-                      type: item.type,
-                    })),
-                  });
-              } catch (error) {
-                console.warn(
-                  '[tombstone] per-thread drain failed; next wake retries',
-                  error,
-                );
-              }
-            });
-            tombstoneDrains.set(threadId, tombstoneFlight);
-          }
-          // Fire both concurrently; they share one `openThreadId` guard, and
-          // each round re-reads its current target from durable storage (a
-          // current cursor → no-op), so a bare wake is always safe.
-          await Promise.all([
-            groupMetaFlight.trigger(),
-            tombstoneFlight.trigger(),
-          ]);
+        if (data.type === 'tombstone-cutoff-grown') {
+          if (data.threadId !== null) resourceScheduler.wakeTomb(data.threadId);
           postMessage({ id: data.id, ok: true });
           return;
         }

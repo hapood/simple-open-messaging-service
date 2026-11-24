@@ -678,40 +678,46 @@ describe('MessageService.attachMediaStatus', () => {
     expect('id' in out[0]).toBe(false); // id is stripped (throughput side-channel)
   });
 
-  it('projects an inline quote to client coordinates while stripping the internal id', async () => {
-    const store = {
-      mediaMessage: { findMany: vi.fn().mockResolvedValue([]) },
-      mediaAsset: { findMany: vi.fn() },
-    };
-    const svc = new MessageService(
-      databaseMock({
-        fileSyncProgress: vi.fn().mockResolvedValue([]),
-        mediaMessage: store.mediaMessage.findMany,
-        mediaAsset: store.mediaAsset.findMany,
-      }) as never,
-      {} as never,
-      {} as never,
-    );
-    const content = JSON.stringify({
-      text: 'reply',
-      quote: { seq: 4, author: 'Alice', body: 'original' },
-    });
-    const input = mk({
-      id: 9n,
-      seq: 12,
-      contentType: 'PURE_TEXT',
-      content,
-    });
+  it.each([
+    { seq: 4, author: 'Alice', body: 'original' },
+    { originSeq: 4, digest: 'd'.repeat(64) },
+  ])(
+    'projects inline quote %j to client coordinates while stripping internal fields',
+    async (quote) => {
+      const store = {
+        mediaMessage: { findMany: vi.fn().mockResolvedValue([]) },
+        mediaAsset: { findMany: vi.fn() },
+      };
+      const svc = new MessageService(
+        databaseMock({
+          fileSyncProgress: vi.fn().mockResolvedValue([]),
+          mediaMessage: store.mediaMessage.findMany,
+          mediaAsset: store.mediaAsset.findMany,
+        }) as never,
+        {} as never,
+        {} as never,
+      );
+      const content = JSON.stringify({
+        text: 'reply',
+        quote,
+      });
+      const input = mk({
+        id: 9n,
+        seq: 12,
+        contentType: 'PURE_TEXT',
+        content,
+      });
 
-    const [out] = await svc.attachMediaStatus([input]);
+      const [out] = await svc.attachMediaStatus([input]);
 
-    expect(JSON.parse(out.content)).toEqual({
-      text: 'reply',
-      quote: { namespaceId: 0, originSeq: 4 },
-    });
-    expect(input.content).toBe(content);
-    expect('id' in out).toBe(false);
-  });
+      expect(JSON.parse(out.content)).toEqual({
+        text: 'reply',
+        quote: { namespaceId: 0, originSeq: 4 },
+      });
+      expect(input.content).toBe(content);
+      expect('id' in out).toBe(false);
+    },
+  );
 
   it('every digest has an authz row + READY asset → ready', async () => {
     const store = {
@@ -948,16 +954,14 @@ describe('MessageService quote previews', () => {
     const svc = new MessageService(
       databaseMock({
         message: store.message.findMany,
-        user: vi
-          .fn()
-          .mockResolvedValue([
-            {
-              account: 'alice',
-              publisherNamespaceId: 0,
-              profileNamespaceId: 0,
-              name: 'Alice',
-            },
-          ]),
+        user: vi.fn().mockResolvedValue([
+          {
+            account: 'alice',
+            publisherNamespaceId: 0,
+            profileNamespaceId: 0,
+            name: 'Alice',
+          },
+        ]),
         fileSyncProgress: vi.fn().mockResolvedValue([]),
         mediaMessage: store.mediaMessage.findMany,
         mediaAsset: store.mediaAsset.findMany,
@@ -1006,16 +1010,14 @@ describe('MessageService quote previews', () => {
     const svc = new MessageService(
       databaseMock({
         message: vi.fn().mockResolvedValue([target]),
-        user: vi
-          .fn()
-          .mockResolvedValue([
-            {
-              account: 'alice',
-              publisherNamespaceId: 0,
-              profileNamespaceId: 0,
-              name: 'Alice',
-            },
-          ]),
+        user: vi.fn().mockResolvedValue([
+          {
+            account: 'alice',
+            publisherNamespaceId: 0,
+            profileNamespaceId: 0,
+            name: 'Alice',
+          },
+        ]),
       }) as never,
       {} as never,
       {} as never,
@@ -1052,16 +1054,14 @@ describe('MessageService quote previews', () => {
     const svc = new MessageService(
       databaseMock({
         message: store.message.findMany,
-        user: vi
-          .fn()
-          .mockResolvedValue([
-            {
-              account: 'alice',
-              publisherNamespaceId: 0,
-              profileNamespaceId: 0,
-              name: 'Alice',
-            },
-          ]),
+        user: vi.fn().mockResolvedValue([
+          {
+            account: 'alice',
+            publisherNamespaceId: 0,
+            profileNamespaceId: 0,
+            name: 'Alice',
+          },
+        ]),
         fileSyncProgress: vi.fn().mockResolvedValue([]),
         mediaMessage: store.mediaMessage.findMany,
         mediaAsset: store.mediaAsset.findMany,
@@ -1102,16 +1102,14 @@ describe('MessageService quote previews', () => {
     const svc = new MessageService(
       databaseMock({
         message: vi.fn().mockResolvedValue([target]),
-        user: vi
-          .fn()
-          .mockResolvedValue([
-            {
-              account: 'alice',
-              publisherNamespaceId: 0,
-              profileNamespaceId: 0,
-              name: 'Alice',
-            },
-          ]),
+        user: vi.fn().mockResolvedValue([
+          {
+            account: 'alice',
+            publisherNamespaceId: 0,
+            profileNamespaceId: 0,
+            name: 'Alice',
+          },
+        ]),
       }) as never,
       {} as never,
       {} as never,
@@ -1154,16 +1152,14 @@ describe('MessageService quote previews', () => {
     const svc = new MessageService(
       databaseMock({
         message: vi.fn().mockResolvedValue([target]),
-        user: vi
-          .fn()
-          .mockResolvedValue([
-            {
-              account: 'alice',
-              publisherNamespaceId: 0,
-              profileNamespaceId: 0,
-              name: 'Alice',
-            },
-          ]),
+        user: vi.fn().mockResolvedValue([
+          {
+            account: 'alice',
+            publisherNamespaceId: 0,
+            profileNamespaceId: 0,
+            name: 'Alice',
+          },
+        ]),
       }) as never,
       {} as never,
       {} as never,

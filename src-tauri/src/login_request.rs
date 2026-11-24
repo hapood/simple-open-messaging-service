@@ -3,6 +3,9 @@ use crate::proxy::{is_network_failure, race_origin_candidates, read_body_with_in
 use crate::{ServerSessionState, API_BODY_INACTIVITY_TIMEOUT, API_HEADERS_TIMEOUT};
 use std::sync::Arc;
 
+/// Bounded admission for scheduled short API requests, independent of long-lived SSE streams.
+static SHORT_REQUEST_SEMAPHORE: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(8);
+
 /// A network intent carries its login, credential, clients and endpoint candidates through every
 /// await and retry. No request can resolve successor credentials or publish global origin changes.
 #[derive(Clone)]
@@ -142,6 +145,13 @@ impl LoginRequest {
     ) -> Result<LoginRequestResult, String> {
         self.owner.assert_active().map_err(|e| e.to_string())?;
         let cancellation = self.owner.cancellation();
+        let _permit = tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => return Err("native login superseded".into()),
+            permit = SHORT_REQUEST_SEMAPHORE.acquire() => {
+                permit.map_err(|_| "short request admission closed".to_string())?
+            }
+        };
         let result = tokio::select! {
             biased;
             _ = cancellation.cancelled() => Err("native login superseded".into()),

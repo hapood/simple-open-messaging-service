@@ -64,6 +64,18 @@ export class S2sResponseError extends Error {
   }
 }
 
+/** A local admission stop, not a failed request or evidence of degraded transport. */
+export class FederationCooldownError extends Error {
+  constructor(
+    readonly namespaceId: number,
+    readonly until: number,
+    reason: string,
+  ) {
+    super(`namespace ${namespaceId} is cooling down: ${reason}`);
+    this.name = 'FederationCooldownError';
+  }
+}
+
 /** A transport or timeout failure before a valid S2S response was received. */
 export class FederationTransportError extends Error {
   constructor(message: string, options?: ErrorOptions) {

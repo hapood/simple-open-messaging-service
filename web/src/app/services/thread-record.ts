@@ -1,3 +1,4 @@
+import type { ThreadResourceTargets } from './thread-resource-sync';
 import type { LocalThreadAttention } from '../../../../shared/thread-attention';
 import type {
   ConversationItem,
@@ -19,9 +20,6 @@ export interface LocalThreadState {
   blocked: boolean;
   role: 'OWNER' | 'ADMIN' | 'MEMBER' | null;
   alias: string | null;
-  messageEndSeq: number;
-  tombstoneEndSeq: number;
-  groupMetaFeedEndId: string | null;
   joinRequestEndFeedId: number;
   joinRequestReadFeedId: number;
   groupInviteEndFeedId: number;
@@ -40,7 +38,7 @@ export interface LocalThreadState {
   projectedUnreadCount: number;
   mentionMe: boolean;
   mentionAll: boolean;
-};
+}
 
 /** Apply only operation-supplied fields to the latest row in the write transaction. */
 export function applyLocalThreadPatch(
@@ -87,9 +85,6 @@ export function threadAttentionFields(state: LocalThreadAttention) {
     blocked: state.blocked,
     role: state.role,
     alias: state.alias,
-    messageEndSeq: state.messageEndSeq,
-    tombstoneEndSeq: state.tombstoneEndSeq,
-    groupMetaFeedEndId: state.groupMetaFeedEndId,
     joinRequestEndFeedId: state.joinRequestEndFeedId,
     joinRequestReadFeedId: state.joinRequestReadFeedId,
     groupInviteEndFeedId: state.groupInviteEndFeedId,
@@ -102,10 +97,12 @@ export function threadAttentionFields(state: LocalThreadAttention) {
 }
 
 /** Initialize local columns once. Feed updates must preserve the latest stored values. */
-export function createLocalThreadState(state: LocalThreadAttention): LocalThreadState {
+export function createLocalThreadState(
+  state: LocalThreadAttention,
+): LocalThreadState {
   return {
     ...threadAttentionFields(state),
-    deletedHwm: state.tombstoneEndSeq,
+    deletedHwm: 0,
     messageHead: null,
     muted: false,
     pinned: false,
@@ -149,7 +146,8 @@ export function restoreThread(
   row: LocalThreadState,
   subject: RestoredThreadSubject,
   preview: ThreadPreviewView | undefined,
-  meta?: StoredGroupMeta,
+  meta: StoredGroupMeta | undefined,
+  targets: ThreadResourceTargets,
 ): ConversationItem {
   const common = {
     threadId: row.threadId,
@@ -159,8 +157,9 @@ export function restoreThread(
     threadFeedId: row.threadFeedId,
     role: row.role,
     ...projectThreadPreview(preview),
-    messageEndSeq: row.messageEndSeq,
-    groupMetaFeedEndId: row.groupMetaFeedEndId,
+    messageEndSeq: targets.messageEndSeq,
+    groupMetaFeedEndId:
+      row.type === 'GROUP' ? targets.groupMetaFeedEndId : null,
     muted: row.muted,
     blocked: row.blocked,
     pinned: row.pinned,
@@ -203,10 +202,6 @@ export function restoreThread(
       announcementCreatedAt: meta.announcementCreatedAt,
       announcementOriginCreatedAt: meta.announcementOriginCreatedAt,
       recoveryThrough: meta.recoveryThrough,
-      recoveryAnnouncementFeedId: meta.recoveryAnnouncementFeedId,
-      recoveryAnnouncementText: meta.recoveryAnnouncementText,
-      recoveryAnnouncementCreatedAt: meta.recoveryAnnouncementCreatedAt,
-      recoveryAnnouncementOriginCreatedAt: meta.recoveryAnnouncementOriginCreatedAt,
     },
   };
 }

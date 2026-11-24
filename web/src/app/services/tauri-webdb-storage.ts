@@ -15,8 +15,8 @@ import { tauriInvoke } from './runtime';
  * browser's `state-feed-db.worker`, not something the web shell drives through a
  * Worker. This class therefore:
  *
- *  - Routes per-thread Group Meta + tombstone drains to the Rust executor via
- *    `tauriInvoke('native_db_drain_thread_misc')` instead of a worker
+ *  - Routes open-thread notification suppression to Rust via
+ *    `tauriInvoke('native_db_set_open_thread')` instead of a worker
  *    `postMessage`. No `state-feed-db.worker` is ever created under Tauri.
  *  - Subscribes to the native executor completion port and forwards Rust's local
  *    completion events (`LOCAL_THREAD_FEED_COMMITTED`,
@@ -143,11 +143,11 @@ export class TauriWebdbStorage extends WebdbStorage {
     return null;
   }
 
-  /** Per-thread Group Meta + tombstone drains run in the Rust executor. */
-  override async drainThreadMisc(threadId: number | null): Promise<void> {
+  /** Update the open thread in Rust for desktop notification suppression. */
+  override async setOpenThread(threadId: number | null): Promise<void> {
     if (this.accountMaintenance || this.currentUserId === null)
       throw new Error('account cache lifetime expired');
-    await tauriInvoke('native_db_drain_thread_misc', {
+    await tauriInvoke('native_db_set_open_thread', {
       userId: Number(this.currentUserId),
       threadId: threadId ?? 0,
     });

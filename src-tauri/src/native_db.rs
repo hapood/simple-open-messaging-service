@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use device_connection::DeviceConnection;
 
 pub(crate) mod account_state;
+mod app_state;
 pub(crate) mod attention;
 #[cfg(any(target_os = "android", test))]
 pub(crate) mod call_peer;
@@ -31,9 +32,11 @@ pub(crate) mod preferences;
 pub(crate) mod profile_avatars;
 pub(crate) mod profile_namespaces;
 pub(crate) mod profile_subscriptions;
+pub(crate) mod resource_scheduler;
 pub(crate) mod state_feed_sync;
 mod thread_patch;
 mod thread_store;
+mod thread_resource_sync;
 pub(crate) mod unread;
 pub(crate) mod watch_ipc;
 pub(crate) use client_state::chrono_millis;
@@ -325,6 +328,7 @@ fn validate_cache_schema(conn: &Connection) -> Result<(), String> {
         "profile_namespace_tombs",
         "profile_tombs",
         "threads",
+        "thread_resource_sync",
         "group_meta",
         "thread_previews",
         "profiles",
@@ -362,6 +366,7 @@ fn validate_cache_schema(conn: &Connection) -> Result<(), String> {
         "thread_feed_cursor",
         "state_feed_id",
         "state_feed_full_through",
+        "state_feed_target",
         "profile_namespace_change_end_id",
         "intent_request_end_id",
         "intent_request_read_id",
@@ -462,6 +467,7 @@ fn create_cache_schema(conn: &Connection) -> Result<(), String> {
           thread_feed_cursor INTEGER CHECK(thread_feed_cursor >= 0),
           state_feed_id INTEGER CHECK(state_feed_id >= 0),
           state_feed_full_through INTEGER CHECK(state_feed_full_through >= 0),
+          state_feed_target INTEGER NOT NULL DEFAULT 0 CHECK(state_feed_target >= 0),
           profile_namespace_change_end_id INTEGER CHECK(profile_namespace_change_end_id >= 0),
           intent_request_end_id INTEGER CHECK(intent_request_end_id >= 0),
           intent_request_read_id INTEGER CHECK(intent_request_read_id >= 0),
@@ -505,6 +511,7 @@ fn create_cache_schema(conn: &Connection) -> Result<(), String> {
         ",
     )
     .map_err(|e| format!("initialize native cache: {e}"))?;
+    conn.execute_batch(thread_resource_sync::SCHEMA).map_err(|e| e.to_string())?;
     conn.execute_batch(thread_store::SCHEMA)
         .map_err(|e| format!("initialize typed thread cache: {e}"))?;
     conn.execute_batch(group_meta_store::SCHEMA)
@@ -917,6 +924,7 @@ pub(crate) async fn native_db_clear_user(user_id: i64) -> Result<(), String> {
                 for table in [
                     "thread_previews",
                     "threads",
+                    "thread_resource_sync",
                     "profile_tombs",
                     "profile_namespace_tombs",
                     "profile_namespaces",
@@ -955,6 +963,7 @@ pub(crate) async fn native_db_clear_all() -> Result<(), String> {
                 conn.execute_batch(
                     "DELETE FROM thread_previews;
                  DELETE FROM threads;
+                 DELETE FROM thread_resource_sync;
                  DELETE FROM profiles;
                  DELETE FROM members;
                  DELETE FROM account_state;
@@ -1034,19 +1043,18 @@ mod login_cache_tests {
             .is_none());
         tauri::async_runtime::block_on(async {
             preferences::native_db_put_preference(
-                "device".into(),
                 "connection-proof".into(),
                 Value::Bool(true),
             )
             .await
             .unwrap();
             assert_eq!(
-                preferences::native_db_get_preference("device".into(), "connection-proof".into())
+                preferences::native_db_get_preference("connection-proof".into())
                     .await
                     .unwrap(),
                 Some(Value::Bool(true))
             );
-            preferences::native_db_delete_preference("device".into(), "connection-proof".into())
+            preferences::native_db_delete_preference("connection-proof".into())
                 .await
                 .unwrap();
         });
@@ -1186,7 +1194,7 @@ mod login_cache_tests {
                     Some(first.clone())
                 );
                 let theme: String = conn.query_row(
-                "SELECT value_json FROM client_preferences WHERE scope='device' AND key='theme'",
+                "SELECT value_json FROM client_preferences WHERE key='theme'",
                 [], |row| row.get(0),
             ).map_err(|e| e.to_string())?;
                 assert_eq!(theme, "\"dark\"");
@@ -1276,7 +1284,7 @@ mod login_cache_tests {
             .with_database(|conn| {
                 let theme: String = conn
             .query_row(
-                "SELECT value_json FROM client_preferences WHERE scope='device' AND key='theme'",
+                "SELECT value_json FROM client_preferences WHERE key='theme'",
                 [],
                 |row| row.get(0),
             )
@@ -1284,8 +1292,8 @@ mod login_cache_tests {
                 assert_eq!(theme, "\"dark\"");
                 let raw: String = conn
                     .query_row(
-                        "SELECT value_json FROM client_preferences
-                 WHERE scope='device' AND key='soms.native-login-session.v1'",
+                        "SELECT value FROM app_state
+                 WHERE key='soms.native-login-session.v1'",
                         [],
                         |row| row.get(0),
                     )
@@ -1559,8 +1567,8 @@ mod login_cache_tests {
             .unwrap()
             .with_database(|conn| {
                 conn.execute(
-                    "DELETE FROM client_preferences
-                     WHERE scope='device' AND key='soms.native-login-session.v1'",
+                    "DELETE FROM app_state
+                     WHERE key='soms.native-login-session.v1'",
                     [],
                 )
                 .map_err(|e| e.to_string())

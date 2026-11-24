@@ -18,20 +18,16 @@
  *   (Note: you cannot "rescale the row back to W after clamp" — that would equal rawH and undo the clamp, so a
  *   branch is used.)
  *
- * Bad w/h (NaN/0/negative) → fall back to 4:3 (DEFAULT_R), so corrupt data can't poison totalH and ripple into
- * the virtual scroll. totalH is the grid height included in the kernel's synchronous measurement, and it is
+ * Resource dimensions come from the media contract; nonvisual placeholders have layout-owned geometry.
+ * totalH is the grid height included in the kernel's synchronous measurement, and it is
  * Math.rounded so an album row's offsetHeight is always a whole number (see the integer-height contract in
  * _row-base.scss → the kernel's Σ offsetHeight equals content.scrollHeight exactly).
  */
 
-export interface AlbumImageLike {
-  w: number;
-  h: number;
-  /** Media kind — present on real AlbumMedia cells. layoutAlbum special-cases audio (a fixed slim bar that
-   *  bypasses image aspect math); image/video fall through to the aspect-ratio regimes. */
-  kind?: 'image' | 'video' | 'audio' | 'file';
-  duration?: number;
-}
+export type AlbumImageLike =
+  | { kind: 'image' | 'video'; w: number; h: number }
+  | { kind: 'audio'; duration: number }
+  | { kind: 'file' };
 
 interface AlbumRect {
   /** left/width: percentage relative to the grid container width (adapts on narrow screens). */
@@ -63,8 +59,8 @@ const VOICE_BAR_MIN_W = 172;
 const VOICE_BAR_MAX_W = 240;
 
 const ALBUM_GAP = 2;
-/** Fallback aspect ratio (h/w) for bad w/h, 4:3 (matches historical data). */
-const DEFAULT_R = 3 / 4;
+/** Layout-owned aspect ratio for nonvisual file placeholders. */
+const PLACEHOLDER_R = 3 / 4;
 /** Row-height clamp range (relative to baseW): minH prevents extreme flat strips, maxH prevents tall portraits from blowing up the message. */
 export const ALBUM_MIN_ROW_H_RATIO = 0.35;
 export const ALBUM_MAX_ROW_H_RATIO = 0.8;
@@ -77,10 +73,10 @@ function pct(px: number, baseW: number): number {
   return (px / baseW) * 100;
 }
 
-/** Take the aspect ratio r=h/w; on bad data (non-finite/≤0/NaN) → fallback 4:3 to avoid poisoning totalH. */
+/** Intrinsic aspect ratio for visual media; presentation geometry for nonvisual resources. */
 function ratio(img: AlbumImageLike): number {
-  const r = img.h / img.w;
-  return Number.isFinite(r) && r > 0 ? r : DEFAULT_R;
+  if (img.kind === 'audio' || img.kind === 'file') return PLACEHOLDER_R;
+  return img.h / img.w;
 }
 
 interface RowCell {
@@ -161,10 +157,7 @@ export function layoutAlbum(
   if (n === 1 && images[0].kind === 'audio') {
     const totalH = VOICE_BAR_H;
     // Short clips stay compact; longer clips gain a little waveform room without growing unbounded.
-    const duration = Math.max(
-      0,
-      Number.isFinite(images[0].duration) ? (images[0].duration ?? 0) : 0,
-    );
+    const duration = images[0].duration;
     const widthPx = Math.min(
       baseW,
       VOICE_BAR_MAX_W,

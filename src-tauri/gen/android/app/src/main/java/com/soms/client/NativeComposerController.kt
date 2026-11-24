@@ -64,6 +64,7 @@ class NativeComposerController(
     private val density = activity.resources.displayMetrics.density
     private fun dp(value: Int) = Math.round(value * density)
     private val enterInterpolator = PathInterpolator(0.2f, 0f, 0f, 1f)
+    private val fadeInterpolator = PathInterpolator(0.2f, 0f, 0f, 1f)
     private val isDark =
         activity.resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK ==
             Configuration.UI_MODE_NIGHT_YES
@@ -780,8 +781,9 @@ class NativeComposerController(
         ensureAttached()
         visible = true
         root.animate().cancel()
-        root.alpha = 0.82f
-        root.translationY = dp(12).toFloat()
+        // Enter mirrors the hide motion: rise from the offset while fading in over the static Web silhouette.
+        root.alpha = 0f
+        root.translationY = dp(COMPOSER_SLIDE_OFFSET_DP).toFloat()
         // Keep the view in layout so its geometry can be measured, but do not draw it before Angular
         // publishes the chat-pane bounds. Drawing here briefly exposes the decor-wide/default-bottom
         // position before setBounds() moves it, which looks like a jump to the endpoint followed by the
@@ -812,8 +814,8 @@ class NativeComposerController(
             root.animate()
                 .alpha(1f)
                 .translationY(0f)
-                .setDuration(SHOW_DURATION_MS)
-                .setInterpolator(enterInterpolator)
+                .setDuration(COMPOSER_FADE_DURATION_MS)
+                .setInterpolator(fadeInterpolator)
                 .start()
         }
     }
@@ -931,8 +933,9 @@ class NativeComposerController(
         root.animate().cancel()
         root.animate()
             .alpha(0f)
-            .translationY(dp(14).toFloat())
-            .setDuration(HIDE_DURATION_MS)
+            .translationY(dp(COMPOSER_SLIDE_OFFSET_DP).toFloat())
+            .setDuration(COMPOSER_FADE_DURATION_MS)
+            .setInterpolator(fadeInterpolator)
             .setListener(object : AnimatorListenerAdapter() {
                 override fun onAnimationEnd(animation: Animator) {
                     root.animate().setListener(null)
@@ -1746,8 +1749,11 @@ class NativeComposerController(
         private const val DEFAULT_EMOJI_HEIGHT_DP = 280
         private const val EMOJI_GAP_DP = 8
         private const val IME_HANDOFF_FALLBACK_MS = 420L
-        private const val SHOW_DURATION_MS = 140L
-        private const val HIDE_DURATION_MS = 90L
+        /** Composer slide-down fade used for show and hide. Duration, offset and [fadeInterpolator] must equal
+         * the browser composer's --im-composer-fade-duration, --im-composer-slide-offset and
+         * cubic-bezier(0.2, 0, 0, 1) so both platforms move identically. */
+        private const val COMPOSER_FADE_DURATION_MS = 140L
+        private const val COMPOSER_SLIDE_OFFSET_DP = 12
         private const val LINK_MARKER_DEBOUNCE_MS = 500L
         private const val ATTACHMENT_DRAWER_DURATION_MS = 140L
         private val PRIMARY = Color.rgb(49, 119, 213)
