@@ -243,8 +243,8 @@ Send actions use acknowledgement rather than optimistic native clearing:
 
 This protects drafts from route races and transient bridge failures.
 
-Native also emits `{ kind: 'presented' }` once per context when the composer begins
-its fade-in after receiving bounds. The Web silhouette uses it to cross-fade out; see
+Show and hide use a 140ms slide-down fade shared with the browser composer, over a
+static Web silhouette; see
 [Composer avoidance silhouette](../../design/composer-avoidance-silhouette.md).
 
 ## Scope boundary for the first release

@@ -1480,6 +1480,8 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
       const before = viewport.scrollTop;
       source.pushLive([{ id: 100, data: 100, boundary: 'newest' }]);
       await flush();
+      await new Promise((r) => setTimeout(r, 220));
+      await flush();
       expect(scroller.getInfo().newestId).toBe(100);
       expect(viewport.scrollTop).toBe(before + (followBottom ? 100 : 0));
     },
@@ -1496,6 +1498,8 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
     const before = viewport.scrollTop;
     setHeight(100, height);
     source.pushLive([{ id: 100, data: 100, boundary: 'newest' }]);
+    await flush();
+    await new Promise((r) => setTimeout(r, 250));
     await flush();
     expect(viewport.scrollTop).toBe(before + (height === 420 ? height : 0));
     expect(onArrivalPinned).toHaveBeenCalledTimes(height === 420 ? 1 : 0);
@@ -1525,6 +1529,8 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
     await flush();
     const before = viewport.scrollTop;
     source.pushLive([{ id: 100, data: 100, boundary: 'newest' }]);
+    await flush();
+    await new Promise((r) => setTimeout(r, 220));
     await flush();
     expect(viewport.scrollTop).toBe(before + 100);
     expect(scroller.getMountedGeometry(99)!.height).toBe(100);
@@ -1614,16 +1620,21 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
     });
     source.pushLive([{ id: 100, data: 100, boundary: 'newest' }]);
     await flush();
-    expect(viewport.scrollTo).toHaveBeenLastCalledWith({ top: 9500, behavior: 'smooth' });
-    viewport.scrollTop = 9450;
+    await new Promise((r) => setTimeout(r, 220));
+    await flush();
+    expect(viewport.scrollTop).toBe(9500);
     source.pushLive([{ id: 101, data: 101, boundary: 'newest' }]);
     await flush();
-    expect(viewport.scrollTo).toHaveBeenLastCalledWith({ top: 9600, behavior: 'smooth' });
-    viewport.dispatchEvent(new Event('wheel'));
-    vi.mocked(viewport.scrollTo).mockClear();
+    await new Promise((r) => setTimeout(r, 220));
+    await flush();
+    expect(viewport.scrollTop).toBe(9600);
+    viewport.scrollTop = 9450;
+    viewport.dispatchEvent(new Event('scroll'));
     source.pushLive([{ id: 102, data: 102, boundary: 'newest' }]);
     await flush();
-    expect(viewport.scrollTo).not.toHaveBeenCalled();
+    await new Promise((r) => setTimeout(r, 220));
+    await flush();
+    expect(viewport.scrollTop).toBe(9450);
   });
 
   it('checks followBottom when an in-flight arrival is delivered', async () => {
@@ -1845,6 +1856,8 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
     });
     await scroller.openWindow({ kind: 'latest' });
     src.pushLive([{ id: 700, data: -1, boundary: 'newest' }]);
+    await flush();
+    await new Promise((r) => setTimeout(r, 220));
     await flush();
     const info = scroller.getInfo();
     expect(info.newestId).toBe(700);
@@ -3281,6 +3294,8 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
     // sync-drained [op-0] but BEFORE its loadNewer resolves — exactly the one-microtask race window.
     src.pushLive([{ id: 800, data: 100 }]); // partial frame: waiter remains pending
     src.pushLive([{ id: 801, data: 101, boundary: 'newest' as const }]); // boundary makes the accumulated demand satisfiable
+    await flush();
+    await new Promise((r) => setTimeout(r, 220));
     await flush();
 
     // Both opponent messages must be mounted (without the fix, op-1 is orphaned in the live cache until the next signal).

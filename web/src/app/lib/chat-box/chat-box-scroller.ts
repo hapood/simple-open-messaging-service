@@ -22,6 +22,7 @@
  * Development diagnostics are guarded by Angular's public `isDevMode()` API.
  */
 import { MountedMessageScroll } from './mounted-message-scroll';
+import { SmoothScrollAnimator } from './smooth-scroll-animator';
 import { shouldFollowArrival } from './arrival-follow';
 import {
   Observable,
@@ -372,6 +373,8 @@ const DEFAULTS: Required<CbConfig> = {
 /** Safety timeout backing the enter/leave CSS animations. Must exceed the
  *  longest CSS duration; 0.45s leaves a margin for a swallowed animationend to self-clear
  *  without the lag the old 0.6s backstop added now that the animations themselves are snappier. */
+const ARRIVAL_FOLLOW_WINDOW_MS = 120;
+const ARRIVAL_FOLLOW_MAX_VIEWPORT_RATIO = 0.7;
 const ANIM_SAFETY_MS = 450;
 
 /** Maximum tolerated drift (px) between the kernel height model (totalH = Σ integer offsetHeight + tailCap) and the
@@ -575,6 +578,10 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
   private measuring = false;
   private dirty = false;
   private rafId = 0;
+  private readonly animator = new SmoothScrollAnimator();
+  private arrivalWindowTimer: ReturnType<typeof setTimeout> | null = null;
+  private arrivalWindowWasPinned = false;
+  private arrivalWindowAddedH = 0;
   private paintOnlyRafId = 0;
   private lastScrollTop = 0;
   /** Count of in-flight enter/exit (cb-enter/cb-leave) animations. While > 0, DOM balancing is deferred
@@ -994,6 +1001,119 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     this.applyAnchor(this.selectPosition({ kind: 'pinLatest' }));
   }
 
+  private cancelArrivalWindow(): void {
+    if (this.arrivalWindowTimer !== null) {
+      clearTimeout(this.arrivalWindowTimer);
+      this.arrivalWindowTimer = null;
+    }
+    this.arrivalWindowWasPinned = false;
+    this.arrivalWindowAddedH = 0;
+  }
+
+  private scheduleArrivalWindow(wasPinned: boolean, addedHeight: number): void {
+    if (this.arrivalWindowTimer === null) {
+      this.arrivalWindowWasPinned = wasPinned;
+      this.arrivalWindowAddedH = 0;
+      this.arrivalWindowTimer = setTimeout(() => {
+        this.settleArrivalWindow();
+      }, ARRIVAL_FOLLOW_WINDOW_MS);
+    }
+    this.arrivalWindowAddedH += Math.max(0, addedHeight);
+  }
+
+  private settleArrivalWindow(): void {
+    this.arrivalWindowTimer = null;
+    const wasPinned = this.arrivalWindowWasPinned;
+    const addedH = this.arrivalWindowAddedH;
+    this.arrivalWindowWasPinned = false;
+    this.arrivalWindowAddedH = 0;
+
+    if (!wasPinned || this.inactive) return;
+    if (addedH <= this.vh * ARRIVAL_FOLLOW_MAX_VIEWPORT_RATIO) {
+      this.smoothScrollToBottom();
+    }
+  }
+
+  private setScrollTopProgrammatic(top: number): void {
+    this.shifting = true;
+    try {
+      this.viewport.scrollTop = top;
+    } finally {
+      this.shifting = false;
+    }
+  }
+
+  /** Smoothly scroll to the current bottom edge, re-evaluating target each frame. */
+  smoothScrollToBottom(opts?: {
+    onComplete?: () => void;
+    onCancel?: () => void;
+  }): void {
+    this.animator.start({
+      getTargetTop: () => Math.max(0, this.content.scrollHeight - this.vh),
+      getCurrentTop: () => this.viewport.scrollTop,
+      setTop: (top) => this.setScrollTopProgrammatic(top),
+      getBounds: () => ({
+        min: 0,
+        max: Math.max(0, this.content.scrollHeight - this.vh),
+      }),
+      onComplete: () => {
+        this.emit();
+        opts?.onComplete?.();
+      },
+      onCancel: opts?.onCancel,
+    });
+  }
+
+  /** Smoothly scroll to a mounted item index with optional over-scroll peek when trailing items exist. */
+  smoothScrollToIndex(
+    index: number,
+    anchor: 'top' | 'center' | 'bottom' = 'center',
+    opts?: {
+      overPx?: number;
+      onComplete?: () => void;
+      onCancel?: () => void;
+    },
+  ): boolean {
+    const targetEntry = this.mounted[index];
+    if (!targetEntry) return false;
+    const targetId = targetEntry.item.id;
+    const overPx = Math.max(0, opts?.overPx ?? 0);
+
+    this.animator.start({
+      getTargetTop: () => {
+        const idx = this.indexOfId(targetId);
+        if (idx < 0) return null;
+        const top = this.topOf(idx);
+        const h = this.mounted[idx].height;
+        let baseTop: number;
+        if (anchor === 'top') {
+          baseTop = top;
+        } else if (anchor === 'bottom') {
+          baseTop = top + h - this.vh;
+        } else {
+          baseTop = top + h / 2 - this.vh / 2;
+        }
+        const maxTop = Math.max(0, this.content.scrollHeight - this.vh);
+        if (overPx > 0 && idx < this.mounted.length - 1) {
+          baseTop = Math.min(maxTop, baseTop + overPx);
+        }
+        return Math.max(0, Math.min(maxTop, baseTop));
+      },
+      getCurrentTop: () => this.viewport.scrollTop,
+      setTop: (top) => this.setScrollTopProgrammatic(top),
+      getBounds: () => ({
+        min: 0,
+        max: Math.max(0, this.content.scrollHeight - this.vh),
+      }),
+      onComplete: () => {
+        this.emit();
+        opts?.onComplete?.();
+      },
+      onCancel: opts?.onCancel,
+    });
+    return true;
+  }
+
   /**
    * Preserve the existing attachment to the composer boundary across geometry changes. The tail reserve maps
    * that boundary to the scroll-content bottom; away from it, preserve the visible message instead.
@@ -1297,6 +1417,8 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
 
   /** Clear all mounted rows and load/boundary state before initializing the new window. */
   private resetWindowState(): void {
+    this.cancelArrivalWindow();
+    this.animator.cancel();
     this.arrivalDemand = false;
     if (this.rafId) {
       cancelAnimationFrame(this.rafId);
@@ -1490,6 +1612,8 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
   }
 
   destroy(): void {
+    this.cancelArrivalWindow();
+    this.animator.dispose();
     if (this.state === 'destroyed') return;
     this.unbind();
     this.state = 'destroyed';
@@ -1877,12 +2001,10 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
       clearTimeout(entry.enterTimer);
       entry.enterTimer = undefined;
       entry.el.classList.remove('cb-enter', 'cb-enter-above'); // an entry plays exactly one of the two enter classes
-      this.animating--;
     } else if (entry.enterRaf !== undefined) {
       cancelAnimationFrame(entry.enterRaf);
       entry.enterRaf = undefined;
       entry.el.classList.remove('cb-pending', 'cb-enter', 'cb-enter-above'); // cb-pending was held for the enter rAF
-      this.animating--;
     }
     if (entry.leaveTimer !== undefined) {
       clearTimeout(entry.leaveTimer);
@@ -2037,6 +2159,8 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
       this.suppressScrollBalance = false;
       return;
     } // consume the reflow-pin's scroll event
+    this.cancelArrivalWindow();
+    this.animator.cancel();
     this.onViewportStateChanged();
   };
 
@@ -2117,15 +2241,12 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     if (entry.enterRaf !== undefined && entry.enterTimer === undefined) {
       cancelAnimationFrame(entry.enterRaf);
       entry.enterRaf = undefined;
-      this.animating--;
     }
-    this.animating++;
     entry.enterRaf = requestAnimationFrame(() => {
       entry.enterRaf = undefined;
       if (this.inactive) {
-        this.onAnimEnd();
         return;
-      } // torn down mid-frame → balance animating, no DOM write
+      }
       entry.el.classList.remove('cb-pending');
       entry.el.classList.add(cls);
       const finish = () => {
@@ -2133,7 +2254,6 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
         clearTimeout(entry.enterTimer);
         entry.enterTimer = undefined;
         entry.el.classList.remove(cls);
-        this.onAnimEnd();
       };
       entry.enterTimer = setTimeout(finish, ANIM_SAFETY_MS); // safety if animationend is swallowed
       entry.el.addEventListener('animationend', finish, { once: true });
@@ -2223,11 +2343,12 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
         this.trimOlder();
         if (this.mountedScroll.followingBottom) this.mountedScroll.cancel();
         this.applyAnchor(anchor);
-        if (follow) {
-          this.mountedScroll.start(Math.max(0, this.content.scrollHeight - this.vh),
-            !matchMedia('(prefers-reduced-motion: reduce)').matches, true);
-          for (const { entry, seqs } of arrivals)
-            this.hooks.onArrivalPinned?.(entry.item, entry.el, seqs);
+        if (attached && addedHeight > 0) {
+          this.scheduleArrivalWindow(attached, addedHeight);
+          if (addedHeight <= this.vh * ARRIVAL_FOLLOW_MAX_VIEWPORT_RATIO) {
+            for (const { entry, seqs } of arrivals)
+              this.hooks.onArrivalPinned?.(entry.item, entry.el, seqs);
+          }
         }
         this.consumeMountedTombs();
         this.emit();

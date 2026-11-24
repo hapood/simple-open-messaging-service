@@ -3,32 +3,34 @@
 ## Goal
 
 When a higher layer requires the chat composer to step aside (dialog, aside pane, media viewer,
-fullscreen call, paste panel), the composer slot must not become an empty gap. A muted gray
-composer silhouette occupies the same rectangle while the real composer is hidden. The switch is
-an in-place opacity cross-fade, and it looks identical on the browser composer and the Android
-native composer.
+fullscreen call, paste panel), the composer slot must not become an empty gap. A static gray
+composer silhouette always sits in the composer slot, beneath the real composer. The composer
+slides down and fades out to reveal it, and later slides up and fades in over it. The motion is
+identical for the browser composer and the Android native composer.
 
 ## Behavior
 
 | Situation | Real composer | Silhouette |
 | --- | --- | --- |
-| Normal chat | visible | hidden |
-| Composer avoided (see below) | fades out | fades in |
-| Avoidance ends | fades in | fades out at the same moment |
-| Multi-select mode | hidden | hidden (the selection bar owns the slot) |
-| Blocked / read-only / quota paused / friendship ended | none | hidden (the banner or empty slot owns it) |
-| Android cold start, before the chat is ready | not yet shown | hidden (no flash) |
+| Normal chat | visible, covering the silhouette | present underneath |
+| Composer avoided (see below) | slides down and fades out | revealed (no animation) |
+| Avoidance ends | slides up and fades in | covered (no animation) |
+| Multi-select mode | hidden | not rendered (the selection bar owns the slot) |
+| Blocked / read-only / quota paused / friendship ended | none | not rendered (the banner or empty slot owns it) |
 
-"Avoided" is the `composerAvoided` computed in
-[friend-message.component.ts](../../web/src/app/components/message-thread/friend-message.component.ts):
+The silhouette is rendered when `composerPlaceholderVisible()` is true, which is
+`composerBinding() && !selectionMode()` in
+[friend-message.component.ts](../../web/src/app/components/message-thread/friend-message.component.ts).
+It has no show/hide transition of its own. Because it is always underneath, the asynchronous
+native re-show needs no hand-off protocol: until the native view begins drawing, the silhouette
+fills the slot.
 
-- Browser composer: any routed dialog, or `nativeComposerOccluded()`.
-- Android native composer: a chatbox dialog for this thread, or `nativeComposerOccluded()`.
+"Avoided" is the `composerAvoided` computed in the same component:
 
-`nativeComposerOccluded()` covers aside panes, non-chatbox pane-stack entries, the fullscreen call
-overlay and the paste panel. The browser template uses the same `composerAvoided` for its
-`msg-composer--dialog-hidden` class, so the browser composer and the silhouette always switch
-together.
+- Browser composer: any routed dialog, or `nativeComposerOccluded()`. It drives the
+  `msg-composer--dialog-hidden` class.
+- Android native composer: the existing `shouldShow` effect hides the composer for a chatbox
+  dialog of this thread, `nativeComposerOccluded()`, or selection mode.
 
 ## Visual specification
 
@@ -38,8 +40,8 @@ together.
   - Native: `NativeComposerService.hideActive()` rejects the zero-height geometry emitted on hide,
     so the last real measurement, including multi-line drafts and quotes, is kept.
 - It applies the same keyboard-lift transform as `.ci-input-bar`.
-- Layering: `z-index: 3`, below the browser composer (`4`). It is `aria-hidden` and has
-  `pointer-events: none`.
+- Layering: `z-index: 3`, below the browser composer (`4`). The native composer is a view above
+  the WebView. The silhouette is `aria-hidden` and has `pointer-events: none`.
 - Look: composer bar background and top border, a rounded gray input capsule that fills the
   height, and a 48px gray circular send button. The fill is the
   `--im-composer-placeholder-fill` token.
@@ -48,59 +50,28 @@ together.
 
 ## Motion
 
-Opacity only, with no translation, because both surfaces occupy the same rectangle.
+Only the real composer animates. Hiding goes to opacity 0 with a downward offset; showing starts
+from that state and returns to opacity 1 with no offset.
 
-| Side | Duration | Easing |
-| --- | --- | --- |
-| Web (silhouette and browser composer) | `--im-composer-fade-duration` = 140ms | `--app-ease-standard` = `cubic-bezier(0.2, 0, 0, 1)` |
-| Android native composer | `COMPOSER_FADE_DURATION_MS` = 140 | `PathInterpolator(0.2, 0, 0, 1)` |
+| Side | Duration | Offset | Easing |
+| --- | --- | --- | --- |
+| Browser composer | `--im-composer-fade-duration` = 140ms | `--im-composer-slide-offset` = 12px | `--app-ease-standard` = `cubic-bezier(0.2, 0, 0, 1)` |
+| Android native composer | `COMPOSER_FADE_DURATION_MS` = 140 | `COMPOSER_SLIDE_OFFSET_DP` = 12 | `PathInterpolator(0.2, 0, 0, 1)` |
 
-The two constants must change together. Each source states this requirement.
+The constants must change together. Each source states this requirement.
 
-## Native hand-off protocol
-
-Hiding is synchronous. Showing is not: `show()` keeps the native view `INVISIBLE` until Angular
-publishes bounds through `setComposerBounds`, and bounds can be deferred by the reflow freeze.
-If the silhouette faded out when `show()` was requested, the slot would be empty for that
-interval. The silhouette's fade-out is therefore driven by a native fact:
-
-```mermaid
-sequenceDiagram
-    participant W as Angular (friend-message)
-    participant N as NativeComposerController
-    Note over W: composerAvoided becomes true
-    W->>W: nativeComposerHandoffPending = true (silhouette fades in)
-    W->>N: hideComposer(contextId)
-    N->>N: alpha to 0 over 140ms
-    Note over W: composerAvoided becomes false
-    W->>N: showComposer(new contextId)
-    N->>N: alpha = 0, INVISIBLE
-    W->>N: setComposerBounds
-    N->>N: VISIBLE, alpha to 1 over 140ms
-    N-->>W: event kind presented (once per context)
-    W->>W: nativeComposerHandoffPending = false (silhouette fades out)
-```
-
-- `presented` is emitted once per context, on the first frame of the fade-in. Later bounds
-  updates do not emit it again.
-- Only an avoidance hide sets `nativeComposerHandoffPending`. Thread switches, selection mode
-  and banner states do not show the silhouette.
-- The silhouette is visible on native when
-  `bound && !selection && ready && (avoided || nativeHandoffPending)`, where `ready` means
-  `interactionActive() && threadId !== undefined`. The pure rule lives in
-  [composer-placeholder.ts](../../web/src/app/components/message-thread/composer-placeholder.ts).
-
-Responsibility boundary: Kotlin reports a fact (`presented`) and executes the fade. The decision
-to show the silhouette stays in the Web host that owns the chat surface.
+On Android, `show()` keeps the view `INVISIBLE` at the offset until Angular publishes bounds,
+then animates in. The silhouette covers the slot in the meantime.
 
 ## Tests
 
-- [composer-placeholder.spec.ts](../../web/src/app/components/message-thread/composer-placeholder.spec.ts)
-  covers web avoidance, banner states, selection mode, native cold start and the native hand-off
-  bridge (`npm run test:unit --prefix web`).
-- Manual Android checks:
-  - Open a peer profile, a gallery and a chatbox dialog. Each time, the composer and the
-    silhouette cross-fade in place with no empty frame and no vertical movement.
-  - Close each layer. The silhouette stays until the native composer begins its fade-in.
-  - With a multi-line draft, the silhouette matches the composer's height.
-  - Cold-start into a chat. No gray flash appears before the native composer.
+The silhouette rule is a single computed expression and the motion is CSS and native animation,
+so verification is manual:
+
+- Browser: open a chatbox dialog, a global dialog and an aside pane. The composer slides down and
+  fades to reveal the silhouette, then returns over it. The silhouette never animates.
+- Android: open a peer profile, a gallery and a chatbox dialog, then close each. The behavior is
+  the same as in the browser, with no empty frame while the native composer re-appears.
+- With a multi-line draft or a quote, the silhouette matches the composer's height.
+- Selection mode and banner states show no silhouette.
+- Regression: the tail reserve and scroll position do not change when a dialog opens or closes.

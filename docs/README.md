@@ -42,7 +42,7 @@ and client behavior.
 - [Consumer UI guidelines](./design/consumer-ui-guidelines.md)
 - [Client message history synchronization](./design/client-message-history-sync.md)
 - [Chat history entry and message windows](./design/chat-history-entry-and-window.md) — reviewed Web presentation design; not yet implemented
-- [Composer avoidance silhouette](./design/composer-avoidance-silhouette.md) — gray placeholder and composer cross-fade on Web and Android native
+- [Composer avoidance silhouette](./design/composer-avoidance-silhouette.md) — static gray placeholder revealed by the composer's slide-down fade on Web and Android native
 - [Canonical Group Meta and asymmetric mirrors](./design/canonical-group-meta.md)
 - [Client Group Meta, member queries, and batched notices](./development/client-group-meta-and-members-plan.md) — member query implemented; client/feed/message migration pending
 - [Thread resource-head fanout](./development/thread-resource-head-plan.md) — tomb and client Group Meta wake, not the deferred scheduler rewrite
