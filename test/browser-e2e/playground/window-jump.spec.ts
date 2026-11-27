@@ -234,18 +234,31 @@ for (const reduced of [false, true]) {
         creates++;
         return create(...args);
       };
-      const calls: Array<{
-        behavior: ScrollBehavior | undefined;
-        top: number | undefined;
-      }> = [];
-      const scroll = viewport.scrollTo.bind(viewport);
-      // Observe actual browser scrolling rather than replacing the animation.
-      viewport.scrollTo = (options?: number | ScrollToOptions, y?: number) => {
-        if (typeof options === 'number') scroll(options, y ?? 0);
-        else {
-          calls.push({ behavior: options?.behavior, top: options?.top });
-          scroll(options);
+      const calls: Array<'snap' | 'setTarget' | 'cancel'> = [];
+      const animator = (
+        kernel as unknown as {
+          animator: {
+            snap: (offset: number) => void;
+            setTarget: (offset: number) => void;
+            cancel: () => void;
+            isRunning: boolean;
+          };
         }
+      ).animator;
+      const snap = animator.snap.bind(animator);
+      const setTarget = animator.setTarget.bind(animator);
+      const cancel = animator.cancel.bind(animator);
+      animator.snap = (offset: number) => {
+        calls.push('snap');
+        snap(offset);
+      };
+      animator.setTarget = (offset: number) => {
+        calls.push('setTarget');
+        setTarget(offset);
+      };
+      animator.cancel = () => {
+        calls.push('cancel');
+        cancel();
       };
       try {
         // Same-stack inputs guarantee the first motion is still owned when
@@ -263,15 +276,17 @@ for (const reduced of [false, true]) {
           foreground: component.interactionActive(),
           inits,
           creates,
-          behaviors: calls.map((call) => call.behavior),
-          stoppedAtInputPosition:
-            reduced || calls.at(-1)?.top === positionBeforeInput,
+          motionCalls: calls,
+          animatorActiveAfterInput: animator.isRunning,
+          stoppedAtInputPosition: viewport.scrollTop === positionBeforeInput,
           loading:
             document.querySelector('.pane-fg app-message-window-skeleton') !==
             null,
         };
       } finally {
-        viewport.scrollTo = scroll;
+        animator.snap = snap;
+        animator.setTarget = setTarget;
+        animator.cancel = cancel;
         source.loadWindow = loadWindow;
         component.threadAdapter.createSource = create;
       }
@@ -283,9 +298,10 @@ for (const reduced of [false, true]) {
       foreground: true,
       inits: 0,
       creates: 0,
-      behaviors: reduced
-        ? ['instant', 'instant']
-        : ['smooth', 'instant', 'smooth', 'instant'],
+      motionCalls: reduced
+        ? ['snap', 'snap', 'cancel']
+        : ['setTarget', 'setTarget', 'cancel'],
+      animatorActiveAfterInput: false,
       stoppedAtInputPosition: true,
       loading: false,
     });

@@ -78,12 +78,6 @@ pub(crate) async fn launch_update(
     )
 }
 
-/// User chose to leave after local database initialization failed. Does not delete storage.
-#[tauri::command]
-pub(crate) fn exit_app(app: tauri::AppHandle) {
-    app.exit(0);
-}
-
 fn dispatch(
     app: &tauri::AppHandle,
     state: LaunchState,

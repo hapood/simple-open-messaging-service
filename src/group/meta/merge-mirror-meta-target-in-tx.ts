@@ -37,15 +37,23 @@ export async function mergeMirrorGroupMetaTargetInTx(
   );
   if (!mirror) return null;
   await requireThreadContentLockInTx(tx, mirror.id);
-  const inserted = await tx.execute<{ inserted: boolean }>(sql`
+  const merged = await tx.execute<{
+    metaProcessedThroughId: number;
+    metaRecoveryThroughId: number;
+  }>(sql`
     INSERT INTO "GroupMeta" ("threadId", "metaTargetId")
     VALUES (${mirror.id}, ${input.metaTargetId})
     ON CONFLICT ("threadId") DO UPDATE SET
       "metaTargetId" = GREATEST("GroupMeta"."metaTargetId", EXCLUDED."metaTargetId"),
       "updatedAt" = CURRENT_TIMESTAMP
-    RETURNING (xmax = 0) AS inserted
+    RETURNING "metaProcessedThroughId", "metaRecoveryThroughId"
   `);
-  if (inserted.rows[0]?.inserted && input.metaTargetId > 0) {
+  const row = merged.rows[0];
+  if (
+    input.metaTargetId > 0 &&
+    row?.metaProcessedThroughId === 0 &&
+    row?.metaRecoveryThroughId === 0
+  ) {
     await beginMirrorMetaRecoveryInTx(tx, input.group, input.metaTargetId);
   }
   return { threadId: mirror.id };

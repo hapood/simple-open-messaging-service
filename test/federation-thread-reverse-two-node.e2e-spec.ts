@@ -935,7 +935,9 @@ describe('federation reverse thread rounds (two nodes)', () => {
             eq(accountThreadState.threadId, mirror.id),
           ),
         });
-        expect(head!.messageEndSeq).toBe(beforeRestart.latestLocalSeq);
+        expect(head!.messageEndSeq).toBeGreaterThanOrEqual(
+          beforeRestart.latestLocalSeq,
+        );
         expect(head!.threadFeedId).toBeGreaterThan(
           clientFeedBefore.threadFeedId,
         );

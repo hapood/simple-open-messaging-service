@@ -58,6 +58,12 @@ mod upload;
 mod upload_cancellation;
 mod window_lifecycle;
 
+/// User chose to leave after local database initialization failed. Does not delete storage.
+#[tauri::command]
+fn exit_app(app: tauri::AppHandle) {
+    app.exit(0);
+}
+
 pub(crate) use proxy::{activate_origin, is_network_failure, pick_origin_race, runtime_switch};
 
 use std::borrow::Cow;
@@ -438,7 +444,7 @@ pub fn run() {
                     download_history_commands::native_download_remove,
                     download_history_commands::native_download_clear,
                     launch::launch_update,
-                    launch::exit_app,
+                    exit_app,
                     native_db::desktop_notifications::desktop_badge_refresh,
                     native_db::desktop_notifications::desktop_notification_permission,
                     native_db::desktop_notifications::desktop_notification_request_permission,
@@ -572,7 +578,7 @@ pub fn run() {
                     download_history_commands::native_download_list,
                     download_history_commands::native_download_remove,
                     download_history_commands::native_download_clear,
-                    launch::exit_app,
+                    exit_app,
                     origin_commands::get_api_origin,
                     origin_commands::get_active_api_origin,
                     origin_commands::is_origin_configured,
