@@ -142,24 +142,6 @@ pub(super) async fn verify_owned_local_commands() {
     .await
     .unwrap()
     .is_none());
-    assert!(
-        contacts::native_db_get_group_member(42, 7, "missing".into(), 0)
-            .await
-            .unwrap()
-            .is_none()
-    );
-    assert!(contacts::native_db_query_group_members(
-        42,
-        7,
-        "[0,\"\"]".into(),
-        20,
-        "".into(),
-        None,
-        None
-    )
-    .await
-    .unwrap()
-    .is_empty());
     assert_eq!(client_state::native_db_threads(42).await.unwrap().len(), 1);
     client_state::native_db_delete_thread(42, 7).await.unwrap();
     assert_eq!(
@@ -187,13 +169,23 @@ pub(super) async fn verify_owned_local_commands() {
         .with_database(|conn| {
             thread_store::insert_test_thread(conn, 42, 7, 12);
             conn.execute(
-                "UPDATE threads SET message_head=99 WHERE user_id=42 AND thread_id=7",
+                "UPDATE threads SET deleted_hwm=12, message_head=99 WHERE user_id=42 AND thread_id=7",
                 [],
             )
             .map_err(|e| e.to_string())?;
             Ok(())
         })
         .unwrap();
+    messages::native_db_apply_deleted_messages(
+        42,
+        7,
+        vec![json!({
+            "threadId": 7, "deletionSeq": 12, "messageSeq": 8, "type": "USER_RETRACTION",
+        })],
+        12,
+    )
+    .await
+    .unwrap();
     let proxy = crate::ServerSessionState::new();
     let old_sync = state_feed_sync::synchronize(&proxy, 42, 1);
     let old_view = owner.capture_database_work().unwrap();
@@ -323,7 +315,7 @@ async fn verify_state_feed_pages_on_captured_connection(
             let body = json!({"code": 0, "data": {
                 "mode": "full", "scannedThrough": scanned, "stateFeedEndId": 2,
                 "hasMore": scanned < 2,
-                "items": [{"feedId": scanned, "body": {
+                "items": [{"feedId": scanned, "type": "REQUEST_HEAD", "body": {
                     "requestEndId": scanned.to_string(), "requestReadId": "0",
                 }}],
             }})
@@ -354,7 +346,7 @@ async fn verify_state_feed_pages_on_captured_connection(
             "SELECT state_feed_id,state_feed_full_through,intent_request_end_id FROM account_state WHERE user_id=42",
             [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         ).map_err(|e| e.to_string())?;
-        assert_eq!(coordinates, (2, None, 2));
+        assert_eq!(coordinates, (2, Some(2), 2));
         let commits: i64 = conn.query_row("SELECT COUNT(*) FROM state_page_commits", [], |row| row.get(0))
             .map_err(|e| e.to_string())?;
         assert_eq!(commits, 2);
@@ -398,12 +390,6 @@ pub(super) fn verify_queued_commands_end_before_sql() {
             42,
             vec![],
         ));
-        let mut member = Box::pin(contacts::native_db_get_group_member(
-            42,
-            7,
-            "missing".into(),
-            0,
-        ));
         let mut message_head = Box::pin(messages::native_db_put_message_head(42, 7, 99));
         let mut message_read = Box::pin(messages::native_db_get_message(42, 7, 8));
         assert!(page_commit.as_mut().now_or_never().is_none());
@@ -412,7 +398,6 @@ pub(super) fn verify_queued_commands_end_before_sql() {
         assert!(threads.as_mut().now_or_never().is_none());
         assert!(delete.as_mut().now_or_never().is_none());
         assert!(bindings.as_mut().now_or_never().is_none());
-        assert!(member.as_mut().now_or_never().is_none());
         owner.end().unwrap();
         release_login_connection(&owner).unwrap();
         let next_database = Connection::open_in_memory().unwrap();
@@ -449,7 +434,6 @@ pub(super) fn verify_queued_commands_end_before_sql() {
         assert_eq!(threads.await.unwrap_err(), "native login superseded");
         assert_eq!(delete.await.unwrap_err(), "native login superseded");
         assert_eq!(bindings.await.unwrap_err(), "native login superseded");
-        assert_eq!(member.await.unwrap_err(), "native login superseded");
         assert_eq!(successor.credential().unwrap(), "successor-token");
         assert!(std::sync::Arc::ptr_eq(
             &successor,

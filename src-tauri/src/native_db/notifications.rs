@@ -127,9 +127,8 @@ fn sender_profile(
     )
 }
 
-/// Background notification wake. `None` is an intentional pre-sync admission skip,
-/// not a failed feed drain or an empty projection. Online SSE uses `from_result`.
-#[cfg(any(target_os = "android", test))]
+/// Test convenience for wakes without an explicit personal-state head.
+#[cfg(test)]
 pub(crate) fn synchronize(
     proxy: &crate::ServerSessionState,
     user_id: i64,
@@ -138,6 +137,8 @@ pub(crate) fn synchronize(
     synchronize_heads(proxy, user_id, target, if target < 0 { -1 } else { 0 })
 }
 
+/// Background notification wake. `None` is an intentional pre-sync admission skip,
+/// not a failed feed drain or an empty projection. Online SSE uses `from_result`.
 #[cfg(any(target_os = "android", test))]
 pub(crate) fn synchronize_heads(
     proxy: &crate::ServerSessionState,
@@ -264,7 +265,7 @@ mod tests {
 
     fn db() -> Connection {
         let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch("PRAGMA foreign_keys = ON; CREATE TABLE client_preferences(scope TEXT,key TEXT,value_json TEXT,updated_at INTEGER,PRIMARY KEY(scope,key));").unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON; CREATE TABLE settings(key TEXT PRIMARY KEY,value_json TEXT,updated_at INTEGER);").unwrap();
         super::super::create_cache_schema(&conn).unwrap();
         conn.execute(
             "INSERT INTO account_state(user_id,self_profile_json) VALUES(1,?1)",
@@ -307,6 +308,10 @@ mod tests {
                 thread_feed_id: 8,
                 alias: None,
                 message_end_seq: 10,
+                author: Some(super::super::attention::ThreadAuthor {
+                    account: "peer".into(),
+                    namespace_id: 0,
+                }),
                 thread_profile_rev: 0,
                 join_request_end_feed_id: 0,
                 join_request_read_feed_id: -1,

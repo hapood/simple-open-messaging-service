@@ -218,6 +218,7 @@ pub extern "system" fn Java_com_soms_client_RustRuntimeBridge_initializeRuntime(
     _receiver: JObject,
     data_directory: JString,
     token: JString,
+    login_session_id: JString,
 ) -> jstring {
     let result = (|| -> Result<jstring, String> {
         let directory: String = env
@@ -231,26 +232,27 @@ pub extern "system" fn Java_com_soms_client_RustRuntimeBridge_initializeRuntime(
         if let Err(error) = crate::native_db::initialize_login_cache() {
             log::warn!("login cache initialization requires repair: {error}");
         }
-        let token = if token.is_null() {
-            None
-        } else {
-            let value: String = env.get_string(&token).map_err(|e| e.to_string())?.into();
-            Some(value).filter(|value| !value.is_empty())
+        if let Err(error) = crate::native_db::resume_local_cleanup() {
+            log::warn!("login cleanup will be retried: {error}");
+        }
+        let mut stored = |value: &JString| -> Result<Option<String>, String> {
+            if value.is_null() {
+                return Ok(None);
+            }
+            let text: String = env.get_string(value).map_err(|e| e.to_string())?.into();
+            Ok(Some(text).filter(|text| !text.is_empty()))
         };
+        let token = stored(&token)?;
+        let session_uuid = stored(&login_session_id)?;
         let state = crate::ServerSessionState::new();
         // Eagerly start the same async runtime Tauri uses later; this performs no network I/O.
         let _ = tauri::async_runtime::handle();
         // Only a credential-activated owner may inherit platform notification state.
-        if let Some(owner) = crate::native_db::reconcile_cold_start_credential(token.as_deref())? {
+        if let Some(owner) = crate::native_db::reconcile_cold_start_credential(
+            token.as_deref().zip(session_uuid.as_deref()),
+        )? {
             crate::native_db::notifications::restoration::restore(&owner, None)?;
         }
-        *state
-            .config_path
-            .lock()
-            .map_err(|_| "config path lock poisoned")? = path
-            .parent()
-            .ok_or("missing database parent")?
-            .join(crate::CONFIG_FILENAME);
         crate::server_setup::restore(&state)?;
         PROXY
             .set(state)
@@ -334,6 +336,31 @@ pub extern "system" fn Java_com_soms_client_RustRuntimeBridge_clearResidualToken
     if let Err(error) = result {
         if !env.exception_check().unwrap_or(true) {
             let _ = env.throw_new("java/lang/IllegalStateException", error);
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_soms_client_RustRuntimeBridge_readFirebaseConfig(
+    mut env: JNIEnv,
+    _receiver: JObject,
+) -> jstring {
+    match crate::server_setup::read_firebase_config_json() {
+        Ok(Some(json)) => match env.new_string(json) {
+            Ok(value) => value.into_raw(),
+            Err(error) => {
+                if !env.exception_check().unwrap_or(true) {
+                    let _ = env.throw_new("java/lang/IllegalStateException", error.to_string());
+                }
+                std::ptr::null_mut()
+            }
+        },
+        Ok(None) => std::ptr::null_mut(),
+        Err(error) => {
+            if !env.exception_check().unwrap_or(true) {
+                let _ = env.throw_new("java/lang/IllegalStateException", error);
+            }
+            std::ptr::null_mut()
         }
     }
 }

@@ -1,7 +1,9 @@
 //! Per-consumer native history tasks. Cancelling one task drops its history
 //! future (and owned HTTP), never the login or another consumer's work.
 use super::messages::{
-    HistoryIntervalEvent, NativeHistoryDemand, NativeHistoryIntent, NativeHistoryResult,
+    evaluate_native_entry_seam, project_native_local_interval, EntrySeamEvaluation,
+    HistoryDirection, HistoryIntervalEvent, NativeHistoryDemand, NativeHistoryIntent,
+    NativeHistoryResult, ProjectedLocalItem,
 };
 use crate::ServerSessionState;
 use serde::Serialize;
@@ -114,6 +116,7 @@ pub(crate) fn native_message_history_interval_start(
     thread_id: i64,
     left: i64,
     right: i64,
+    direction: HistoryDirection,
     events: tauri::ipc::Channel<HistoryIntervalEvent>,
 ) -> Result<String, String> {
     let mut intent = NativeHistoryIntent::capture(Some(&app), &proxy, user_id, thread_id)?;
@@ -123,13 +126,37 @@ pub(crate) fn native_message_history_interval_start(
     tauri::async_runtime::spawn(async move {
         let _registration = registration;
         if let Some(Err(reason)) =
-            run_until_cancelled(&token, intent.watch_interval(left, right, events.clone())).await
+            run_until_cancelled(
+                &token,
+                intent.watch_interval(left, right, direction, events.clone()),
+            )
+            .await
         {
             let _ = events.send(HistoryIntervalEvent::Failed { reason });
         }
         token.cancel();
     });
     Ok(id)
+}
+
+#[tauri::command]
+pub(crate) async fn native_project_local_interval(
+    user_id: i64,
+    thread_id: i64,
+    left: i64,
+    right: i64,
+) -> Result<Vec<ProjectedLocalItem>, String> {
+    project_native_local_interval(user_id, thread_id, left, right).await
+}
+
+#[tauri::command]
+pub(crate) async fn native_evaluate_entry_seam(
+    user_id: i64,
+    thread_id: i64,
+    read_seq: i64,
+    known_end_seq: Option<i64>,
+) -> Result<EntrySeamEvaluation, String> {
+    evaluate_native_entry_seam(user_id, thread_id, read_seq, known_end_seq).await
 }
 
 #[tauri::command]

@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use device_connection::DeviceConnection;
 
 pub(crate) mod account_state;
-mod app_state;
+pub(crate) mod app_state;
 pub(crate) mod attention;
 #[cfg(any(target_os = "android", test))]
 pub(crate) mod call_peer;
@@ -75,9 +75,52 @@ fn configure(conn: &Connection) -> Result<(), String> {
 }
 
 /// Explicit application initialization, shared by the shell and headless Android bootstrap.
+/// The database start check creates missing tables and establishes the initial lifecycle.
 /// Capturing or using device preferences later never creates a connection.
 pub(crate) fn initialize_preferences() -> Result<(), String> {
-    device_connection::DEVICE_CONNECTION.initialize(&db_path()?)
+    device_connection::DEVICE_CONNECTION.initialize(&db_path()?)?;
+    let server_configured = crate::server_setup::has_persisted_configuration();
+    preferences_connection()?.with_database(|conn| {
+        crate::login_session_store::SessionStore::initialize(conn, server_configured)
+    })
+}
+
+/// Resumes a local deletion that a previous process left unfinished. It never contacts the
+/// server: the logout was already confirmed, or the user chose local deletion.
+pub(crate) fn resume_local_cleanup() -> Result<(), String> {
+    let preferences = preferences_connection()?;
+    let pending = preferences.with_database(|conn| {
+        Ok(crate::login_session_store::SessionStore::read(conn)?
+            .cleaning_session()
+            .cloned())
+    })?;
+    let Some(id) = pending else {
+        return Ok(());
+    };
+    delete_login_cache_files(&id)?;
+    preferences.with_database(|conn| {
+        crate::login_session_store::SessionStore::finish_cleaning(conn)
+    })?;
+    Ok(())
+}
+
+/// Removes the cache of a login whose deletion is recorded as `cleaning`. A partial deletion
+/// is safe to repeat.
+pub(crate) fn delete_login_cache_files(
+    id: &crate::login_session_store::LoginSessionId,
+) -> Result<(), String> {
+    let directory = location::directory()?;
+    if !directory.is_absolute() {
+        return Err("native cache directory must be absolute".into());
+    }
+    for path in id.cache_files(&directory) {
+        match std::fs::remove_file(path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(format!("remove ended login cache: {error}")),
+        }
+    }
+    Ok(())
 }
 
 pub(crate) fn preferences_connection() -> Result<&'static DeviceConnection, String> {
@@ -96,7 +139,8 @@ pub(crate) fn initialize_login_cache() -> Result<(), String> {
     }
     let id = preferences_connection()?.with_database(|conn| {
         Ok(crate::login_session_store::SessionStore::read(conn)?
-            .and_then(|journal| journal.active_session().cloned()))
+            .active_session()
+            .cloned())
     })?;
     let Some(id) = id else { return Ok(()) };
     let path = location::directory()?.join(id.sqlite_filename());
@@ -190,11 +234,16 @@ pub(crate) fn with_owned_database<T>(
         .with_cache_access(|| work.with_database(operation).map_err(|e| e.to_string()))
 }
 
-/// Credential validation at explicit restoration, never at ordinary command admission.
+/// Credential validation at explicit restoration, never at ordinary command admission. The
+/// credential is admitted only together with the UUID it was saved with.
 #[cfg(any(target_os = "android", test))]
-pub(crate) fn restore_login_credential(token: &str) -> Result<Option<String>, String> {
-    let id = preferences_connection()?
-        .with_database(|conn| crate::login_session_store::SessionStore::restore(conn, token))?;
+pub(crate) fn restore_login_credential(
+    token: &str,
+    session_uuid: &str,
+) -> Result<Option<String>, String> {
+    let id = preferences_connection()?.with_database(|conn| {
+        crate::login_session_store::SessionStore::restore(conn, session_uuid)
+    })?;
     let Some(id) = id else { return Ok(None) };
     if let Some(owner) = login_connections::LOGIN_CONNECTIONS.current()? {
         if owner.id() != &id {
@@ -213,33 +262,24 @@ pub(crate) fn restore_login_credential(token: &str) -> Result<Option<String>, St
 }
 
 /// Reconcile the secure-store snapshot only during Android cold start, before business work.
-/// A rejected or absent credential retires the restored login, but storage/activation errors
-/// must remain retryable errors, never evidence of credential loss. A valid journal without an
-/// owner is also retained for explicit cache repair; it cannot restore notification cards yet.
+/// A rejected or absent credential deletes the restored login's local evidence. Storage errors
+/// stay retryable errors and never count as evidence that the deletion happened.
 #[cfg(any(target_os = "android", test))]
 pub(crate) fn reconcile_cold_start_credential(
-    token: Option<&str>,
+    credential: Option<(&str, &str)>,
 ) -> Result<Option<std::sync::Arc<crate::login_connection::LoginConnection>>, String> {
-    if let Some(token) = token.filter(|token| !token.is_empty()) {
-        if restore_login_credential(token)?.is_some() {
+    if let Some((token, session_uuid)) = credential.filter(|(t, u)| !t.is_empty() && !u.is_empty()) {
+        if restore_login_credential(token, session_uuid)?.is_some() {
             return current_login();
         }
     }
-
-    if let Some(owner) = current_login()? {
-        end_login_durable(owner.id())?;
-    } else {
-        // Cache initialization may not have installed an owner. Retire the journal itself
-        // without creating a cache, deleting files, or changing the device's server setup.
-        preferences_connection()?.with_database(|conn| {
-            if let Some(id) = crate::login_session_store::SessionStore::read(conn)?
-                .and_then(|journal| journal.active_session().cloned())
-            {
-                crate::login_session_store::SessionStore::end(conn, Some(&id))?;
-                crate::login_session_store::SessionStore::finish_ending(conn, Some(&id))?;
-            }
-            Ok(())
-        })?;
+    let owned = preferences_connection()?.with_database(|conn| {
+        let record = crate::login_session_store::SessionStore::read(conn)?;
+        Ok(record.state.owns_a_login().then_some(record.session).flatten())
+    })?;
+    // The restored owner was never admitted; nothing else refers to its cache.
+    if let Some(id) = owned {
+        end_login_durable(&id)?;
     }
     Ok(None)
 }
@@ -258,36 +298,57 @@ pub(crate) fn login_connection(
 
 /// End admission before scheduling SQL drain. The captured owner survives asynchronous cleanup;
 /// a late release cannot close or remove a successor's connection.
-pub(crate) fn end_login_connection(
-    id: &crate::login_session_store::LoginSessionId,
-) -> Result<std::sync::Arc<crate::login_connection::LoginConnection>, String> {
-    let owner = login_connection(id)?;
-    owner.end().map_err(|e| e.to_string())?;
-    #[cfg(target_os = "macos")]
-    desktop_badge::reset();
-    Ok(owner)
-}
-
 pub(crate) fn release_login_connection(
     owner: &std::sync::Arc<crate::login_connection::LoginConnection>,
 ) -> Result<(), String> {
     login_connections::LOGIN_CONNECTIONS.release(owner)
 }
 
-/// End the login durably: epoch end, journal end, and slot release — the same sequence the
-/// `clear_session_token` command and `begin_logout` run. Shared with the Android adapter's
-/// forced-teardown path so a platform cannot strand a revoked credential behind a storage-lane
-/// refusal.
+/// Ends the login and deletes its local evidence: admission end, the cleaning state, cache
+/// file deletion, the signed-out state. `clear_session_token`, the Android adapter's forced
+/// teardown, and a credential rejected at start share this sequence. A failed deletion leaves
+/// `cleaning`, so the next start resumes it. A login that never completed owns nothing durable
+/// and only releases its preparation.
 pub(crate) fn end_login_durable(
     id: &crate::login_session_store::LoginSessionId,
 ) -> Result<(), String> {
-    let owner = end_login_connection(id)?;
+    let owner = current_login()?;
+    if let Some(owner) = &owner {
+        if owner.id() != id {
+            return Err("native login superseded".into());
+        }
+        owner.end().map_err(|e| e.to_string())?;
+        #[cfg(target_os = "macos")]
+        desktop_badge::reset();
+    }
     let preferences = preferences_connection()?;
+    let record = preferences
+        .with_database(|conn| crate::login_session_store::SessionStore::read(conn))?;
+    let mine = record.session.as_ref() == Some(id);
+    match (record.state, mine) {
+        (crate::login_session_store::LifecycleState::Active, true) => {
+            preferences.with_database(|conn| {
+                crate::login_session_store::SessionStore::begin_cleaning(conn, id)
+            })?;
+        }
+        (crate::login_session_store::LifecycleState::Cleaning, true) => {}
+        (state, _) if state.owns_a_login() => return Err("native login superseded".into()),
+        _ => {
+            return match &owner {
+                Some(owner) => release_login_connection(owner),
+                None => Ok(()),
+            };
+        }
+    }
+    // A cache file cannot be removed on every platform while a connection still holds it.
+    if let Some(owner) = &owner {
+        release_login_connection(owner)?;
+    }
+    delete_login_cache_files(id)?;
     preferences.with_database(|conn| {
-        crate::login_session_store::SessionStore::end(conn, Some(id))?;
-        crate::login_session_store::SessionStore::finish_ending(conn, Some(id))
+        crate::login_session_store::SessionStore::finish_cleaning(conn)
     })?;
-    release_login_connection(&owner)
+    Ok(())
 }
 
 /// End the current login only when it matches `id`; a superseded or absent login is a no-op.
@@ -332,7 +393,6 @@ fn validate_cache_schema(conn: &Connection) -> Result<(), String> {
         "group_meta",
         "thread_previews",
         "profiles",
-        "members",
         "account_state",
         "notification_global_state",
         "messages",
@@ -377,8 +437,6 @@ fn validate_cache_schema(conn: &Connection) -> Result<(), String> {
     }
     for index in [
         "profiles_address_revision",
-        "members_thread",
-        "members_search",
         "messages_user_thread_seq",
         "messages_by_origin",
         "message_ranges_by_right",
@@ -441,20 +499,6 @@ fn create_cache_schema(conn: &Connection) -> Result<(), String> {
         );
         CREATE INDEX IF NOT EXISTS profiles_address_revision
           ON profiles(user_id, publisher_namespace_id, profile_namespace_id, account, profile_rev);
-        CREATE TABLE IF NOT EXISTS members (
-          user_id INTEGER NOT NULL,
-          thread_id INTEGER NOT NULL,
-          member_account TEXT NOT NULL,
-          namespace_id INTEGER NOT NULL,
-          role TEXT NOT NULL,
-          left_state INTEGER NOT NULL DEFAULT 0,
-          profile_rev INTEGER NOT NULL DEFAULT 0,
-          PRIMARY KEY (user_id, thread_id, member_account, namespace_id)
-        );
-        CREATE INDEX IF NOT EXISTS members_thread
-          ON members(user_id, thread_id, left_state, namespace_id, member_account);
-        CREATE INDEX IF NOT EXISTS members_search
-          ON members(user_id, thread_id, member_account, namespace_id);
         CREATE TABLE IF NOT EXISTS account_state (
           user_id INTEGER PRIMARY KEY,
           schema_version INTEGER NOT NULL DEFAULT 1 CHECK(schema_version = 1),
@@ -598,12 +642,11 @@ fn recreate_cache_schema(conn: &mut Connection) -> Result<(), String> {
     result
 }
 
-/// Fresh-login preparation, run BEFORE the authentication request. Releases admitted cache work,
-/// deletes the retired per-login cache files recorded by previous logouts, mints the new login
-/// UUID, and creates its dedicated cache file. Credentials are not involved; `prepare` still
-/// refuses while any retired cache remains undeletable, so a failed cleanup blocks authentication.
-/// While the journal still holds an unactivated preparation, the command is idempotent:
-/// authentication retries and QR polling reuse that UUID, its file and its connection.
+/// Fresh-login preparation, run BEFORE the authentication request. Signing in is not recorded:
+/// while the app is signed out, a login owner that is already installed is this process's
+/// unactivated preparation and is reused. Otherwise an admitted login is ended, an unfinished
+/// local deletion is resumed, and a new UUID and cache file are created. Credentials are not
+/// involved, so a process that dies here next starts signed out.
 #[tauri::command]
 pub(crate) async fn native_db_begin_login(
     state: tauri::State<'_, crate::ServerSessionState>,
@@ -613,19 +656,9 @@ pub(crate) async fn native_db_begin_login(
         .enter(crate::auth_lifecycle::Phase::Login)?;
     let preferences = preferences_connection()?;
     let id = tauri::async_runtime::spawn_blocking(move || {
-        // Never reuse an old server's UUID: a late authentication response may still carry it.
-        preferences.with_database(|conn| {
-            let preparing = crate::login_session_store::SessionStore::read(conn)?
-                .and_then(|journal| journal.preparing_session().cloned());
-            if preparing
-                .as_ref()
-                .is_some_and(|id| guard.is_superseded(&id.to_string()))
-            {
-                crate::login_session_store::SessionStore::end_current(conn)?;
-            }
-            Ok(())
-        })?;
-        let id = prepare_fresh_login(preferences)?;
+        // A preparation of an older server configuration is never reused: a late authentication
+        // response may still carry its UUID.
+        let id = prepare_fresh_login(preferences, &guard)?;
         guard.register_login(&id)?;
         Ok::<_, String>(id)
     })
@@ -635,82 +668,61 @@ pub(crate) async fn native_db_begin_login(
     Ok(id)
 }
 
-fn prepare_fresh_login(preferences: &DeviceConnection) -> Result<String, String> {
-    // Authentication retries and QR polling reuse one unactivated preparation: the same UUID,
-    // the same cache file and, while still installed, the same physical connection. Only an
-    // ended or activated login, or an undeletable retired cache, runs the full boundary below.
-    // The durable journal owns the preparing identity; activation always writes the journal
-    // before committing an owner credential, so a preparing journal admits no credential.
-    let preparing = preferences.with_database(|conn| {
-        Ok(crate::login_session_store::SessionStore::read(conn)?
-            .and_then(|journal| journal.preparing_session().cloned()))
+fn prepare_fresh_login(
+    preferences: &DeviceConnection,
+    guard: &crate::auth_lifecycle::TransitionGuard,
+) -> Result<String, String> {
+    let current = login_connections::LOGIN_CONNECTIONS.current()?;
+    let reusable = preferences.with_database(|conn| {
+        Ok(matches!(
+            crate::login_session_store::SessionStore::read(conn)?.state,
+            crate::login_session_store::LifecycleState::Unconfigured
+                | crate::login_session_store::LifecycleState::SignedOut
+        ))
     })?;
-    if let Some(id) = preparing {
-        let current = login_connections::LOGIN_CONNECTIONS.current()?;
-        if current.as_ref().is_some_and(|owner| owner.id() == &id) {
-            return Ok(String::from(id));
+    // Authentication retries and QR polling reuse this process's unactivated preparation: the
+    // same UUID, cache file and connection. It is never a login; nothing durable records it.
+    if reusable {
+        if let Some(owner) = current
+            .as_ref()
+            .filter(|owner| !guard.is_superseded(&owner.id().to_string()))
+        {
+            return Ok(String::from(owner.id().clone()));
         }
-        if let Some(owner) = current {
-            // A mismatched handle is stale and admits no business work; end it before draining
-            // under the lifetime guard, exactly like the full boundary.
-            owner.end().map_err(|e| e.to_string())?;
-            #[cfg(target_os = "macos")]
-            desktop_badge::reset();
-        }
-        let _lifetime = lifetime::CACHE_LIFETIME.invalidate()?;
-        if let Some(owner) = login_connections::LOGIN_CONNECTIONS.current()? {
-            login_connections::LOGIN_CONNECTIONS.release(&owner)?;
-        }
-        // Re-establish the preparation's own file: an existing file is restored as-is, exactly
-        // like shell initialization (its schema came from the first preparation); a missing
-        // file — a crash between the journal write and file creation — is healed by creating
-        // it and applying the schema. No retired cache exists to delete and no avatar of this
-        // login was written while it stayed unactivated.
-        let directory = location::directory()?;
-        let cache = directory.join(id.sqlite_filename());
-        let existed = cache
-            .try_exists()
-            .map_err(|e| format!("inspect preparing login cache: {e}"))?;
-        let conn = Connection::open_with_flags(
-            &cache,
-            OpenFlags::SQLITE_OPEN_READ_WRITE
-                | OpenFlags::SQLITE_OPEN_NO_MUTEX
-                | OpenFlags::SQLITE_OPEN_CREATE,
-        )
-        .map_err(|e| format!("open preparing login cache: {e}"))?;
-        configure(&conn)?;
-        if !existed {
-            create_cache_schema(&conn)?;
-        }
-        login_connections::LOGIN_CONNECTIONS.install(id.clone(), conn)?;
-        return Ok(String::from(id));
     }
-    // Hold the lifetime write guard until the new cache file is active and the journal is settled.
-    if let Some(owner) = login_connections::LOGIN_CONNECTIONS.current()? {
+    // Hold the lifetime write guard until the ended login's files are gone and the new cache
+    // file is installed.
+    if let Some(owner) = &current {
         owner.end().map_err(|e| e.to_string())?;
         #[cfg(target_os = "macos")]
         desktop_badge::reset();
     }
     let _lifetime = lifetime::CACHE_LIFETIME.invalidate()?;
-    if let Some(owner) = login_connections::LOGIN_CONNECTIONS.current()? {
-        login_connections::LOGIN_CONNECTIONS.release(&owner)?;
+    if let Some(owner) = &current {
+        login_connections::LOGIN_CONNECTIONS.release(owner)?;
     }
-    preferences.with_database(|preferences| {
-        // End any still-admitted login: its cache file becomes pending cleanup, deleted below.
-        crate::login_session_store::SessionStore::end_current(preferences)?;
-        let retired: Vec<_> = crate::login_session_store::SessionStore::read(preferences)?
-            .map(|journal| journal.pending_cleanup().to_vec())
-            .unwrap_or_default();
+    preferences.with_database(|conn| {
         let directory = location::directory()?;
-        for id in &retired {
-            crate::login_session_store::SessionStore::delete_retired_cache(
-                preferences,
-                &directory,
-                id,
-            )?;
+        let record = crate::login_session_store::SessionStore::read(conn)?;
+        // A login replaced without a logout passes through the same local deletion, and a
+        // deletion the previous process left unfinished resumes here as well as at start.
+        let pending = match (record.state, record.session.clone()) {
+            (
+                crate::login_session_store::LifecycleState::Active,
+                Some(id),
+            ) => {
+                crate::login_session_store::SessionStore::begin_cleaning(conn, &id)?;
+                Some(id)
+            }
+            (crate::login_session_store::LifecycleState::Cleaning, id) => id,
+            _ => None,
+        };
+        if let Some(id) = pending {
+            delete_login_cache_files(&id)?;
+            crate::login_session_store::SessionStore::finish_cleaning(conn)?;
         }
-        crate::login_session_store::SessionStore::finish_ending(preferences, None)?;
-        let id = crate::login_session_store::SessionStore::prepare(preferences)?;
+        let id = crate::login_session_store::LoginSessionId::new();
+        delete_login_cache_files(&id)?;
         let cache = directory.join(id.sqlite_filename());
         let conn = Connection::open(&cache).map_err(|e| format!("create login cache file: {e}"))?;
         configure(&conn)?;
@@ -729,14 +741,17 @@ pub(crate) async fn native_db_recreate_cache() -> Result<(), String> {
     let preferences = preferences_connection()?;
     let id = preferences.with_database(|conn| {
         crate::login_session_store::SessionStore::read(conn)?
-            .and_then(|journal| journal.active_session().cloned())
+
+            .active_session()
+            .cloned()
             .ok_or_else(|| "no native login to repair".to_string())
     })?;
     tauri::async_runtime::spawn_blocking(move || {
         let _lifetime = lifetime::CACHE_LIFETIME.invalidate()?;
         preferences.with_database(|conn| {
             let current = crate::login_session_store::SessionStore::read(conn)?
-                .and_then(|journal| journal.active_session().cloned());
+                .active_session()
+                .cloned();
             if current.as_ref() != Some(&id) {
                 return Err("native login superseded".into());
             }
@@ -929,7 +944,6 @@ pub(crate) async fn native_db_clear_user(user_id: i64) -> Result<(), String> {
                     "profile_namespace_tombs",
                     "profile_namespaces",
                     "profiles",
-                    "members",
                     "account_state",
                     "messages",
                     "message_ranges",
@@ -965,7 +979,6 @@ pub(crate) async fn native_db_clear_all() -> Result<(), String> {
                  DELETE FROM threads;
                  DELETE FROM thread_resource_sync;
                  DELETE FROM profiles;
-                 DELETE FROM members;
                  DELETE FROM account_state;
                  DELETE FROM messages;
                  DELETE FROM message_ranges;
@@ -996,7 +1009,7 @@ mod tests;
 pub(crate) static FILESYSTEM_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[cfg(test)]
-fn shared_test_location() -> &'static tempfile::TempDir {
+pub(crate) fn shared_test_location() -> &'static tempfile::TempDir {
     static DIRECTORY: std::sync::OnceLock<tempfile::TempDir> = std::sync::OnceLock::new();
     let directory = DIRECTORY.get_or_init(|| tempfile::tempdir().unwrap());
     location::initialize(directory.path()).unwrap();
@@ -1021,11 +1034,20 @@ mod login_cache_tests {
         let startup = preferences_connection().unwrap();
         startup
             .with_database(|conn| {
-                assert!(SessionStore::read(conn)?.is_none());
+                crate::native_db::app_state::put(
+                    conn,
+                    "lifecycleState",
+                    "\"unconfigured\"",
+                )?;
+                crate::native_db::app_state::remove(conn, "sessionUuid")?;
+                assert_eq!(
+                    SessionStore::read(conn)?.state,
+                    crate::login_session_store::LifecycleState::Unconfigured
+                );
                 conn.execute_batch(
                     "CREATE TEMP TABLE connection_events(key TEXT);
                  CREATE TEMP TRIGGER preference_connection_proof
-                 AFTER INSERT ON main.client_preferences
+                 AFTER INSERT ON main.settings
                  BEGIN INSERT INTO connection_events VALUES(NEW.key); END;",
                 )
                 .map_err(|e| e.to_string())
@@ -1034,9 +1056,12 @@ mod login_cache_tests {
         initialize_preferences().unwrap(); // Shell attachment must not reconnect after headless init.
         initialize_login_cache().unwrap();
         assert!(reconcile_cold_start_credential(None).unwrap().is_none());
-        assert!(reconcile_cold_start_credential(Some("residual-token"))
-            .unwrap()
-            .is_none());
+        assert!(reconcile_cold_start_credential(Some((
+            "residual-token",
+            "11111111-2222-4d9e-af01-234567890abc"
+        )))
+        .unwrap()
+        .is_none());
         assert!(login_connections::LOGIN_CONNECTIONS
             .current()
             .unwrap()
@@ -1076,10 +1101,15 @@ mod login_cache_tests {
             .unwrap();
 
         // Fresh login #1: a UUID-named cache file is created and activated.
+        let lifecycle = std::sync::Arc::new(crate::auth_lifecycle::AuthLifecycle::default());
+        let guard = lifecycle
+            .enter(crate::auth_lifecycle::Phase::Login)
+            .unwrap();
         let first = LoginSessionId::try_from(
-            prepare_fresh_login(preferences_connection().unwrap()).unwrap(),
+            prepare_fresh_login(preferences_connection().unwrap(), &guard).unwrap(),
         )
         .unwrap();
+        drop(guard);
         let first_file = temp.path().join(first.sqlite_filename());
         assert!(first_file.exists());
         let first_owner = login_connection(&first).unwrap();
@@ -1092,6 +1122,15 @@ mod login_cache_tests {
             &first_owner,
             &login_connection(&first).unwrap()
         ));
+        first_owner
+            .begin_activation()
+            .unwrap()
+            .commit("secret-one".into())
+            .unwrap();
+        preferences_connection()
+            .unwrap()
+            .with_database(|conn| SessionStore::activate(conn, &first))
+            .unwrap();
         tauri::async_runtime::block_on(native_db_validate_cache()).unwrap();
         tauri::async_runtime::block_on(native_db_recreate_cache()).unwrap();
         first_owner
@@ -1102,11 +1141,6 @@ mod login_cache_tests {
                 assert_eq!(value, 17); // Repair changes schema, not the physical connection.
                 Ok(())
             })
-            .unwrap();
-        first_owner
-            .begin_activation()
-            .unwrap()
-            .commit("secret-one".into())
             .unwrap();
         assert!(is_login_session_current(&first));
         tauri::async_runtime::block_on(async {
@@ -1134,20 +1168,24 @@ mod login_cache_tests {
         preferences
             .with_database(|conn| {
                 conn.execute(
-                    "INSERT INTO client_preferences(scope,key,value_json,updated_at)
-             VALUES('device','theme','\"dark\"',0)",
+                    "INSERT INTO settings(key,value_json,updated_at)
+             VALUES('theme','\"dark\"',0)",
                     [],
                 )
                 .unwrap();
-                SessionStore::activate(conn, &first, "secret-one").unwrap();
+                SessionStore::activate(conn, &first).unwrap();
                 Ok(())
             })
             .unwrap();
         assert_eq!(
-            restore_login_credential("secret-one").unwrap(),
+            restore_login_credential("secret-one", &first.to_string()).unwrap(),
             Some(String::from(first.clone()))
         );
-        assert_eq!(restore_login_credential("residual-token").unwrap(), None);
+        assert_eq!(
+            restore_login_credential("residual-token", "11111111-2222-4d9e-af01-234567890abc")
+                .unwrap(),
+            None
+        );
         assert!(std::sync::Arc::ptr_eq(
             &first_owner,
             &login_connection(&first).unwrap()
@@ -1190,11 +1228,11 @@ mod login_cache_tests {
         preferences
             .with_database(|conn| {
                 assert_eq!(
-                    SessionStore::restore(conn, "secret-one")?,
+                    SessionStore::restore(conn, &first.to_string())?,
                     Some(first.clone())
                 );
                 let theme: String = conn.query_row(
-                "SELECT value_json FROM client_preferences WHERE key='theme'",
+                "SELECT value_json FROM settings WHERE key='theme'",
                 [], |row| row.get(0),
             ).map_err(|e| e.to_string())?;
                 assert_eq!(theme, "\"dark\"");
@@ -1212,9 +1250,12 @@ mod login_cache_tests {
         }
         initialize_login_cache().unwrap();
         assert!(!first_file.exists());
-        let first_owner = reconcile_cold_start_credential(Some("secret-one"))
-            .unwrap()
-            .unwrap();
+        let first_owner = reconcile_cold_start_credential(Some((
+            "secret-one",
+            &first.to_string(),
+        )))
+        .unwrap()
+        .unwrap();
         assert!(first_owner.assert_active().is_ok());
         assert_eq!(first_owner.id(), &first);
         assert_eq!(first_owner.credential().unwrap(), "secret-one");
@@ -1229,9 +1270,9 @@ mod login_cache_tests {
         tauri::async_runtime::block_on(native_db_validate_cache()).unwrap();
         preferences
             .with_database(|conn| {
-                // Logout: the journal records cleanup ownership, the cache file stays on disk.
-                SessionStore::end(conn, Some(&first)).unwrap();
-                SessionStore::finish_ending(conn, Some(&first)).unwrap();
+                // Logout: the lifecycle records cleaning ownership, the cache file stays on disk.
+                SessionStore::begin_cleaning(conn, &first).unwrap();
+                SessionStore::finish_cleaning(conn).unwrap();
                 Ok(())
             })
             .unwrap();
@@ -1250,12 +1291,15 @@ mod login_cache_tests {
             .is_none());
 
         // Fresh login #2: deletes the retired file, mints a new UUID and file.
+        let guard = lifecycle
+            .enter(crate::auth_lifecycle::Phase::Login)
+            .unwrap();
         let second = LoginSessionId::try_from(
-            prepare_fresh_login(preferences_connection().unwrap()).unwrap(),
+            prepare_fresh_login(preferences_connection().unwrap(), &guard).unwrap(),
         )
         .unwrap();
+        drop(guard);
         assert_ne!(first, second);
-        assert!(!first_file.exists());
         assert!(temp.path().join(second.sqlite_filename()).exists());
         let second_owner = login_connection(&second).unwrap();
         assert!(!std::sync::Arc::ptr_eq(&first_owner, &second_owner));
@@ -1266,39 +1310,35 @@ mod login_cache_tests {
             &login_connection(&second).unwrap()
         ));
 
-        // Simulated process shutdown releases the connection without ending the durable login.
-        // The next explicit initialization restores the UUID from the journal, not a current path.
+        // Simulated process shutdown releases the unactivated preparation; nothing durable
+        // recorded it, so initialization leaves no active connection.
         second_owner.end().unwrap();
         release_login_connection(&second_owner).unwrap();
         initialize_login_cache().unwrap();
-        assert_eq!(
-            login_connections::LOGIN_CONNECTIONS
-                .current()
-                .unwrap()
-                .unwrap()
-                .id(),
-            &second
-        );
+        assert!(login_connections::LOGIN_CONNECTIONS
+            .current()
+            .unwrap()
+            .is_none());
 
         preferences
             .with_database(|conn| {
                 let theme: String = conn
             .query_row(
-                "SELECT value_json FROM client_preferences WHERE key='theme'",
+                "SELECT value_json FROM settings WHERE key='theme'",
                 [],
                 |row| row.get(0),
             )
             .unwrap();
                 assert_eq!(theme, "\"dark\"");
-                let raw: String = conn
+                let state: String = conn
                     .query_row(
                         "SELECT value FROM app_state
-                 WHERE key='soms.native-login-session.v1'",
+                 WHERE key='lifecycleState'",
                         [],
                         |row| row.get(0),
                     )
                     .unwrap();
-                assert!(!raw.contains("secret-one"));
+                assert_eq!(state, "\"signed-out\"");
                 // The cache schema lives in the login's own file, not the shared preferences file.
                 let cache_tables: i64 = conn
                     .query_row(
@@ -1311,20 +1351,16 @@ mod login_cache_tests {
                 Ok(())
             })
             .unwrap();
-        let restored_owner = login_connections::LOGIN_CONNECTIONS
-            .current()
-            .unwrap()
-            .unwrap();
-        restored_owner.end().unwrap();
-        release_login_connection(&restored_owner).unwrap();
 
-        // The journal never activated the second login, so the next authentication attempt —
-        // a password retry or a QR poll — reuses that preparation instead of minting another
-        // login: the same UUID, and its file is re-established after the released connection.
-        assert_eq!(
-            prepare_fresh_login(preferences_connection().unwrap()).unwrap(),
-            String::from(second.clone())
-        );
+        // A new process prepares a fresh unactivated session, and authentication retries /
+        // QR polling keep reusing that preparation: the same UUID, cache file, and connection.
+        let guard = lifecycle
+            .enter(crate::auth_lifecycle::Phase::Login)
+            .unwrap();
+        let second = LoginSessionId::try_from(
+            prepare_fresh_login(preferences_connection().unwrap(), &guard).unwrap(),
+        )
+        .unwrap();
 
         // Authentication retries and QR polling keep reusing the unactivated preparation: the
         // same UUID, the same cache file, the same physical connection, no retired entries.
@@ -1333,7 +1369,7 @@ mod login_cache_tests {
                 .unwrap()
                 .filter_map(|entry| entry.ok())
                 .map(|entry| entry.file_name().to_string_lossy().into_owned())
-                .filter(|name| name.starts_with("soms-session-") && name.ends_with(".sqlite"))
+                .filter(|name| name == "soms-session.sqlite")
                 .collect();
             names.sort();
             names
@@ -1343,7 +1379,7 @@ mod login_cache_tests {
         assert_eq!(files_at_preparation.len(), 1);
         for _ in 0..3 {
             assert_eq!(
-                prepare_fresh_login(preferences_connection().unwrap()).unwrap(),
+                prepare_fresh_login(preferences_connection().unwrap(), &guard).unwrap(),
                 String::from(second.clone())
             );
             assert!(std::sync::Arc::ptr_eq(
@@ -1354,9 +1390,12 @@ mod login_cache_tests {
         }
         preferences
             .with_database(|conn| {
-                let journal = SessionStore::read(conn)?.unwrap();
-                assert_eq!(journal.active_session(), Some(&second));
-                assert!(journal.pending_cleanup().is_empty());
+                let record = SessionStore::read(conn)?;
+                assert_eq!(
+                    record.state,
+                    crate::login_session_store::LifecycleState::SignedOut
+                );
+                assert!(record.active_session().is_none());
                 Ok(())
             })
             .unwrap();
@@ -1370,16 +1409,16 @@ mod login_cache_tests {
             .unwrap();
         preferences
             .with_database(|conn| {
-                SessionStore::activate(conn, &second, "secret-two").unwrap();
+                SessionStore::activate(conn, &second).unwrap();
                 Ok(())
             })
             .unwrap();
         let third = LoginSessionId::try_from(
-            prepare_fresh_login(preferences_connection().unwrap()).unwrap(),
+            prepare_fresh_login(preferences_connection().unwrap(), &guard).unwrap(),
         )
         .unwrap();
+        drop(guard);
         assert_ne!(second, third);
-        assert!(!temp.path().join(second.sqlite_filename()).exists());
         assert!(temp.path().join(third.sqlite_filename()).exists());
         let third_owner = login_connection(&third).unwrap();
         third_owner.end().unwrap();
@@ -1390,18 +1429,27 @@ mod login_cache_tests {
 
     fn verify_cold_start_reconciliation(directory: &std::path::Path) {
         let preferences = preferences_connection().unwrap();
-        let config_path = directory.join(crate::CONFIG_FILENAME);
-        let config = br#"{"primary":"https://chat.example.com","secondary":"https://lan.example.com"}"#;
-        std::fs::write(&config_path, config).unwrap();
+        let config = r#"{"primary":"https://chat.example.com","secondary":"https://lan.example.com"}"#;
+        preferences
+            .with_database(|conn| app_state::put(conn, "serverConfig", config))
+            .unwrap();
 
         // The secure-store snapshot is authoritative only at cold start. Both an installed
         // restoring owner and a journal without an owner must be retired on credential loss.
         for install_owner in [true, false] {
             for token in [None, Some(""), Some("residual-token")] {
-                let id = LoginSessionId::try_from(prepare_fresh_login(preferences).unwrap()).unwrap();
+                let lifecycle = std::sync::Arc::new(crate::auth_lifecycle::AuthLifecycle::default());
+                let guard = lifecycle
+                    .enter(crate::auth_lifecycle::Phase::Login)
+                    .unwrap();
+                let id = LoginSessionId::try_from(
+                    prepare_fresh_login(preferences, &guard).unwrap(),
+                )
+                .unwrap();
+                drop(guard);
                 let owner = login_connection(&id).unwrap();
                 preferences
-                    .with_database(|conn| SessionStore::activate(conn, &id, "secret"))
+                    .with_database(|conn| SessionStore::activate(conn, &id))
                     .unwrap();
                 owner.end().unwrap();
                 release_login_connection(&owner).unwrap();
@@ -1409,28 +1457,41 @@ mod login_cache_tests {
                     initialize_login_cache().unwrap();
                 }
                 let restored = current_login().unwrap();
-                assert!(reconcile_cold_start_credential(token).unwrap().is_none());
+                let wrong_uuid = "11111111-2222-4d9e-af01-234567890abc";
+                assert!(reconcile_cold_start_credential(token.map(|t| (t, wrong_uuid)))
+                    .unwrap()
+                    .is_none());
                 assert!(current_login().unwrap().is_none());
                 if let Some(owner) = restored {
                     assert!(owner.begin_activation().is_err());
                 }
                 preferences
                     .with_database(|conn| {
-                        let journal = SessionStore::read(conn)?.unwrap();
-                        assert!(journal.active_session().is_none());
-                        assert_eq!(journal.pending_cleanup(), std::slice::from_ref(&id));
-                        assert!(SessionStore::restore(conn, "secret")?.is_none());
+                        let record = SessionStore::read(conn)?;
+                        assert_eq!(
+                            record.state,
+                            crate::login_session_store::LifecycleState::SignedOut
+                        );
+                        assert!(record.active_session().is_none());
+                        assert!(SessionStore::restore(conn, &id.to_string())?.is_none());
                         Ok(())
                     })
                     .unwrap();
-                assert!(directory.join(id.sqlite_filename()).exists());
+                assert!(!directory.join(id.sqlite_filename()).exists());
                 initialize_login_cache().unwrap();
                 assert!(current_login().unwrap().is_none());
                 // Repeated initialization cannot revive an ended login or lose its cleanup plan.
-                assert!(reconcile_cold_start_credential(token).unwrap().is_none());
-                assert_eq!(std::fs::read(&config_path).unwrap(), config);
+                assert!(reconcile_cold_start_credential(token.map(|t| (t, wrong_uuid)))
+                    .unwrap()
+                    .is_none());
+                assert_eq!(
+                    preferences
+                        .with_database(|conn| app_state::get(conn, "serverConfig"))
+                        .unwrap()
+                        .as_deref(),
+                    Some(config)
+                );
                 let state = crate::ServerSessionState::new();
-                *state.config_path.lock().unwrap() = config_path.clone();
                 crate::server_setup::restore(&state).unwrap();
                 assert_eq!(
                     *state.api_origin_primary.lock().unwrap(),
@@ -1443,20 +1504,25 @@ mod login_cache_tests {
             }
         }
 
-        let id = LoginSessionId::try_from(prepare_fresh_login(preferences).unwrap()).unwrap();
+        let lifecycle = std::sync::Arc::new(crate::auth_lifecycle::AuthLifecycle::default());
+        let guard = lifecycle
+            .enter(crate::auth_lifecycle::Phase::Login)
+            .unwrap();
+        let id = LoginSessionId::try_from(prepare_fresh_login(preferences, &guard).unwrap()).unwrap();
+        drop(guard);
         let owner = login_connection(&id).unwrap();
         preferences
-            .with_database(|conn| SessionStore::activate(conn, &id, "secret"))
+            .with_database(|conn| SessionStore::activate(conn, &id))
             .unwrap();
         owner.end().unwrap();
         release_login_connection(&owner).unwrap();
         // A valid journal without an owner is not credential loss or a bootstrap error.
-        assert!(reconcile_cold_start_credential(Some("secret"))
+        assert!(reconcile_cold_start_credential(Some(("secret", &id.to_string())))
             .unwrap()
             .is_none());
         preferences
             .with_database(|conn| {
-                assert_eq!(SessionStore::restore(conn, "secret")?, Some(id.clone()));
+                assert_eq!(SessionStore::restore(conn, &id.to_string())?, Some(id.clone()));
                 Ok(())
             })
             .unwrap();
@@ -1466,41 +1532,54 @@ mod login_cache_tests {
         // Inject a database read failure without changing the durable journal. Retrying must
         // activate the same owner, not discover a login ended by a failed validation attempt.
         preferences.with_database(|conn| {
-            conn.execute_batch("CREATE TEMP VIEW client_preferences AS SELECT * FROM unavailable_preferences;")
+            conn.execute_batch("CREATE TEMP VIEW app_state AS SELECT * FROM unavailable_preferences;")
                 .map_err(|e| e.to_string())
         }).unwrap();
-        assert!(reconcile_cold_start_credential(Some("secret")).is_err());
+        assert!(reconcile_cold_start_credential(Some(("secret", &id.to_string()))).is_err());
         preferences
             .with_database(|conn| {
-                conn.execute_batch("DROP VIEW temp.client_preferences;")
+                conn.execute_batch("DROP VIEW temp.app_state;")
                     .map_err(|e| e.to_string())
             })
             .unwrap();
         // An in-progress activation is likewise retryable, not a rejected credential.
         let activation = owner.begin_activation().unwrap();
-        assert!(reconcile_cold_start_credential(Some("secret")).is_err());
+        assert!(reconcile_cold_start_credential(Some(("secret", &id.to_string()))).is_err());
         drop(activation);
-        let restored = reconcile_cold_start_credential(Some("secret"))
+        let restored = reconcile_cold_start_credential(Some(("secret", &id.to_string())))
             .unwrap()
             .unwrap();
         assert!(std::sync::Arc::ptr_eq(&owner, &restored));
         assert!(restored.assert_active().is_ok());
         assert_eq!(restored.credential().unwrap(), "secret");
         // Ordinary restoration probes must still not invalidate an already active runtime.
-        assert!(restore_login_credential("residual-token").unwrap().is_none());
+        assert!(restore_login_credential("residual-token", "11111111-2222-4d9e-af01-234567890abc")
+            .unwrap()
+            .is_none());
         assert!(owner.assert_active().is_ok());
         preferences
-            .with_database(|conn| SessionStore::begin_revocation(conn, &id))
+            .with_database(|conn| SessionStore::begin_cleaning(conn, &id))
             .unwrap();
-        assert!(reconcile_cold_start_credential(Some("secret")).is_err());
+        assert!(reconcile_cold_start_credential(Some(("secret", &id.to_string())))
+            .unwrap()
+            .is_none());
         preferences
             .with_database(|conn| {
-                assert_eq!(SessionStore::revoking_session(conn, "secret")?, Some(id.clone()));
+                assert_eq!(
+                    SessionStore::read(conn)?.state,
+                    crate::login_session_store::LifecycleState::SignedOut
+                );
                 Ok(())
             })
             .unwrap();
         end_login_durable(&id).unwrap();
-        std::fs::remove_file(config_path).unwrap();
+        preferences
+            .with_database(|conn| {
+                conn.execute("DELETE FROM app_state WHERE key='serverConfig'", [])
+                    .map(|_| ())
+                    .map_err(|e| e.to_string())
+            })
+            .unwrap();
     }
 
     #[test]
@@ -1510,12 +1589,17 @@ mod login_cache_tests {
 
         // An admitted login with a durable journal, as a running native session has. The
         // journal records activation before the owner commits its credential.
-        let uuid = prepare_fresh_login(preferences_connection().unwrap()).unwrap();
+        let lifecycle = std::sync::Arc::new(crate::auth_lifecycle::AuthLifecycle::default());
+        let guard = lifecycle
+            .enter(crate::auth_lifecycle::Phase::Login)
+            .unwrap();
+        let uuid = prepare_fresh_login(preferences_connection().unwrap(), &guard).unwrap();
+        drop(guard);
         let id = LoginSessionId::try_from(uuid).unwrap();
         let owner = login_connection(&id).unwrap();
         preferences_connection()
             .unwrap()
-            .with_database(|conn| SessionStore::activate(conn, &id, "secret"))
+            .with_database(|conn| SessionStore::activate(conn, &id))
             .unwrap();
         owner
             .begin_activation()
@@ -1535,21 +1619,28 @@ mod login_cache_tests {
         preferences_connection()
             .unwrap()
             .with_database(|conn| {
-                let journal = SessionStore::read(conn)?.unwrap();
-                assert_eq!(journal.active_session(), None);
-                assert!(journal.pending_cleanup().contains(&id));
+                let record = SessionStore::read(conn)?;
+                assert_eq!(
+                    record.state,
+                    crate::login_session_store::LifecycleState::SignedOut
+                );
+                assert_eq!(record.active_session(), None);
                 Ok(())
             })
             .unwrap();
         crate::credential_storage::clear(|| Ok(())).unwrap();
 
         // A stale business completion must not end the successor's runtime owner.
-        let successor_uuid = prepare_fresh_login(preferences_connection().unwrap()).unwrap();
+        let guard = lifecycle
+            .enter(crate::auth_lifecycle::Phase::Login)
+            .unwrap();
+        let successor_uuid = prepare_fresh_login(preferences_connection().unwrap(), &guard).unwrap();
+        drop(guard);
         let successor = LoginSessionId::try_from(successor_uuid).unwrap();
         let successor_owner = login_connection(&successor).unwrap();
         preferences_connection()
             .unwrap()
-            .with_database(|conn| SessionStore::activate(conn, &successor, "next"))
+            .with_database(|conn| SessionStore::activate(conn, &successor))
             .unwrap();
         successor_owner
             .begin_activation()
@@ -1558,27 +1649,22 @@ mod login_cache_tests {
             .unwrap();
         end_current_login_if_matching(&id).unwrap(); // mismatched UUID: deliberate no-op
         assert!(successor_owner.assert_active().is_ok());
-        successor_owner.end().unwrap();
-        release_login_connection(&successor_owner).unwrap();
-
-        // The parallel harness gives no ordering between tests sharing this location, so restore
-        // the pristine state the other tests assume: no durable journal row, no session caches.
         preferences_connection()
             .unwrap()
             .with_database(|conn| {
-                conn.execute(
-                    "DELETE FROM app_state
-                     WHERE key='soms.native-login-session.v1'",
-                    [],
-                )
-                .map_err(|e| e.to_string())
+                assert_eq!(SessionStore::read(conn)?.active_session(), Some(&successor));
+                Ok(())
             })
             .unwrap();
+        end_current_login_if_matching(&successor).unwrap();
+        assert!(successor_owner.assert_active().is_err());
+
+        // Leave the current lifecycle signed out and remove test session caches.
         for entry in std::fs::read_dir(_temp.path()).unwrap() {
             let path = entry.unwrap().path();
             let is_session_cache = path
                 .file_name()
-                .map(|name| name.to_string_lossy().starts_with("soms-session-"))
+                .map(|name| name.to_string_lossy() == "soms-session.sqlite")
                 .unwrap_or(false);
             if is_session_cache {
                 std::fs::remove_file(&path).unwrap();

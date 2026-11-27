@@ -96,9 +96,9 @@ description = "Enables the secure_set_token command (OS credential store)."
 commands.allow = ["secure_set_token"]
 
 [[permission]]
-identifier = "allow-secure-get-token"
-description = "Enables the secure_get_token command (OS credential store)."
-commands.allow = ["secure_get_token"]
+identifier = "allow-secure-get-login"
+description = "Enables the secure_get_login command (OS credential store)."
+commands.allow = ["secure_get_login"]
 
 [[permission]]
 identifier = "allow-secure-clear-token"
@@ -206,13 +206,14 @@ commands.allow = [
   "native_db_count_messages",
   "native_db_count_unread_message_slots",
   "native_db_delete_preference",
+  "native_db_get_app_state",
+  "native_db_put_app_state",
+  "native_db_delete_app_state",
   "native_db_get_deleted_hwm",
-  "native_db_get_group_member",
   "native_db_get_preference",
   "native_db_put_cached_messages",
   "native_db_put_message_head",
   "native_db_put_preference",
-  "native_db_query_group_members",
   "native_db_recreate_cache",
   "native_db_recreate_messages",
   "native_send_enqueue",
@@ -233,6 +234,9 @@ commands.allow = [
   "native_db_advance_intent_request_read",
   "native_db_initialize_account_state",
   "native_db_read_account_state",
+  "native_db_read_cached_self_profile",
+  "forward_recent_targets_read",
+  "forward_recent_targets_remember",
   "native_db_write_self_profile",
   "native_db_write_composer_drafts",
   "native_db_clear_user",
@@ -246,6 +250,8 @@ commands.allow = [
   "native_db_get_message_by_origin",
   "native_message_history_start",
   "native_message_history_interval_start",
+  "native_project_local_interval",
+  "native_evaluate_entry_seam",
   "native_message_history_cancel",
   "native_profile_resolve",
   "native_watch_profile",
@@ -253,12 +259,13 @@ commands.allow = [
   "native_watch_cancel",
   "native_thread_feed_changes",
   "native_db_project_thread_attention",
-  "native_db_drain_thread_misc",
   "native_db_profile_namespace_bindings",
   "native_db_commit_profile_namespace_bindings",
   "native_db_apply_profile_namespace_changes",
   "native_db_write_profile_namespace_tomb",
   "native_db_write_profile_tomb",
+  "native_db_set_message_media_status",
+  "native_db_set_open_thread",
 ]
 
 [[permission]]
@@ -284,7 +291,7 @@ permissions = [
   "allow-native-db-begin-login",
   "allow-begin-logout",
   "allow-secure-set-token",
-  "allow-secure-get-token",
+  "allow-secure-get-login",
   "allow-secure-clear-token",
   "allow-secure-clear-residual-token",
   "allow-init-check-compat",

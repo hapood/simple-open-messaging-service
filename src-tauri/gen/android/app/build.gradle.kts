@@ -1,4 +1,5 @@
 import java.util.Properties
+import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 plugins {
     id("com.android.application")
@@ -100,9 +101,6 @@ android {
             )
         }
     }
-    kotlinOptions {
-        jvmTarget = "1.8"
-    }
     buildFeatures {
         buildConfig = true
     }
@@ -110,6 +108,12 @@ android {
     // no-op twin (src/dev-stub) are gone, and MainActivity no longer references DevTools. Tauri dev mode
     // is abandoned (only apk / apk-debug build now); dev of the web app happens in a browser against a
     // local backend. eruda (web/src/app/dev-tools.ts) stays for debug builds.
+}
+
+kotlin {
+    compilerOptions {
+        jvmTarget = JvmTarget.JVM_1_8
+    }
 }
 
 rust {

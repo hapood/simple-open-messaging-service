@@ -1,16 +1,81 @@
-//! Native mention page ownership. Search is local; each fixed reference owns an
-//! independent consumer of the shared demand pipeline, never a page-wide barrier.
+//! Native mention page ownership. The server selects a bounded roster page; each
+//! fixed profile reference owns an independent consumer of the shared demand pipeline.
 use super::{attention::FeedIntent, contacts, profile_avatars, profile_subscriptions};
 #[cfg(target_os = "android")]
 use crate::ServerSessionState;
 use futures_util::{stream::FuturesUnordered, StreamExt};
-use rusqlite::{params, OptionalExtension};
+use rusqlite::params;
+use serde::Deserialize;
 use serde_json::{json, Value};
 use std::sync::{
     atomic::{AtomicU64, Ordering},
     Arc, Mutex,
 };
 use tokio_util::sync::CancellationToken;
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RosterMember {
+    account: String,
+    publisher_namespace_id: i64,
+    profile_namespace_id: i64,
+    profile_rev: i64,
+}
+
+#[derive(Deserialize)]
+struct RosterResponse {
+    code: i64,
+    data: Option<RosterPage>,
+}
+
+#[derive(Deserialize)]
+struct RosterPage {
+    items: Vec<RosterMember>,
+}
+
+async fn query_roster(
+    intent: &mut FeedIntent,
+    thread_id: i64,
+    query: &str,
+    take: usize,
+) -> Result<Vec<RosterMember>, String> {
+    let mut body = json!({"threadId":thread_id,"take":take,"excludeSelf":true});
+    if !query.trim().is_empty() {
+        body["search"] = json!(query.trim());
+    }
+    // Suggestions select only the first bounded page. The server owns filtering,
+    // ordering and self exclusion; a nextCursor does not trigger a roster drain.
+    let response = intent
+        .post_query(
+            "/api/v1/group/members".into(),
+            serde_json::to_vec(&body).map_err(|e| e.to_string())?,
+        )
+        .await?;
+    if !(200..300).contains(&response.status) {
+        return Err(format!("mention roster HTTP {}", response.status));
+    }
+    let envelope: RosterResponse =
+        serde_json::from_str(&response.body).map_err(|e| format!("decode mention roster: {e}"))?;
+    if envelope.code != 0 {
+        return Err(format!("mention roster error {}", envelope.code));
+    }
+    let page = envelope.data.ok_or("missing mention roster page")?;
+    if page.items.len() > take
+        || page.items.iter().any(|member| {
+            member.account.trim().is_empty()
+                || [
+                    member.publisher_namespace_id,
+                    member.profile_namespace_id,
+                    member.profile_rev,
+                ]
+                .iter()
+                .any(|coordinate| !(0..=9_007_199_254_740_991).contains(coordinate))
+        })
+    {
+        return Err("invalid mention roster page".into());
+    }
+    Ok(page.items)
+}
 
 pub(crate) trait Sink: Send + Sync {
     fn results(&self, context: i64, request: i64, metadata: String, avatars: Vec<Vec<u8>>);
@@ -100,45 +165,69 @@ impl Owner {
         query: String,
         all_label: String,
     ) -> Result<(), String> {
+        let mut intent = intent;
         let user_id = intent.user_id;
-        let (mut items, references) = intent.db(move |conn| {
-            let (publisher, group_account, role, self_namespace, state): (i64, String, Option<String>, Option<i64>, String) = conn.query_row(
-                "SELECT authority_namespace_id,subject_account,role,self_mention_namespace_id,conversation_state
-                 FROM threads WHERE user_id=?1 AND thread_id=?2 AND kind='GROUP'",
-                params![user_id, thread_id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
-            ).map_err(|e| format!("read mention thread: {e}"))?;
-            let self_account: Option<String> = conn.query_row(
-                "SELECT json_extract(self_profile_json,'$.account') FROM account_state WHERE user_id=?1",
-                [user_id], |row| row.get(0),
-            ).optional().map_err(|e| format!("read mention self: {e}"))?.flatten();
-            let include_all = matches!(role.as_deref(), Some("OWNER" | "ADMIN"))
-                && all_label.to_lowercase().contains(&query.trim().to_lowercase());
-            let members = contacts::query_group_members(conn, user_id, thread_id, "",
-                if include_all { 4 } else { 5 }, query.trim(), self_account.as_deref(), self_namespace)?;
-            let mut items = Vec::new();
-            let mut references = Vec::new();
-            if include_all { items.push(json!({"kind":"all","id":"somfp:audience:all","label":all_label})); }
-            for member in members {
-                let account = member["account"].as_str().ok_or("member has no account")?;
-                let namespace = member["namespaceId"].as_i64().ok_or("member has no namespace")?;
-                let rev = member["profileRev"].as_i64().ok_or("member has no revision")?;
-                let name = member["user"]["name"].as_str().filter(|name| !name.is_empty()).unwrap_or(account);
-                let index = items.len();
-                items.push(json!({"kind":"user","id":format!("{namespace}/{account}"),"label":name,
-                    "colorSeed":format!("{publisher}/{namespace}/{account}"),
-                    "avatarDigest":member["user"]["avatarDigest"]}));
-                if rev > 0 {
-                    let demand = json!({"publisherNamespaceId":publisher,
-                        "lookup":"GROUP_MEMBER_PROFILE", "groupAccount":group_account,
-                        "target":{"profileNamespaceId":namespace,"account":account,"rev":rev}});
-                    references.push((index, if state == "ACTIVE" { demand }
-                        else { json!({"demand":demand,"evidence":null}) }));
+        let role: Option<String> = intent
+            .db(move |conn| {
+                conn.query_row(
+                    "SELECT role FROM threads
+                     WHERE user_id=?1 AND thread_id=?2 AND kind='GROUP'",
+                    params![user_id, thread_id],
+                    |row| row.get(0),
+                )
+                .map_err(|e| format!("read mention thread: {e}"))
+            })
+            .await?;
+        let include_all = matches!(role.as_deref(), Some("OWNER" | "ADMIN"))
+            && all_label
+                .to_lowercase()
+                .contains(&query.trim().to_lowercase());
+        let members = query_roster(
+            &mut intent,
+            thread_id,
+            &query,
+            if include_all { 4 } else { 5 },
+        )
+        .await?;
+        let (mut items, references) = intent
+            .db(move |conn| {
+                let mut items = Vec::new();
+                let mut references = Vec::new();
+                if include_all {
+                    items.push(json!({"kind":"all","id":"somfp:audience:all","label":all_label}));
                 }
-            }
-            Ok((items, references))
-        }).await?;
-        // These coordinates stay pinned even if a later Group Meta page selects
-        // another revision. Only another search chooses a new candidate page.
+                for member in members {
+                    let account = member.account;
+                    let namespace = member.profile_namespace_id;
+                    let publisher = member.publisher_namespace_id;
+                    let rev = member.profile_rev;
+                    let profile =
+                        contacts::read_profile(conn, user_id, publisher, namespace, &account, rev)?;
+                    let name = profile
+                        .as_ref()
+                        .and_then(|value| value["name"].as_str())
+                        .filter(|name| !name.is_empty())
+                        .unwrap_or(&account);
+                    let index = items.len();
+                    items.push(
+                        json!({"kind":"user","id":format!("{namespace}/{account}"),"label":name,
+                    "colorSeed":format!("{publisher}/{namespace}/{account}"),
+                    "avatarDigest":profile.as_ref().and_then(|value| value.get("avatarDigest"))}),
+                    );
+                    if rev > 0 {
+                        references.push((
+                            index,
+                            json!({"publisherNamespaceId":publisher,
+                        "lookup":"ACCOUNT_PROFILE",
+                        "target":{"profileNamespaceId":namespace,"account":account,"rev":rev}}),
+                        ));
+                    }
+                }
+                Ok((items, references))
+            })
+            .await?;
+        // These server-selected coordinates stay pinned for this page's lifetime.
+        // Only another search chooses new candidates or revisions.
         self.publish(&intent, generation, context, request, &items)
             .await?;
         let mut pending = FuturesUnordered::new();

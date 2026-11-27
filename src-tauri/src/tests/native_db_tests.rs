@@ -408,15 +408,30 @@ fn thread_ipc_selects_and_invalidates_complete_home_profile_snapshots() {
 }
 
 #[test]
-fn native_group_roster_rebuilds_through_departure_and_reestablishment() {
+fn prior_roster_cache_format_is_rejected_and_rebuilt_without_a_roster() {
     let mut conn = profile_cache_db();
-    commit_test_thread_state(&mut conn, &test_thread_snapshot("GROUP", 5, "ACTIVE"));
     conn.execute(
-        "INSERT INTO members(user_id,thread_id,member_account,namespace_id,role)
-         VALUES(1,52,'bob',0,'MEMBER')",
-        [],
+        "UPDATE cache_meta SET value_json=?1 WHERE key='schemaVersion'",
+        [(super::CACHE_SCHEMA_VERSION - 1).to_string()],
     )
     .unwrap();
+    assert!(super::validate_cache_schema(&conn).is_err());
+    super::recreate_cache_schema(&mut conn).unwrap();
+    super::validate_cache_schema(&conn).unwrap();
+    let roster_tables: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM sqlite_master WHERE name='members'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(roster_tables, 0);
+}
+
+#[test]
+fn native_group_meta_recovers_through_departure_and_reestablishment() {
+    let mut conn = profile_cache_db();
+    commit_test_thread_state(&mut conn, &test_thread_snapshot("GROUP", 5, "ACTIVE"));
     conn.execute(
         "UPDATE group_meta SET member_count=1,feed_id='20'
         WHERE thread_id=52",
@@ -426,15 +441,10 @@ fn native_group_roster_rebuilds_through_departure_and_reestablishment() {
     // Departure no longer vetoes local meta writes; recovery resets normally.
     commit_test_thread_state(&mut conn, &test_thread_snapshot("GROUP", 6, "READ_ONLY"));
     super::client_state::begin_group_meta_recovery(&mut conn, 1, 52, "21").unwrap();
-    assert_eq!(
-        conn.query_row("SELECT COUNT(*) FROM members", [], |r| r.get::<_, i64>(0))
-            .unwrap(),
-        0
-    );
     let thread = super::thread_store::read(&conn, 1, 52).unwrap().unwrap();
     assert_eq!(thread["meta"]["groupMetaFeedId"], "0");
     assert_eq!(thread["meta"]["recoveryThrough"], "21");
-    // Re-establishment rebuilds the roster from the server's full page.
+    // Re-establishment restores metadata from the server's full page.
     commit_test_thread_state(&mut conn, &test_thread_snapshot("GROUP", 7, "ACTIVE"));
     let page = serde_json::from_value(serde_json::json!({
         "threadId":52,"namespaceId":0,"page":{
@@ -503,9 +513,8 @@ fn native_group_meta_rejects_out_of_contract_member_pages_atomically() {
     let mut conn = profile_cache_db();
     commit_test_thread_state(&mut conn, &test_thread_snapshot("GROUP", 5, "ACTIVE"));
     super::client_state::begin_group_meta_recovery(&mut conn, 1, 52, "21").unwrap();
-    // Roles outside the enum must be rejected instead of stored, and a missing
-    // or non-string role must not silently coerce to MEMBER. profileRev must
-    // be present and non-negative on both member operations.
+    // Client Group Meta accepts count/announcement projections, not roster rows.
+    // Neither old member operation may advance the current projection cursor.
     let invalid_bodies = [
         serde_json::json!({"account":"bob","namespaceId":0,"role":"SUPERUSER","profileRev":3}),
         serde_json::json!({"account":"bob","namespaceId":0,"profileRev":3}),
@@ -531,10 +540,6 @@ fn native_group_meta_rejects_out_of_contract_member_pages_atomically() {
             super::client_state::apply_group_meta_page(&mut conn, 1, page).is_err(),
             "{operation} with an out-of-contract body must be rejected"
         );
-        let members: i64 = conn
-            .query_row("SELECT COUNT(*) FROM members", [], |row| row.get(0))
-            .unwrap();
-        assert_eq!(members, 0);
         let feed_id: String = conn
             .query_row(
                 "SELECT feed_id FROM group_meta WHERE user_id=1 AND thread_id=52",
@@ -544,8 +549,7 @@ fn native_group_meta_rejects_out_of_contract_member_pages_atomically() {
             .unwrap();
         assert_eq!(feed_id, "0", "a rejected page must not advance the cursor");
     }
-    // Pages carrying the complete member contract still apply, on both
-    // operations: rebuild the roster, then depart through a delta page.
+    // Current count projections apply through full and delta pages.
     let page = serde_json::from_value(serde_json::json!({
         "threadId":52,"namespaceId":0,"page":{
             "account":"!dev","mode":"full","hasMore":false,
@@ -606,27 +610,15 @@ fn missing_group_meta_is_an_invariant_error_and_recovery_rolls_back() {
         [],
     )
     .unwrap();
-    conn.execute(
-        "INSERT INTO members(user_id,thread_id,member_account,namespace_id,role)
-         VALUES(1,52,'bob',0,'MEMBER')",
-        [],
-    )
-    .unwrap();
     assert!(super::thread_store::read(&conn, 1, 52).is_err());
     assert_eq!(
         super::client_state::begin_group_meta_recovery(&mut conn, 1, 52, "2").unwrap_err(),
         "stored group thread is missing its meta row"
     );
-    assert_eq!(
-        conn.query_row("SELECT COUNT(*) FROM members", [], |row| row
-            .get::<_, i64>(0))
-            .unwrap(),
-        1
-    );
 }
 
 #[test]
-fn deleting_a_thread_clears_its_state_preview_and_roster_together() {
+fn deleting_a_thread_clears_its_state_preview_and_meta_together() {
     let mut conn = profile_cache_db();
     let mut snapshot = test_thread_snapshot("GROUP", 5, "ACTIVE");
     snapshot["previews"] = serde_json::json!([{
@@ -635,14 +627,8 @@ fn deleting_a_thread_clears_its_state_preview_and_roster_together() {
         "status":"LIVE", "text":"hello"
     }]);
     commit_test_thread_state(&mut conn, &snapshot);
-    conn.execute(
-        "INSERT INTO members(user_id,thread_id,member_account,namespace_id,role)
-         VALUES(1,52,'bob',0,'MEMBER')",
-        [],
-    )
-    .unwrap();
     super::client_state::delete_thread(&mut conn, 1, 52).unwrap();
-    for table in ["threads", "group_meta", "thread_previews", "members"] {
+    for table in ["threads", "group_meta", "thread_previews"] {
         let count: i64 = conn
             .query_row(
                 &format!("SELECT COUNT(*) FROM {table} WHERE user_id=1 AND thread_id=52"),
@@ -684,7 +670,7 @@ fn quote_tombstones_are_scoped_to_user_and_thread() {
 
 fn profile_cache_db() -> Connection {
     let conn = Connection::open_in_memory().unwrap();
-    conn.execute_batch("PRAGMA foreign_keys=ON; CREATE TABLE client_preferences(scope TEXT,key TEXT,value_json TEXT,updated_at INTEGER,PRIMARY KEY(scope,key));").unwrap();
+    conn.execute_batch("PRAGMA foreign_keys=ON; CREATE TABLE settings(key TEXT PRIMARY KEY,value_json TEXT,updated_at INTEGER);").unwrap();
     super::create_cache_schema(&conn).unwrap();
     super::validate_cache_schema(&conn).unwrap();
     conn

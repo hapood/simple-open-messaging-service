@@ -1783,6 +1783,7 @@ async fn replace_with_completed_save(partial: &Path, destination: &Path) -> Resu
     }
 }
 
+#[cfg(desktop)]
 fn partial_save_path(destination: &Path) -> PathBuf {
     let mut name = destination
         .file_name()

@@ -122,6 +122,65 @@ pub(crate) async fn native_db_initialize_account_state(user_id: i64) -> Result<(
     .map_err(|error| format!("join account initialization: {error}"))?
 }
 
+/// Discover self facts from the login-owned cache without a renderer-supplied account ID.
+fn read_cached_self_profile(conn: &Connection) -> Result<Option<AccountSelfProfile>, String> {
+    let mut statement = conn
+        .prepare(
+            "SELECT user_id,schema_version,self_profile_json,self_identity_json
+         FROM account_state WHERE user_id > 0 LIMIT 2",
+        )
+        .map_err(|error| format!("prepare cached self read: {error}"))?;
+    let mut rows = statement
+        .query([])
+        .map_err(|error| format!("query cached self: {error}"))?;
+    let Some(row) = rows
+        .next()
+        .map_err(|error| format!("read cached self: {error}"))?
+    else {
+        return Ok(None);
+    };
+    let decode_row = || -> rusqlite::Result<_> {
+        Ok((
+            row.get::<_, i64>(0)?,
+            row.get::<_, i64>(1)?,
+            row.get::<_, Option<String>>(2)?
+                .map(decode::<AccountSelfProfile>)
+                .transpose()?,
+            row.get::<_, Option<String>>(3)?
+                .map(decode::<AccountSelfIdentity>)
+                .transpose()?,
+        ))
+    };
+    let (user_id, version, profile, identity) =
+        decode_row().map_err(|error| format!("decode cached self: {error}"))?;
+    if rows
+        .next()
+        .map_err(|error| format!("read cached self owner: {error}"))?
+        .is_some()
+    {
+        return Err("ambiguous cached self owner".into());
+    }
+    if version != 1 {
+        return Err("invalid cached account state version".into());
+    }
+    if let Some(profile) = &profile {
+        if profile.id != user_id
+            || identity.as_ref().map(|value| &value.account) != Some(&profile.account)
+        {
+            return Err("cached self identity mismatch".into());
+        }
+    }
+    Ok(profile)
+}
+
+#[tauri::command]
+pub(crate) async fn native_db_read_cached_self_profile(
+) -> Result<Option<AccountSelfProfile>, String> {
+    super::spawn_login_database(|conn| read_cached_self_profile(conn))
+        .await
+        .map_err(|error| format!("join cached self read: {error}"))?
+}
+
 #[tauri::command]
 pub(crate) async fn native_db_read_account_state(user_id: i64) -> Result<AccountState, String> {
     super::spawn_login_database(move |conn| read(conn, user_id))
@@ -220,7 +279,83 @@ pub(crate) async fn native_db_write_composer_drafts(
 
 #[cfg(test)]
 mod tests {
-    use super::AccountSelfProfile;
+    use super::*;
+
+    fn cache() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        super::super::create_cache_schema(&conn).unwrap();
+        conn
+    }
+
+    fn seed(conn: &Connection, user_id: i64, profile_id: i64) {
+        let profile = serde_json::json!({
+            "id": profile_id, "account": "alice", "namespaceId": 0,
+            "profileRev": 7, "isGroup": false, "isDeleted": false,
+        });
+        conn.execute(
+            "INSERT INTO account_state(user_id,self_profile_json,self_identity_json) VALUES(?1,?2,?3)",
+            params![user_id, profile.to_string(), r#"{"account":"alice"}"#],
+        ).unwrap();
+    }
+
+    #[test]
+    fn cached_self_discovery_is_read_only_and_requires_positive_owner() {
+        let conn = cache();
+        assert!(read_cached_self_profile(&conn).unwrap().is_none());
+        seed(&conn, 0, 0);
+        assert!(read_cached_self_profile(&conn).unwrap().is_none());
+        seed(&conn, 42, 42);
+        let profile = read_cached_self_profile(&conn).unwrap().unwrap();
+        assert_eq!(profile.id, 42);
+        assert_eq!(profile.account, "alice");
+        assert_eq!(profile.profile_rev, 7);
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM account_state", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 2);
+    }
+
+    #[test]
+    fn cached_self_discovery_rejects_mismatched_or_ambiguous_owners() {
+        let conn = cache();
+        seed(&conn, 42, 43);
+        assert!(read_cached_self_profile(&conn)
+            .unwrap_err()
+            .contains("identity mismatch"));
+        conn.execute("DELETE FROM account_state", []).unwrap();
+        seed(&conn, 42, 42);
+        seed(&conn, 43, 43);
+        assert!(read_cached_self_profile(&conn)
+            .unwrap_err()
+            .contains("ambiguous"));
+    }
+
+    #[test]
+    fn cached_self_discovery_rejects_expired_database_work() {
+        let conn = cache();
+        seed(&conn, 42, 42);
+        let id =
+            crate::login_session_store::LoginSessionId::try_from(uuid::Uuid::new_v4().to_string())
+                .unwrap();
+        let owner = crate::login_connection::LoginConnection::preparing(id, conn);
+        owner
+            .begin_activation()
+            .unwrap()
+            .commit("test-token".into())
+            .unwrap();
+        let work = owner.capture_database_work().unwrap();
+        assert_eq!(
+            work.with_database(|conn| read_cached_self_profile(conn))
+                .unwrap()
+                .unwrap()
+                .id,
+            42
+        );
+        owner.end().unwrap();
+        assert!(work
+            .with_database(|conn| read_cached_self_profile(conn))
+            .is_err());
+    }
 
     #[test]
     fn self_account_state_contains_only_account_facts() {

@@ -721,7 +721,8 @@ fn wire_gaps_to_ranges(
         .collect()
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
 pub(crate) enum HistoryDirection {
     Older,
     Newer,
@@ -2077,4 +2078,348 @@ fn reset_thread_message_cache(
                 .map_err(|e| format!("commit delete thread messages: {e}"))
         })
         .map_err(|e| e.to_string())
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct EntrySeamEvaluation {
+    pub(crate) ready: bool,
+    pub(crate) empty: bool,
+    pub(crate) older_ready: bool,
+    pub(crate) newer_ready: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub(crate) enum ProjectedLocalItem {
+    Message {
+        message: Value,
+    },
+    LocalGap {
+        left: i64,
+        right: i64,
+    },
+    ServerGap {
+        left: i64,
+        right: i64,
+        state: MessageRangeState,
+    },
+}
+
+pub(crate) async fn project_native_local_interval(
+    user_id: i64,
+    thread_id: i64,
+    left: i64,
+    right: i64,
+) -> Result<Vec<ProjectedLocalItem>, String> {
+    if left < 0 || right <= left || right - left > 500 {
+        return Err("invalid local projection bounds".into());
+    }
+    let owner = super::login_connections::LOGIN_CONNECTIONS.capture()?;
+    tauri::async_runtime::spawn_blocking(move || {
+        owner
+            .with_database(|conn| {
+                let ranges = load_message_ranges(conn, user_id, thread_id)?;
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT seq, payload_json FROM messages
+                         WHERE user_id=?1 AND thread_id=?2 AND seq > ?3 AND seq <= ?4
+                           AND COALESCE(json_extract(payload_json, '$.isDeleted'), 0) != 1
+                         ORDER BY seq ASC",
+                    )
+                    .map_err(|e| format!("prepare local projection query: {e}"))?;
+                let rows = stmt
+                    .query_map(params![user_id, thread_id, left, right], |row| {
+                        Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+                    })
+                    .map_err(|e| format!("query local projection messages: {e}"))?;
+                let mut messages = Vec::new();
+                for row in rows {
+                    let (seq, json) = row.map_err(|e| format!("read local projection row: {e}"))?;
+                    messages.push((seq, parse_json(json)?));
+                }
+                Ok(project_bounded_local_interval(left, right, &ranges, &messages))
+            })
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("join local interval projection: {e}"))?
+}
+
+pub(crate) async fn evaluate_native_entry_seam(
+    user_id: i64,
+    thread_id: i64,
+    read_seq: i64,
+    known_end_seq: Option<i64>,
+) -> Result<EntrySeamEvaluation, String> {
+    if read_seq < 0 {
+        return Err("invalid entry read coordinate".into());
+    }
+    let owner = super::login_connections::LOGIN_CONNECTIONS.capture()?;
+    tauri::async_runtime::spawn_blocking(move || {
+        owner
+            .with_database(|conn| {
+                let ranges = load_message_ranges(conn, user_id, thread_id)?;
+                Ok(evaluate_entry_seam(read_seq, known_end_seq, &ranges, 0))
+            })
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("join entry seam evaluation: {e}"))?
+}
+
+/// Evaluate whether the frozen entry read-position seam is locally ready.
+/// Older half includes `read_seq` (`R`); newer half starts at `R + 1`.
+pub(crate) fn evaluate_entry_seam(
+    read_seq: i64,
+    known_end_seq: Option<i64>,
+    ranges: &[MessageRange],
+    lower_bound: i64,
+) -> EntrySeamEvaluation {
+    if read_seq == 0 && known_end_seq == Some(0) {
+        return EntrySeamEvaluation {
+            ready: true,
+            empty: true,
+            older_ready: true,
+            newer_ready: true,
+        };
+    }
+
+    let range_covering = |seq: i64| ranges.iter().find(|r| seq > r.left && seq <= r.right);
+
+    let older_needed = read_seq > lower_bound;
+    let older_ready = !older_needed
+        || range_covering(read_seq)
+            .is_some_and(|r| r.state != MessageRangeState::ServerPending);
+
+    let newer_needed = known_end_seq.is_none_or(|end| read_seq < end);
+    let newer_ready = !newer_needed
+        || range_covering(read_seq + 1)
+            .is_some_and(|r| r.state != MessageRangeState::ServerPending);
+
+    EntrySeamEvaluation {
+        ready: older_ready && newer_ready,
+        empty: false,
+        older_ready,
+        newer_ready,
+    }
+}
+
+/// Project a bounded `(left, right]` interval from local coverage ranges and
+/// cached `(seq, message)` pairs into chronological messages, `serverGap`, and `localGap`.
+pub(crate) fn project_bounded_local_interval(
+    left: i64,
+    right: i64,
+    ranges: &[MessageRange],
+    messages: &[(i64, Value)],
+) -> Vec<ProjectedLocalItem> {
+    if left >= right {
+        return Vec::new();
+    }
+
+    let mut clipped: Vec<(i64, i64, MessageRangeState)> = ranges
+        .iter()
+        .map(|r| (r.left.max(left), r.right.min(right), r.state))
+        .filter(|(l, r, _)| l < r)
+        .collect();
+    clipped.sort_by_key(|(l, _, _)| *l);
+
+    let mut sorted_messages: Vec<(i64, &Value)> = messages
+        .iter()
+        .filter(|(seq, _)| *seq > left && *seq <= right)
+        .map(|(seq, msg)| (*seq, msg))
+        .collect();
+    sorted_messages.sort_by_key(|(seq, _)| *seq);
+
+    let mut out: Vec<ProjectedLocalItem> = Vec::new();
+    let mut cursor = left;
+
+    let push_gap = |out: &mut Vec<ProjectedLocalItem>, gap: ProjectedLocalItem| {
+        match (&mut out.last_mut(), &gap) {
+            (
+                Some(ProjectedLocalItem::LocalGap {
+                    right: prev_right, ..
+                }),
+                ProjectedLocalItem::LocalGap {
+                    left: next_left,
+                    right: next_right,
+                },
+            ) if *prev_right == *next_left => {
+                *prev_right = *next_right;
+                return;
+            }
+            (
+                Some(ProjectedLocalItem::ServerGap {
+                    right: prev_right,
+                    state: prev_state,
+                    ..
+                }),
+                ProjectedLocalItem::ServerGap {
+                    left: next_left,
+                    right: next_right,
+                    state: next_state,
+                },
+            ) if *prev_right == *next_left && prev_state == next_state => {
+                *prev_right = *next_right;
+                return;
+            }
+            _ => {}
+        }
+        out.push(gap);
+    };
+
+    for (range_left, range_right, state) in clipped {
+        if range_left > cursor {
+            push_gap(
+                &mut out,
+                ProjectedLocalItem::LocalGap {
+                    left: cursor,
+                    right: range_left,
+                },
+            );
+        }
+        let seg_left = cursor.max(range_left);
+        if seg_left < range_right {
+            if state == MessageRangeState::LocalCovered {
+                for (seq, msg) in &sorted_messages {
+                    if *seq > seg_left && *seq <= range_right {
+                        out.push(ProjectedLocalItem::Message {
+                            message: (*msg).clone(),
+                        });
+                    }
+                }
+            } else {
+                push_gap(
+                    &mut out,
+                    ProjectedLocalItem::ServerGap {
+                        left: seg_left,
+                        right: range_right,
+                        state,
+                    },
+                );
+            }
+            cursor = range_right;
+        }
+    }
+
+    if cursor < right {
+        push_gap(&mut out, ProjectedLocalItem::LocalGap { left: cursor, right });
+    }
+
+    out
+}
+
+#[cfg(test)]
+mod local_projection_tests {
+    use super::*;
+
+    fn range(left: i64, right: i64, state: MessageRangeState) -> MessageRange {
+        MessageRange {
+            thread_id: 42,
+            left,
+            right,
+            state,
+        }
+    }
+
+    #[test]
+    fn seam_evaluation_matches_web_rules() {
+        assert_eq!(
+            evaluate_entry_seam(0, Some(0), &[], 0),
+            EntrySeamEvaluation {
+                ready: true,
+                empty: true,
+                older_ready: true,
+                newer_ready: true,
+            }
+        );
+        assert_eq!(
+            evaluate_entry_seam(
+                100,
+                Some(250),
+                &[
+                    range(95, 105, MessageRangeState::LocalCovered),
+                    range(0, 50, MessageRangeState::ServerPending),
+                ],
+                0,
+            ),
+            EntrySeamEvaluation {
+                ready: true,
+                empty: false,
+                older_ready: true,
+                newer_ready: true,
+            }
+        );
+        assert_eq!(
+            evaluate_entry_seam(
+                100,
+                Some(250),
+                &[range(50, 100, MessageRangeState::LocalCovered)],
+                0,
+            ),
+            EntrySeamEvaluation {
+                ready: false,
+                empty: false,
+                older_ready: true,
+                newer_ready: false,
+            }
+        );
+    }
+
+    #[test]
+    fn projects_disconnected_islands_and_merges_adjacent_gaps() {
+        let items = project_bounded_local_interval(
+            0,
+            100,
+            &[
+                range(10, 30, MessageRangeState::LocalCovered),
+                range(40, 60, MessageRangeState::ServerPending),
+                range(60, 70, MessageRangeState::ServerPending),
+                range(80, 90, MessageRangeState::ServerUnavailable),
+            ],
+            &[
+                (15, serde_json::json!({ "seq": 15 })),
+                (25, serde_json::json!({ "seq": 25 })),
+                (99, serde_json::json!({ "seq": 99 })),
+            ],
+        );
+        assert_eq!(
+            items,
+            vec![
+                ProjectedLocalItem::LocalGap { left: 0, right: 10 },
+                ProjectedLocalItem::Message {
+                    message: serde_json::json!({ "seq": 15 }),
+                },
+                ProjectedLocalItem::Message {
+                    message: serde_json::json!({ "seq": 25 }),
+                },
+                ProjectedLocalItem::LocalGap {
+                    left: 30,
+                    right: 40,
+                },
+                ProjectedLocalItem::ServerGap {
+                    left: 40,
+                    right: 70,
+                    state: MessageRangeState::ServerPending,
+                },
+                ProjectedLocalItem::LocalGap {
+                    left: 70,
+                    right: 80,
+                },
+                ProjectedLocalItem::ServerGap {
+                    left: 80,
+                    right: 90,
+                    state: MessageRangeState::ServerUnavailable,
+                },
+                ProjectedLocalItem::LocalGap {
+                    left: 90,
+                    right: 100,
+                },
+            ]
+        );
+    }
 }

@@ -7,7 +7,6 @@ fn runtime_clone_reads_the_single_login_owner() {
     let shell = background.clone();
     assert!(Arc::ptr_eq(&background.api_http, &shell.api_http));
     assert!(Arc::ptr_eq(&background.select_lock, &shell.select_lock));
-    assert!(Arc::ptr_eq(&background.config_path, &shell.config_path));
     assert!(shell.session_token().is_none());
     let id = crate::login_session_store::LoginSessionId::try_from(uuid::Uuid::new_v4().to_string())
         .unwrap();

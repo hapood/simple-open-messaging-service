@@ -96,10 +96,9 @@ pub(crate) async fn set_session_token(
         } else {
             Some(owner.begin_activation().map_err(|e| e.to_string())?)
         };
-        let token_for_activation = token.clone();
         let preferences = crate::native_db::preferences_connection()?;
         preferences.with_database(|conn| {
-            crate::login_session_store::SessionStore::activate(conn, &id, &token_for_activation)
+            crate::login_session_store::SessionStore::activate(conn, &id)
         })?;
         if let Some(activation) = activation {
             activation
@@ -115,11 +114,13 @@ pub(crate) async fn set_session_token(
     .map_err(|e| format!("join native login activation: {e}"))?
 }
 
-/// Validate a persisted credential against the durable login record before any restoration work.
-/// A credential whose login was ended locally never revives it.
+/// Admit a stored credential before any restoration work. The UUID comes from the same secure
+/// storage as the credential: a pair that no longer matches the active login restores nothing,
+/// so an ended login is never revived.
 #[tauri::command]
 pub(crate) async fn login_session_for_token(
-    token: String,
+    _token: String,
+    session_uuid: String,
     state: tauri::State<'_, ServerSessionState>,
 ) -> Result<Option<String>, String> {
     let guard = state
@@ -128,7 +129,11 @@ pub(crate) async fn login_session_for_token(
     let preferences = crate::native_db::preferences_connection()?;
     tauri::async_runtime::spawn_blocking(move || {
         let id = preferences.with_database(|conn| {
-            Ok(crate::login_session_store::SessionStore::restore(conn, &token)?.map(String::from))
+            Ok(crate::login_session_store::SessionStore::restore(
+                conn,
+                &session_uuid,
+            )?
+            .map(String::from))
         })?;
         if let Some(id) = &id {
             guard.register_login(id)?;

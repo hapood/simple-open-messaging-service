@@ -53,11 +53,8 @@ impl LogoutOperation {
         if self.preparation_task.is_none() {
             self.preparation_task = Some(tokio::task::spawn_blocking(move || {
                 end_and_drain_notifications(&owner)?;
-                let preferences = crate::native_db::preferences_connection()?;
-                // Keep the owner available for retry if either persistence or release fails.
-                preferences.with_database(|conn| {
-                    crate::login_session_store::SessionStore::begin_revocation(conn, owner.id())
-                })?;
+                // Nothing is recorded until the user's decision, so a process that dies here
+                // next starts still logged in. Keep the owner available for a failed release.
                 crate::native_db::release_login_connection(&owner)
             }));
         }
@@ -199,14 +196,18 @@ impl LogoutCoordinator {
                 // Keep notification removal inside the retained task: an abandoned IPC
                 // must not allow delayed removal to erase a successor login's cards.
                 let preferences = crate::native_db::preferences_connection()?;
+                // Record the decision before any deletion, so a process that dies next resumes
+                // the local cleanup instead of restoring the ended login.
                 preferences.with_database(|conn| {
-                    crate::login_session_store::SessionStore::end(conn, Some(&id))?;
+                    crate::login_session_store::SessionStore::begin_cleaning(conn, &id)?;
                     Ok(())
                 })?;
                 crate::logout_platform::cleanup(&app, &String::from(id.clone()))?;
+                crate::native_db::delete_login_cache_files(&id)?;
                 preferences.with_database(|conn| {
-                    crate::login_session_store::SessionStore::finish_ending(conn, Some(&id))
-                })
+                    crate::login_session_store::SessionStore::finish_cleaning(conn)
+                })?;
+                Ok(())
             }));
         }
         let result = operation.cleanup_task.as_mut().unwrap().await;

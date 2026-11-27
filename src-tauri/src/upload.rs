@@ -1,5 +1,3 @@
-#[cfg(any(target_os = "android", target_os = "ios"))]
-use crate::proxy::send_with_headers_deadline;
 use crate::*;
 
 #[derive(Clone, serde::Serialize)]
@@ -562,27 +560,6 @@ mod resumable_part_tests {
     }
 
     #[test]
-    fn native_voice_stage_and_retry_use_the_resumable_contract() {
-        let part_id = uuid::Uuid::new_v4().to_string();
-        let fields = native_voice_upload_fields(&part_id);
-        let part = ResumablePart::from_fields(&fields).unwrap();
-        assert_eq!(part.part_id, part_id);
-        assert_eq!(part.position, 0);
-        assert_eq!(part.intent, "AUDIO");
-        assert_eq!(native_voice_upload_fields(&part_id), fields);
-
-        let first = native_voice_stage_body(4, "voice-cid", false);
-        let retry = native_voice_stage_body(4, "voice-cid", true);
-        assert_eq!(first["threadId"], 4);
-        assert_eq!(first["contentType"], "AUDIO");
-        assert_eq!(first["clientMessageId"], "voice-cid");
-        assert_eq!(first["retry"], false);
-        assert_eq!(retry["retry"], true);
-        assert!(first.get("meta").is_none());
-        assert!(retry.get("meta").is_none());
-    }
-
-    #[test]
     fn native_resumable_init_preserves_browser_part_identity() {
         let fields = std::collections::HashMap::from([
             (
@@ -605,29 +582,13 @@ mod resumable_part_tests {
     }
 }
 
-#[cfg(any(target_os = "android", target_os = "ios", test))]
-fn native_voice_stage_body(thread_id: i64, client_message_id: &str, retry: bool) -> serde_json::Value {
-    serde_json::json!({ "threadId": thread_id, "contentType": "AUDIO", "clientMessageId": client_message_id, "retry": retry })
-}
-
-#[cfg(any(target_os = "android", target_os = "ios", test))]
-fn native_voice_upload_fields(part_id: &str) -> std::collections::HashMap<String, String> {
-    std::collections::HashMap::from([
-        ("partId".into(), part_id.into()), ("position".into(), "0".into()), ("intent".into(), "AUDIO".into()),
-    ])
-}
-
+/// Tracks recording ownership until session cleanup; sending and retry use the shared outbox.
 #[cfg(any(target_os = "android", target_os = "ios"))]
 #[derive(Clone)]
 pub(crate) struct NativeVoicePending {
     owner: Arc<crate::login_connection::LoginConnection>,
     path: String,
     part_id: String,
-    context_id: i64,
-    thread_id: i64,
-    duration_ms: i64,
-    size: i64,
-    active: bool,
 }
 
 #[cfg(target_os = "android")]
@@ -670,11 +631,6 @@ pub extern "system" fn Java_com_soms_client_RustUploadBridge_uploadVoicePath(
         owner: owner.clone(),
         path,
         part_id: uuid::Uuid::new_v4().to_string(),
-        context_id,
-        thread_id,
-        duration_ms,
-        size,
-        active: true,
     };
     let registered = owner.capture_database_work().map_err(|error| error.to_string()).and_then(|work| {
         work.with_database(|connection| {

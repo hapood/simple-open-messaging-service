@@ -569,9 +569,10 @@ class MainActivity : TauriActivity() {
             navBottomDevicePx =
                 if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
                     // Gesture insets are also approximated from legacy system-window insets on old
-                    // releases and can therefore contain the IME. The stable bottom is the only value
-                    // here whose contract excludes transient visibility changes.
-                    insets.stableInsetBottom
+                    // releases and can therefore contain the IME. Below API 30 the navigation bar
+                    // inset that ignores visibility is the stable system-bar size, the one value here
+                    // whose contract excludes transient visibility changes such as the keyboard.
+                    insets.getInsetsIgnoringVisibility(WindowInsetsCompat.Type.navigationBars()).bottom
                 } else {
                     maxOf(nav.bottom, gestures.bottom)
                 }
@@ -1491,12 +1492,8 @@ class MainActivity : TauriActivity() {
         if (instance != null) {
             thread?.let { RustRuntimeBridge.notificationDismissed(it, instance) }
         }
-        if (thread == null) return false
-        val target = runCatching { org.json.JSONObject(thread) }.getOrNull() ?: return false
-        val opening = org.json.JSONObject().put("target", target)
-        // Preserve absence and type: Rust validates the opening, never invent a zero ceiling.
-        intent.extras?.get(SomsMessagingService.EXTRA_LATEST_SEQ)?.let { opening.put("latestSeq", it) }
-        return SomsBridge.DeepLink.offer(opening.toString())
+        val opening = intent.notificationOpeningPayload() ?: return false
+        return SomsBridge.DeepLink.offer(opening)
     }
 
     /** Fetch the current FCM registration token asynchronously and stash it for the JS bridge. Delegates to
@@ -1597,14 +1594,10 @@ class MainActivity : TauriActivity() {
      *  ([CallController.setPhaseListener]) + the activity lifecycle. */
     private fun applyCallDisplayFlags() {
         val live = CallController.phase.let { it != "idle" && it != "ended" }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
-            setShowWhenLocked(live)
-            setTurnScreenOn(live)
-        } else {
-            val flags = WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
-                WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON
-            if (live) window.addFlags(flags) else window.clearFlags(flags)
-        }
+        // minSdk 28 is above API 27, so the Activity APIs are always available and the deprecated
+        // window flags are not needed.
+        setShowWhenLocked(live)
+        setTurnScreenOn(live)
     }
 
     /** Ensure RECORD_AUDIO (+ CAMERA for VIDEO) is granted before a call captures media; run [andThen]
@@ -1777,6 +1770,14 @@ class MainActivity : TauriActivity() {
         fun getSessionToken(): String? {
             val a = activityRef.get() ?: return null
             return SomsSecureStore.getSessionToken(a)
+        }
+
+        /** Synchronous read of the login UUID saved beside [getSessionToken]'s token. Rust admits a
+         *  restored login only while this UUID still matches its lifecycle record. */
+        @JavascriptInterface
+        fun getLoginSessionId(): String? {
+            val a = activityRef.get() ?: return null
+            return SomsSecureStore.getLoginSessionId(a)
         }
 
         /** Synchronous read of the RealtimeService's last-pushed connection state

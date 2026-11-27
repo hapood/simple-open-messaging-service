@@ -296,8 +296,12 @@ async fn newer_uses_committed_feed_and_opening_head_without_claiming_coverage() 
         let owner = owner();
         owner.with_database(|conn| {
             conn.execute(
-                "UPDATE threads SET message_end_seq=?1,message_head=?2 WHERE thread_id=7",
-                params![feed, cached],
+                "UPDATE thread_resource_sync SET message_end_seq=?1 WHERE thread_id=7",
+                params![feed],
+            ).map_err(|e| e.to_string())?;
+            conn.execute(
+                "UPDATE threads SET message_head=?1 WHERE thread_id=7",
+                params![cached],
             ).map_err(|e| e.to_string())?;
             assert!(load_message_ranges(conn, 42, 7)?.is_empty());
             Ok(())

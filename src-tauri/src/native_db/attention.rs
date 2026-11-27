@@ -170,6 +170,7 @@ static THREAD_FEED_SYNC: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(
 // The thread currently open in the UI, used only for desktop notification suppression.
 static OPEN_THREAD_ID: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
 
+#[cfg(desktop)]
 pub(crate) fn open_thread_id() -> Option<i64> {
     let value = OPEN_THREAD_ID.load(std::sync::atomic::Ordering::Acquire);
     (value > 0).then_some(value)
@@ -188,7 +189,7 @@ struct LocalEventPayload {
 /// Update the currently open thread for desktop notification suppression.
 #[tauri::command]
 pub(crate) async fn native_db_set_open_thread(
-    app: tauri::AppHandle,
+    _app: tauri::AppHandle,
     user_id: i64,
     thread_id: i64,
 ) -> Result<(), String> {
@@ -202,7 +203,7 @@ pub(crate) async fn native_db_set_open_thread(
     }
     #[cfg(desktop)]
     if let Err(error) =
-        super::desktop_notifications::desktop_notification_presentation_changed(app).await
+        super::desktop_notifications::desktop_notification_presentation_changed(_app).await
     {
         log::warn!("notification presentation refresh failed: {error}");
     }
@@ -1376,6 +1377,13 @@ pub(crate) struct ThreadPreview {
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct ThreadAuthor {
+    pub(super) account: String,
+    pub(super) namespace_id: i32,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct ThreadFeedSnapshot {
     #[serde(rename = "type")]
     pub(super) kind: String,
@@ -1397,6 +1405,9 @@ pub(crate) struct ThreadFeedSnapshot {
     #[serde(deserialize_with = "required_nullable")]
     pub(super) alias: Option<String>,
     pub(super) message_end_seq: i32,
+    /// Transient wire author of `message_end_seq`; required when > 0, omitted at 0, not persisted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) author: Option<ThreadAuthor>,
     /// Peer's profile revision in the publisher's namespace (wire: `profileRev`).
     #[serde(rename = "profileRev")]
     pub(super) thread_profile_rev: i32,
@@ -1468,7 +1479,15 @@ impl Serialize for LocalThreadAttention {
 }
 
 fn validate_snapshot(state: &ThreadFeedSnapshot) -> Result<(), String> {
-    if state.thread_id <= 0
+    let valid_author = match (state.message_end_seq, &state.author) {
+        (0, None) => true,
+        (seq, Some(author)) if seq > 0 => {
+            !author.account.trim().is_empty() && author.namespace_id >= 0
+        }
+        _ => false,
+    };
+    if !valid_author
+        || state.thread_id <= 0
         || state.thread_feed_id <= 0
         || !matches!(state.kind.as_str(), "P2P" | "GROUP")
         || !matches!(state.conversation_state.as_str(), "ACTIVE" | "READ_ONLY")
@@ -1532,6 +1551,7 @@ pub(super) fn read_state(
                         alias: row.get("alias")?,
                         thread_profile_rev: row.get("thread_profile_rev")?,
                         message_end_seq: row.get("message_end_seq")?,
+                        author: None,
                         join_request_end_feed_id: row.get("join_request_end_feed_id")?,
                         join_request_read_feed_id: row.get("join_request_read_feed_id")?,
                         group_invite_end_feed_id: row.get("group_invite_end_feed_id")?,
@@ -2156,7 +2176,7 @@ mod tests {
     #[test]
     fn cache_schema_rebuild_recreates_attention_without_preserving_old_rows() {
         let mut conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch("CREATE TABLE client_preferences(scope TEXT,key TEXT,value_json TEXT,updated_at INTEGER,PRIMARY KEY(scope,key));").unwrap();
+        conn.execute_batch("CREATE TABLE settings(key TEXT PRIMARY KEY,value_json TEXT,updated_at INTEGER);").unwrap();
         super::super::create_cache_schema(&conn).unwrap();
         super::super::validate_cache_schema(&conn).unwrap();
         merge_states(&mut conn, 1, vec![snapshot(1, 0)], Some(1)).unwrap();
@@ -2168,7 +2188,7 @@ mod tests {
 
     fn db() -> Connection {
         let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch("PRAGMA foreign_keys = ON; CREATE TABLE client_preferences(scope TEXT,key TEXT,value_json TEXT,updated_at INTEGER,PRIMARY KEY(scope,key));").unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON; CREATE TABLE settings(key TEXT PRIMARY KEY,value_json TEXT,updated_at INTEGER);").unwrap();
         super::super::create_cache_schema(&conn).unwrap();
         conn
     }
@@ -2253,6 +2273,10 @@ mod tests {
             thread_feed_id: feed,
             alias: None,
             message_end_seq: 200,
+            author: Some(ThreadAuthor {
+                account: "peer".into(),
+                namespace_id: 0,
+            }),
             thread_profile_rev: 0,
             join_request_end_feed_id: 0,
             join_request_read_feed_id: -1,
@@ -2379,12 +2403,6 @@ mod tests {
         group.authority_namespace_id = 7;
         group.subject_account = "!team".into();
         merge_states(&mut conn, 1, vec![group], None).unwrap();
-        conn.execute(
-            "INSERT INTO members(user_id,thread_id,member_account,namespace_id,role,profile_rev)
-             VALUES(1,7,'alice',2,'MEMBER',3)",
-            [],
-        )
-        .unwrap();
 
         let mut profile = serde_json::json!({
             "publisherNamespaceId": 2, "profileNamespaceId": 2,
@@ -2539,6 +2557,7 @@ mod tests {
                     "blocked": false, "role": null, "profileAccount": "bob",
                     "profileRev": 3, "alias": "Pal",
                     "messageEndSeq": 7,
+                    "author": { "account": "bob", "namespaceId": 0 },
                     "joinRequestEndFeedId": 0, "joinRequestReadFeedId": -1,
                     "groupInviteEndFeedId": 0, "lastReadSeq": 0,
                     "announcementReadFeedId": 0, "unreadCount": 2, "lastMentionSeq": null,
@@ -2634,8 +2653,10 @@ mod tests {
             target[key] = "local".into();
             assert!(serde_json::from_value::<ThreadFeedSnapshot>(leaked).is_err());
         }
-        merge_states(&mut conn, 1, vec![feed.clone()], None).unwrap();
-        assert_eq!(read_state(&conn, 1, 7).unwrap().server, Some(feed.clone()));
+        let merged = merge_states(&mut conn, 1, vec![feed.clone()], None).unwrap();
+        assert_eq!(merged[0].server, Some(feed.clone()));
+        let persisted = ThreadFeedSnapshot { author: None, ..feed.clone() };
+        assert_eq!(read_state(&conn, 1, 7).unwrap().server, Some(persisted.clone()));
         for domain in ["local", "renamed.test"] {
             super::super::contacts::register_namespace(&conn, 1, 7, domain).unwrap();
             conn.execute(
@@ -2645,7 +2666,7 @@ mod tests {
             .unwrap();
             let state = read_state(&conn, 1, 7).unwrap();
             write_state(&conn, 1, &state).unwrap();
-            assert_eq!(state.server, Some(feed.clone()));
+            assert_eq!(state.server, Some(persisted.clone()));
             let presentation = super::super::thread_store::read(&conn, 1, 7)
                 .unwrap()
                 .unwrap();
@@ -2739,7 +2760,10 @@ mod tests {
         }
         let state = read_state(&conn, 1, 7).unwrap();
         assert_eq!(state.local_read_seq, Some(105));
-        assert_eq!(state.server, Some(snapshot(3, 95)));
+        assert_eq!(
+            state.server,
+            Some(ThreadFeedSnapshot { author: None, ..snapshot(3, 95) })
+        );
         assert_eq!(advance_read(&mut conn, 1, 7, 100).unwrap(), state);
         assert_eq!(read_state(&conn, 2, 7).unwrap().server, None);
     }

@@ -3,22 +3,31 @@ use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
-const CONFIG_FILE: &str = crate::CONFIG_FILENAME;
-
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct ServerOrigins {
     pub primary: String,
     pub secondary: Option<String>,
+    #[serde(default)]
+    pub firebase_config: Option<serde_json::Value>,
 }
 
 impl ServerOrigins {
-    fn normalized(primary: &str, secondary: Option<&str>) -> Result<Self, String> {
+    fn normalized(
+        primary: &str,
+        secondary: Option<&str>,
+        firebase_config: Option<serde_json::Value>,
+    ) -> Result<Self, String> {
         let primary = validate_origin(primary).ok_or("invalid primary origin")?;
         let secondary = secondary
             .map(|value| validate_origin(value).ok_or("invalid secondary origin"))
             .transpose()?
             .filter(|value| value != &primary);
-        Ok(Self { primary, secondary })
+        Ok(Self {
+            primary,
+            secondary,
+            firebase_config,
+        })
     }
 }
 
@@ -71,7 +80,7 @@ impl ServerSetup {
         let origins = if use_advertised {
             advertised.clone()
         } else {
-            ServerOrigins::normalized(entered, None)?
+            ServerOrigins::normalized(entered, None, advertised.firebase_config.clone())?
         };
         current.take();
         Ok(origins)
@@ -92,6 +101,19 @@ pub(crate) fn assert_signed_out() -> Result<(), String> {
         return Err("sign out before changing the server".into());
     }
     Ok(())
+}
+
+/// Whether a server configuration has been saved, independent of the state that restores it.
+pub(crate) fn has_persisted_configuration() -> bool {
+    crate::native_db::preferences_connection()
+        .ok()
+        .and_then(|preferences| {
+            preferences
+                .with_database(|conn| crate::native_db::app_state::get(conn, "serverConfig"))
+                .ok()
+        })
+        .flatten()
+        .is_some()
 }
 
 #[tauri::command]
@@ -139,6 +161,7 @@ async fn check(
             .and_then(|value| value.as_str())
             .unwrap_or(&origin),
         compat.get("lanOrigin").and_then(|value| value.as_str()),
+        compat.get("firebaseConfig").cloned(),
     )?;
     let mut current = setups.0.lock().map_err(|_| "setup lock poisoned")?;
     let setup = current
@@ -204,34 +227,24 @@ async fn commit(
     Ok(SetupResult { origins, active })
 }
 
-/// One atomic file replacement stores the pair. This is the only configuration writer.
+/// Commit configuration and the signed-out lifecycle together before publishing live endpoints.
+/// This runs inside the admitted worker, so losing the IPC waiter cannot leave setup unfinished.
 pub(crate) fn persist(state: &ServerSessionState, origins: ServerOrigins) -> Result<(), String> {
-    let origins = ServerOrigins::normalized(&origins.primary, origins.secondary.as_deref())?;
-    let path = state
-        .config_path
-        .lock()
-        .map_err(|_| "config path lock poisoned")?
-        .clone();
-    let directory = path
-        .parent()
-        .ok_or("missing server configuration directory")?;
-    let temporary = directory.join(format!(".server-origins-{}.tmp", uuid::Uuid::new_v4()));
-    let bytes = serde_json::to_vec(&origins).map_err(|error| error.to_string())?;
-    let write = (|| -> std::io::Result<()> {
-        use std::io::Write;
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temporary)?;
-        file.write_all(&bytes)?;
-        file.sync_all()?;
-        drop(file);
-        std::fs::rename(&temporary, directory.join(CONFIG_FILE))
-    })();
-    if let Err(error) = write {
-        let _ = std::fs::remove_file(&temporary);
-        return Err(format!("failed to save server configuration: {error}"));
-    }
+    let origins = ServerOrigins::normalized(
+        &origins.primary,
+        origins.secondary.as_deref(),
+        origins.firebase_config,
+    )?;
+    let encoded = serde_json::to_string(&origins).map_err(|error| error.to_string())?;
+    crate::native_db::preferences_connection()?.with_database(|conn| {
+        let tx = conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(|error| format!("begin server configuration commit: {error}"))?;
+        crate::native_db::app_state::put(&tx, "serverConfig", &encoded)?;
+        crate::login_session_store::SessionStore::initialize(&tx, true)?;
+        tx.commit()
+            .map_err(|error| format!("commit server configuration: {error}"))
+    })?;
     apply(state, &origins);
     Ok(())
 }
@@ -243,31 +256,59 @@ fn apply(state: &ServerSessionState, origins: &ServerOrigins) {
 }
 
 pub(crate) fn restore(state: &ServerSessionState) -> Result<(), String> {
-    let path = state
-        .config_path
-        .lock()
-        .map_err(|_| "config path lock poisoned")?
-        .clone();
-    let file = path
-        .parent()
-        .ok_or("missing server configuration directory")?
-        .join(CONFIG_FILE);
-    let bytes = match std::fs::read(file) {
-        Ok(bytes) => bytes,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => return Err(format!("read server configuration: {error}")),
+    let raw = crate::native_db::preferences_connection()?
+        .with_database(|conn| crate::native_db::app_state::get(conn, "serverConfig"))?;
+    let Some(raw) = raw else {
+        return Ok(());
     };
-    let origins: ServerOrigins =
-        serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
-    let origins = ServerOrigins::normalized(&origins.primary, origins.secondary.as_deref())?;
+    let origins: ServerOrigins = serde_json::from_str(&raw).map_err(|error| error.to_string())?;
+    let origins = ServerOrigins::normalized(
+        &origins.primary,
+        origins.secondary.as_deref(),
+        origins.firebase_config,
+    )?;
     apply(state, &origins);
     Ok(())
+}
+
+#[cfg(target_os = "android")]
+pub(crate) fn read_firebase_config_json() -> Result<Option<String>, String> {
+    let raw = crate::native_db::preferences_connection()?
+        .with_database(|conn| crate::native_db::app_state::get(conn, "serverConfig"))?;
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
+    let origins: ServerOrigins = serde_json::from_str(&raw).map_err(|error| error.to_string())?;
+    origins
+        .firebase_config
+        .map(|value| serde_json::to_string(&value).map_err(|error| error.to_string()))
+        .transpose()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    /// Exclusive use of the device database for one whole test, work detached onto the async
+    /// runtime included. Every test that opens the database shares one process-wide location and
+    /// must hold this lock before touching the location. The lock guards no data of its own, so a
+    /// failed test must not also fail the tests queued behind it.
+    fn device_database() -> std::sync::MutexGuard<'static, ()> {
+        let filesystem = crate::native_db::FILESYSTEM_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        crate::native_db::shared_test_location();
+        filesystem
+    }
+
+    /// Leaves the shared database without a server, which is how every later test finds it.
+    fn forget_saved_server() {
+        crate::native_db::preferences_connection()
+            .unwrap()
+            .with_database(|conn| crate::native_db::app_state::remove(conn, "serverConfig"))
+            .unwrap();
+    }
 
     #[test]
     fn cancelled_setup_releases_admission_and_cannot_cancel_its_successor() {
@@ -303,6 +344,7 @@ mod tests {
             ServerOrigins {
                 primary: "https://public.example".into(),
                 secondary: Some("http://lan.example".into()),
+                firebase_config: None,
             },
         ));
         let pair = setups.take_configuration(&id, true).unwrap();
@@ -350,12 +392,12 @@ mod tests {
 
     #[test]
     fn saving_a_single_server_clears_the_old_backup_and_restores_the_whole_pair() {
-        let directory = tempfile::tempdir().unwrap();
+        let _filesystem = device_database();
         let state = ServerSessionState::new();
-        *state.config_path.lock().unwrap() = directory.path().join(crate::CONFIG_FILENAME);
         let pair = ServerOrigins {
             primary: "https://public.example".into(),
             secondary: Some("http://10.0.0.1".into()),
+            firebase_config: None,
         };
         persist(&state, pair.clone()).unwrap();
         activate_origin(
@@ -366,49 +408,107 @@ mod tests {
         let single = ServerOrigins {
             primary: "https://new.example".into(),
             secondary: None,
+            firebase_config: None,
         };
         persist(&state, single.clone()).unwrap();
         assert_eq!(*state.api_origin.lock().unwrap(), single.primary);
         assert!(state.api_origin_secondary.lock().unwrap().is_none());
         assert_eq!(*state.origin_mode.lock().unwrap(), OriginMode::Primary);
         let restored = ServerSessionState::new();
-        *restored.config_path.lock().unwrap() = directory.path().join(crate::CONFIG_FILENAME);
         restore(&restored).unwrap();
         assert_eq!(*restored.api_origin_primary.lock().unwrap(), single.primary);
         assert!(restored.api_origin_secondary.lock().unwrap().is_none());
+        forget_saved_server();
     }
 
     #[test]
     fn failed_save_leaves_the_live_configuration_unchanged() {
+        let _filesystem = device_database();
         let state = ServerSessionState::new();
         let before = state.api_origin.lock().unwrap().clone();
-        let directory = tempfile::tempdir().unwrap();
-        *state.config_path.lock().unwrap() = directory
-            .path()
-            .join("missing")
-            .join(crate::CONFIG_FILENAME);
-        assert!(persist(
+        let preferences = crate::native_db::preferences_connection().unwrap();
+        preferences
+            .with_database(|conn| {
+                conn.execute_batch(
+                    "CREATE TEMP VIEW app_state AS SELECT * FROM unavailable_app_state;",
+                )
+                .map_err(|e| e.to_string())
+            })
+            .unwrap();
+        let result = persist(
             &state,
             ServerOrigins {
                 primary: "https://new.example".into(),
-                secondary: None
-            }
-        )
-        .is_err());
+                secondary: None,
+                firebase_config: None,
+            },
+        );
+        preferences
+            .with_database(|conn| {
+                conn.execute_batch("DROP VIEW temp.app_state;")
+                    .map_err(|e| e.to_string())
+            })
+            .unwrap();
+        assert!(result.is_err());
         assert_eq!(*state.api_origin.lock().unwrap(), before);
     }
 
-    #[tokio::test]
-    async fn commit_with_a_backup_finishes_without_reacquiring_its_own_lock() {
-        let directory = tempfile::tempdir().unwrap();
+    #[test]
+    fn failed_lifecycle_write_rolls_back_configuration_before_live_publication() {
+        let _filesystem = device_database();
+        let preferences = crate::native_db::preferences_connection().unwrap();
         let state = ServerSessionState::new();
-        *state.config_path.lock().unwrap() = directory.path().join(crate::CONFIG_FILENAME);
+        let before = state.api_origin.lock().unwrap().clone();
+        forget_saved_server();
+        preferences
+            .with_database(|conn| {
+                crate::native_db::app_state::put(conn, "lifecycleState", "\"unconfigured\"")?;
+                conn.execute_batch(
+                    "CREATE TEMP TRIGGER reject_setup_lifecycle BEFORE UPDATE ON main.app_state
+                 WHEN NEW.key = 'lifecycleState'
+                 BEGIN SELECT RAISE(ABORT, 'lifecycle write failed'); END;",
+                )
+                .map_err(|error| error.to_string())
+            })
+            .unwrap();
+        let result = persist(
+            &state,
+            ServerOrigins {
+                primary: "https://configured.example".into(),
+                secondary: None,
+                firebase_config: None,
+            },
+        );
+        preferences
+            .with_database(|conn| {
+                conn.execute_batch("DROP TRIGGER temp.reject_setup_lifecycle;")
+                    .map_err(|error| error.to_string())?;
+                assert!(crate::native_db::app_state::get(conn, "serverConfig")?.is_none());
+                assert_eq!(
+                    crate::login_session_store::SessionStore::read(conn)?.state,
+                    crate::login_session_store::LifecycleState::Unconfigured
+                );
+                Ok(())
+            })
+            .unwrap();
+        assert!(result.is_err());
+        assert_eq!(*state.api_origin.lock().unwrap(), before);
+    }
+
+    // The database guard is held on the test thread for the whole test. The body runs on a
+    // current-thread runtime, and no task it spawns takes the filesystem lock.
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn commit_with_a_backup_finishes_without_reacquiring_its_own_lock() {
+        let _filesystem = device_database();
+        let state = ServerSessionState::new();
         // Closed ports make both probes fail immediately; the primary remains the fallback.
         let primary = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let secondary = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let origins = ServerOrigins {
             primary: format!("http://{}", primary.local_addr().unwrap()),
             secondary: Some(format!("http://{}", secondary.local_addr().unwrap())),
+            firebase_config: None,
         };
         drop((primary, secondary));
         let guard = state
@@ -427,16 +527,26 @@ mod tests {
             .auth_lifecycle
             .enter(crate::auth_lifecycle::Phase::Login)
             .is_ok());
+        forget_saved_server();
     }
 
+    // The database guard is held on the test thread for the whole test, including while the
+    // detached commit worker it waits for is writing to the database.
     #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
     async fn dropping_the_commit_waiter_keeps_admission_until_the_worker_finishes() {
-        let directory = tempfile::tempdir().unwrap();
+        let _filesystem = device_database();
+        crate::native_db::preferences_connection()
+            .unwrap()
+            .with_database(|conn| {
+                crate::native_db::app_state::put(conn, "lifecycleState", "\"unconfigured\"")
+            })
+            .unwrap();
         let state = ServerSessionState::new();
-        *state.config_path.lock().unwrap() = directory.path().join(crate::CONFIG_FILENAME);
         let origins = ServerOrigins {
             primary: "https://configured.example".into(),
             secondary: None,
+            firebase_config: None,
         };
         let selection = state.select_lock.lock().await;
         let guard = state
@@ -465,16 +575,28 @@ mod tests {
         })
         .await
         .expect("detached commit must finish and release admission");
-        let saved: ServerOrigins =
-            serde_json::from_slice(&std::fs::read(directory.path().join(CONFIG_FILE)).unwrap())
-                .unwrap();
+        let raw = crate::native_db::preferences_connection()
+            .unwrap()
+            .with_database(|conn| crate::native_db::app_state::get(conn, "serverConfig"))
+            .unwrap()
+            .unwrap();
+        let saved: ServerOrigins = serde_json::from_str(&raw).unwrap();
         assert_eq!(saved, origins);
         assert_eq!(*state.api_origin_primary.lock().unwrap(), origins.primary);
+        assert_eq!(
+            crate::native_db::preferences_connection()
+                .unwrap()
+                .with_database(|conn| crate::login_session_store::SessionStore::read(conn))
+                .unwrap()
+                .state,
+            crate::login_session_store::LifecycleState::SignedOut
+        );
+        forget_saved_server();
     }
 
     #[test]
     fn signed_in_configuration_is_rejected() {
-        let _lock = crate::native_db::FILESYSTEM_TEST_LOCK.lock().unwrap();
+        let _filesystem = device_database();
         let id =
             crate::login_session_store::LoginSessionId::try_from(uuid::Uuid::new_v4().to_string())
                 .unwrap();

@@ -4,6 +4,14 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class NotificationSessionBindingTest {
+    @Test fun copyCannotBypassValidatedFactories() {
+        val copy = NotificationSessionBinding::class.java.declaredMethods.single { it.name == "copy" }
+        assertTrue(java.lang.reflect.Modifier.isPrivate(copy.modifiers))
+        assertEquals(
+            NotificationSessionBinding.fromValues(7, "https://alpha.test"),
+            NotificationSessionBinding.fromValues(7, "https://alpha.test"),
+        )
+    }
     @Test fun currentSessionAndOriginAreBothRequired() {
         val binding = NotificationSessionBinding.fromValues(7, "https://alpha.test")!!
         assertTrue(binding.isCurrent(7, "https://alpha.test"))

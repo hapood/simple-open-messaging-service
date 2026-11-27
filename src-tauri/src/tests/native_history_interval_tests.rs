@@ -87,10 +87,13 @@ async fn pending_interval_is_refreshed_once_and_only_committed_scan_is_emitted()
     .await;
     let mut intent = intent(&origin);
     let page = intent
-        .refresh_interval(MessageInterval {
-            left: 20,
-            right: 80,
-        })
+        .refresh_interval(
+            MessageInterval {
+                left: 20,
+                right: 80,
+            },
+            HistoryDirection::Older,
+        )
         .await
         .unwrap()
         .unwrap();
@@ -150,10 +153,13 @@ async fn full_intersecting_gaps_are_clipped_without_changing_outside_coverage() 
     .await
     .unwrap();
     let page = intent
-        .refresh_interval(MessageInterval {
-            left: 20,
-            right: 80,
-        })
+        .refresh_interval(
+            MessageInterval {
+                left: 20,
+                right: 80,
+            },
+            HistoryDirection::Older,
+        )
         .await
         .unwrap()
         .unwrap();
@@ -214,10 +220,13 @@ async fn invalid_or_disjoint_wire_gaps_do_not_change_cache() {
         .await;
         let mut intent = intent(&origin);
         assert!(intent
-            .refresh_interval(MessageInterval {
-                left: 20,
-                right: 80
-            })
+            .refresh_interval(
+                MessageInterval {
+                    left: 20,
+                    right: 80
+                },
+                HistoryDirection::Older,
+            )
             .await
             .is_err());
         query.await.unwrap();
@@ -241,10 +250,13 @@ async fn out_of_interval_page_does_not_change_cache() {
     .await;
     let mut intent = intent(&origin);
     assert!(intent
-        .refresh_interval(MessageInterval {
-            left: 20,
-            right: 80
-        })
+        .refresh_interval(
+            MessageInterval {
+                left: 20,
+                right: 80
+            },
+            HistoryDirection::Older,
+        )
         .await
         .is_err());
     query.await.unwrap();
@@ -304,7 +316,7 @@ async fn mounted_stream_notification_commits_then_publishes_over_ipc() {
     let task = tokio::spawn(async move {
         crate::native_db::history_ipc::run_until_cancelled(
             &task_cancel,
-            history.watch_interval(20, 80, channel),
+            history.watch_interval(20, 80, HistoryDirection::Older, channel),
         )
         .await
     });

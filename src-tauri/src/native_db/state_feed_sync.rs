@@ -272,7 +272,7 @@ mod tests {
     #[test]
     fn full_snapshot_boundary_and_target_remain_after_completion() {
         let mut conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch("CREATE TABLE client_preferences(scope TEXT,key TEXT,value_json TEXT,updated_at INTEGER,PRIMARY KEY(scope,key));").unwrap();
+        conn.execute_batch("CREATE TABLE settings(key TEXT PRIMARY KEY,value_json TEXT,updated_at INTEGER);").unwrap();
         super::super::create_cache_schema(&conn).unwrap();
         apply_state_feed_page_with_resume(&mut conn, 1, Vec::new(), 1, Vec::new(), Some(3), Some(5))
             .unwrap();

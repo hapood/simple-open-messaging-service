@@ -47,7 +47,7 @@ pub(super) fn path() -> Result<&'static Path, String> {
 }
 
 /// The directory holding every native database file (preferences + per-login caches).
-pub(super) fn directory() -> Result<PathBuf, String> {
+pub(crate) fn directory() -> Result<PathBuf, String> {
     Ok(path()?
         .parent()
         .ok_or("native database location has no parent directory")?

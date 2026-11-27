@@ -57,30 +57,41 @@ impl NativeHistoryIntent {
     async fn refresh_interval(
         &mut self,
         interval: MessageInterval,
+        direction: HistoryDirection,
     ) -> Result<Option<HistoryIntervalPage>, String> {
         self.work.assert_current().map_err(|e| e.to_string())?;
-        let response = query_message_backend(
-            &self.work,
-            &mut self.request,
-            serde_json::json!({
+        let request_body = match direction {
+            HistoryDirection::Older => serde_json::json!({
                 "threadId": self.thread_id, "before": interval.right + 1,
                 "through": interval.left + 1, "take": 50,
             }),
-        )
-        .await?;
+            HistoryDirection::Newer => serde_json::json!({
+                "threadId": self.thread_id, "after": interval.left,
+                "through": interval.right, "take": 50,
+            }),
+        };
+        let response = query_message_backend(&self.work, &mut self.request, request_body).await?;
         let page = match response {
             MessageBackendResponse::Cursor(_) => return Ok(None),
             MessageBackendResponse::Page(page) => page,
         };
-        if page.scanned_through < interval.left + 1 || page.scanned_through > interval.right + 1 {
+        let out_of_bounds = match direction {
+            HistoryDirection::Older => {
+                page.scanned_through < interval.left + 1
+                    || page.scanned_through > interval.right + 1
+            }
+            HistoryDirection::Newer => {
+                page.scanned_through < interval.left || page.scanned_through > interval.right
+            }
+        };
+        if out_of_bounds {
             return Err("history interval scan escaped its bounds".into());
         }
-        let Some(scan) = scan_for_page(
-            HistoryDirection::Older,
-            interval.right + 1,
-            page.scanned_through,
-        )?
-        else {
+        let cursor = match direction {
+            HistoryDirection::Older => interval.right + 1,
+            HistoryDirection::Newer => interval.left,
+        };
+        let Some(scan) = scan_for_page(direction, cursor, page.scanned_through)? else {
             return Ok(None);
         };
         if scan.left < interval.left || scan.right > interval.right || page.messages.len() > 50 {
@@ -162,6 +173,7 @@ impl NativeHistoryIntent {
         mut self,
         left: i64,
         right: i64,
+        direction: HistoryDirection,
         events: tauri::ipc::Channel<HistoryIntervalEvent>,
     ) -> Result<(), String> {
         if left < 0 || left >= right || right >= 9_007_199_254_740_991 {
@@ -180,7 +192,7 @@ impl NativeHistoryIntent {
             loop {
                 dirty.wake.notified().await;
                 while let Some(interval) = dirty.take() {
-                    match self.refresh_interval(interval).await {
+                    match self.refresh_interval(interval, direction).await {
                         Ok(Some(page)) => {
                             self.work.assert_current().map_err(|e| e.to_string())?;
                             events

@@ -37,6 +37,7 @@ mod launch;
 mod login_connection;
 mod login_request;
 mod login_session_store;
+mod forward_recent_targets;
 mod media_cache;
 mod http_stream;
 mod native_db;
@@ -62,9 +63,6 @@ pub(crate) use proxy::{activate_origin, is_network_failure, pick_origin_race, ru
 use std::borrow::Cow;
 use std::fs;
 use std::net::IpAddr;
-#[cfg(target_os = "android")]
-use std::os::fd::FromRawFd;
-use std::path::PathBuf;
 #[cfg(target_os = "android")]
 use std::sync::OnceLock;
 use std::sync::{Arc, Mutex};
@@ -122,11 +120,8 @@ const ORIGIN_PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 /// placeholder — identical in debug and release APKs (no dev-only `localhost`/LAN default, so the
 /// packaged debug build behaves exactly like production) — which is unreachable from a phone, exactly
 /// why the bundled bootstrap forces the setup wizard on first run. Operators replace it at runtime via
-/// the config form (persisted to the `api_origin` file); desktop dev can still override via SOMS_API_ORIGIN.
+/// the config form (persisted in `app_state`); desktop dev can still override via SOMS_API_ORIGIN.
 const DEFAULT_API_ORIGIN: &str = "https://example.com:7667";
-
-/// One configuration file stores the primary and optional backup origins atomically.
-const CONFIG_FILENAME: &str = "server_origins.json";
 
 /// Which origin `api_origin` currently holds, for the native fallback state machine.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -167,7 +162,6 @@ pub(crate) struct ServerSessionState {
     server_setup: Arc<server_setup::ServerSetup>,
     auth_lifecycle: Arc<auth_lifecycle::AuthLifecycle>,
 
-    config_path: Arc<Mutex<PathBuf>>,
     /// Wakes unbound shared realtime workers after login activation. The immutable login owner,
     /// not a second global credential or UUID mirror, admits subsequent network and cache work.
     /// Notify retains a permit when activation races ahead of the worker's wait.
@@ -209,7 +203,7 @@ impl ServerSessionState {
         ServerSessionState {
             api_origin: Arc::new(Mutex::new(initial_origin.clone())),
             // Pre-setup best guess: primary == active == the boot origin (env/default). setup() overrides both
-            // from the persisted files; the secondary starts None until setup reads its file.
+            // from app_state; the secondary starts None until setup restores the saved configuration.
             api_origin_primary: Arc::new(Mutex::new(initial_origin.clone())),
             api_origin_secondary: Arc::new(Mutex::new(None)),
             origin_mode: Arc::new(Mutex::new(OriginMode::Primary)),
@@ -218,7 +212,6 @@ impl ServerSessionState {
             server_setup: Arc::new(server_setup::ServerSetup::default()),
             auth_lifecycle: Arc::new(auth_lifecycle::AuthLifecycle::default()),
 
-            config_path: Arc::new(Mutex::new(PathBuf::new())),
             token_notify: Arc::new(Notify::new()),
             // Seed the cached API client map with the boot origin; additional configured routes are retained.
             api_http: Arc::new(Mutex::new(std::collections::HashMap::from([(
@@ -472,7 +465,7 @@ pub fn run() {
                     origin_commands::logout_status,
                     origin_commands::try_logout,
                     origin_commands::finish_logout,
-                    secure_storage::secure_get_token,
+                    secure_storage::secure_get_login,
                     secure_storage::secure_set_token,
                     secure_storage::secure_clear_token,
                     secure_storage::secure_clear_residual_token,
@@ -514,13 +507,12 @@ pub fn run() {
                     native_db::account_state::native_db_advance_intent_request_read,
                     native_db::account_state::native_db_initialize_account_state,
                     native_db::account_state::native_db_read_account_state,
+                    native_db::account_state::native_db_read_cached_self_profile,
                     native_db::account_state::native_db_write_self_profile,
                     native_db::account_state::native_db_write_composer_drafts,
                     native_db::client_state::native_db_threads,
                     native_db::client_state::native_db_delete_thread,
                     native_db::contacts::native_db_get_profile,
-                    native_db::contacts::native_db_get_group_member,
-                    native_db::contacts::native_db_query_group_members,
                     native_db::attention::native_db_thread_states,
                     native_db::watch_ipc::native_watch_profile,
                     native_db::watch_ipc::native_watch_namespace,
@@ -533,6 +525,11 @@ pub fn run() {
                     native_db::preferences::native_db_get_preference,
                     native_db::preferences::native_db_put_preference,
                     native_db::preferences::native_db_delete_preference,
+                    forward_recent_targets::forward_recent_targets_read,
+                    forward_recent_targets::forward_recent_targets_remember,
+                    native_db::app_state::native_db_get_app_state,
+                    native_db::app_state::native_db_put_app_state,
+                    native_db::app_state::native_db_delete_app_state,
                     native_db::native_db_recreate_cache,
                     native_db::native_db_validate_cache,
                     native_db::native_db_recreate_messages,
@@ -544,6 +541,8 @@ pub fn run() {
                     native_db::messages::native_db_count_unread_message_slots,
                     native_db::history_ipc::native_message_history_start,
                     native_db::history_ipc::native_message_history_interval_start,
+                    native_db::history_ipc::native_evaluate_entry_seam,
+                    native_db::history_ipc::native_project_local_interval,
                     native_db::history_ipc::native_message_history_cancel,
                     native_db::messages::native_db_put_cached_messages,
                     native_db::messages::native_db_put_message_head,
@@ -621,13 +620,12 @@ pub fn run() {
                     native_db::account_state::native_db_advance_intent_request_read,
                     native_db::account_state::native_db_initialize_account_state,
                     native_db::account_state::native_db_read_account_state,
+                    native_db::account_state::native_db_read_cached_self_profile,
                     native_db::account_state::native_db_write_self_profile,
                     native_db::account_state::native_db_write_composer_drafts,
                     native_db::client_state::native_db_threads,
                     native_db::client_state::native_db_delete_thread,
                     native_db::contacts::native_db_get_profile,
-                    native_db::contacts::native_db_get_group_member,
-                    native_db::contacts::native_db_query_group_members,
                     native_db::attention::native_db_thread_states,
                     native_db::watch_ipc::native_watch_profile,
                     native_db::watch_ipc::native_watch_namespace,
@@ -640,6 +638,11 @@ pub fn run() {
                     native_db::preferences::native_db_get_preference,
                     native_db::preferences::native_db_put_preference,
                     native_db::preferences::native_db_delete_preference,
+                    forward_recent_targets::forward_recent_targets_read,
+                    forward_recent_targets::forward_recent_targets_remember,
+                    native_db::app_state::native_db_get_app_state,
+                    native_db::app_state::native_db_put_app_state,
+                    native_db::app_state::native_db_delete_app_state,
                     native_db::native_db_recreate_cache,
                     native_db::native_db_validate_cache,
                     native_db::native_db_recreate_messages,
@@ -651,6 +654,8 @@ pub fn run() {
                     native_db::messages::native_db_count_unread_message_slots,
                     native_db::history_ipc::native_message_history_start,
                     native_db::history_ipc::native_message_history_interval_start,
+                    native_db::history_ipc::native_evaluate_entry_seam,
+                    native_db::history_ipc::native_project_local_interval,
                     native_db::history_ipc::native_message_history_cancel,
                     native_db::messages::native_db_put_cached_messages,
                     native_db::messages::native_db_put_message_head,
@@ -772,6 +777,9 @@ fn initialize_client_storage(
     if let Err(error) = native_db::initialize_login_cache() {
         warn!("login cache initialization requires repair: {error}");
     }
+    if let Err(error) = native_db::resume_local_cleanup() {
+        warn!("login cleanup will be retried: {error}");
+    }
     // Android restores during Application startup, before the Tauri host exists.
     #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
     if let Some(owner) = native_db::current_login()? {
@@ -781,7 +789,6 @@ fn initialize_client_storage(
     // Android resources were restored by Application; do not overwrite live background state.
     #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows", target_os = "ios"))]
     {
-        *proxy_state.config_path.lock().expect("config_path lock") = data_dir.join(CONFIG_FILENAME);
         server_setup::restore(proxy_state)?;
     }
     #[cfg(target_os = "android")]

@@ -49,7 +49,9 @@ pub(crate) fn select_restored_cards(mut cards: Vec<ObservedCard>) -> (Vec<Observ
 
 struct PublishedCard {
     notification_id: String,
-    // Imported OS cards have no known receipt/content from this process.
+    // Linux/Windows callbacks identify a submitted update, unlike Android/macOS
+    // card-instance callbacks. Imported cards have no receipt from this process.
+    #[cfg(any(target_os = "linux", target_os = "windows", test))]
     operation_id: Option<String>,
     handle: PlatformHandle,
 }
@@ -99,6 +101,7 @@ impl DeliveryState {
             self.committed.import_instance(card.target, card.notification_id.clone());
             self.published.insert(card.target, PublishedCard {
                 notification_id: card.notification_id,
+                #[cfg(any(target_os = "linux", target_os = "windows", test))]
                 operation_id: None,
                 handle: card.handle,
             });
@@ -195,6 +198,7 @@ impl DeliveryState {
                 NotificationCommand::Show(content) if !pending.dismissed => {
                     self.published.insert(content.target, PublishedCard {
                         notification_id: pending.notification_id.clone().unwrap(),
+                        #[cfg(any(target_os = "linux", target_os = "windows", test))]
                         operation_id: Some(pending.operation_id.clone()),
                         handle: handle.unwrap(),
                     });
@@ -212,6 +216,7 @@ impl DeliveryState {
 
     /// Some OS callbacks belong to a submitted update object, not the whole card.
     /// Ignore a retired object's event once a newer update is pending or published.
+    #[cfg(any(target_os = "linux", target_os = "windows", test))]
     pub(crate) fn dismissed_operation(&mut self, target: NotificationTarget, notification_id: &str, operation_id: &str) {
         if let Some(pending) = &self.pending {
             let pending_thread = match &pending.command {

@@ -143,13 +143,6 @@ async fn respond(socket: &mut TcpStream, body: Value) {
         .unwrap();
 }
 
-fn group_meta_page(scanned: &str, has_more: bool, items: Value) -> Value {
-    json!({"code": 0, "data": {
-        "account": "!dev", "mode": "full", "items": items,
-        "scannedThrough": scanned, "groupMetaFeedEndId": "2", "hasMore": has_more,
-    }})
-}
-
 /// A drain scheduled but not yet polled must fail on its first poll after the login ended or
 /// its cache view was invalidated; it cannot read plans, commit pages or adopt a successor.
 fn seed_p2p_thread(conn: &mut Connection, user_id: i64, tombstone_end: i64) {
@@ -197,9 +190,7 @@ async fn delayed_drain_futures_reject_end_and_repair_before_any_work() {
                 .with_database(|conn| {
                     let (feed, members): (String, i64) = conn
                         .query_row(
-                            "SELECT feed_id,
-                                    (SELECT COUNT(*) FROM members
-                                     WHERE user_id=42 AND thread_id=?1)
+                            "SELECT feed_id,member_count
                              FROM group_meta WHERE user_id=42 AND thread_id=?1",
                             [THREAD_ID],
                             |row| Ok((row.get(0)?, row.get(1)?)),
@@ -332,9 +323,7 @@ async fn a_queued_group_meta_page_commit_rejects_end_or_repair() {
                 .with_database(|conn| {
                     let (feed, members): (String, i64) = conn
                         .query_row(
-                            "SELECT feed_id,
-                                    (SELECT COUNT(*) FROM members
-                                     WHERE user_id=42 AND thread_id=?1)
+                            "SELECT feed_id,member_count
                              FROM group_meta WHERE user_id=42 AND thread_id=?1",
                             [THREAD_ID],
                             |row| Ok((row.get(0)?, row.get(1)?)),

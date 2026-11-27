@@ -1,4 +1,4 @@
-use rusqlite::{Connection, OptionalExtension};
+use rusqlite::{Connection, TransactionBehavior};
 use std::path::{Path, PathBuf};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -43,11 +43,10 @@ impl DeviceConnection {
                 Err("device database already initialized with a different file".into())
             };
         }
-        let connection =
+        let mut connection =
             Connection::open(path).map_err(|e| format!("open device database: {e}"))?;
         super::configure(&connection)?;
-        super::app_state::ensure_schema(&connection)?;
-        migrate_preferences(&connection)?;
+        prepare_schema(&mut connection)?;
         *database = Some(Initialized {
             path: path.to_path_buf(),
             connection,
@@ -78,101 +77,53 @@ impl DeviceConnection {
     }
 }
 
-fn migrate_preferences(conn: &Connection) -> Result<(), String> {
-    let exists: bool = conn
-        .query_row(
-            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='client_preferences'",
-            [],
-            |row| row.get::<_, i64>(0),
+/// Initialize a fresh device database or validate the current format without changing existing
+/// records. Unsupported formats are rejected, never migrated or reset. One transaction covers
+/// initialization so an interrupted start cannot leave a partial schema.
+fn prepare_schema(conn: &mut Connection) -> Result<(), String> {
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|e| format!("begin database start check: {e}"))?;
+    let objects: Vec<(String, String)> = tx
+        .prepare("SELECT name,type FROM sqlite_master WHERE type IN ('table','view') AND name NOT LIKE 'sqlite_%' ORDER BY name")
+        .and_then(|mut statement| {
+            statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+                .collect()
+        })
+        .map_err(|e| format!("inspect device database format: {e}"))?;
+    if objects.is_empty() {
+        tx.execute_batch(
+            "CREATE TABLE settings (
+                key TEXT PRIMARY KEY,
+                value_json TEXT NOT NULL,
+                updated_at INTEGER NOT NULL
+             );",
         )
-        .map(|count| count > 0)
-        .map_err(|e| format!("inspect preferences table: {e}"))?;
-    if !exists {
-        return conn
-            .execute_batch(
-                "CREATE TABLE client_preferences (
-                    key TEXT PRIMARY KEY,
-                    value_json TEXT NOT NULL,
-                    updated_at INTEGER NOT NULL
-                 );",
-            )
-            .map_err(|e| format!("create preferences: {e}"));
-    }
-    let has_scope: bool = conn
-        .prepare("PRAGMA table_info(client_preferences)")
-        .map_err(|e| e.to_string())?
-        .query_map([], |row| row.get::<_, String>(1))
-        .map_err(|e| e.to_string())?
-        .filter_map(Result::ok)
-        .any(|name| name == "scope");
-    if !has_scope {
-        return Ok(());
-    }
-    let journal: Option<String> = conn
-        .query_row(
-            "SELECT value_json FROM client_preferences WHERE scope='device' AND key='soms.native-login-session.v1'",
-            [],
-            |row| row.get(0),
-        )
-        .optional()
-        .map_err(|e| format!("read legacy login journal: {e}"))?;
-    conn.execute_batch(
-        "CREATE TABLE client_preferences_next (
-            key TEXT PRIMARY KEY,
-            value_json TEXT NOT NULL,
-            updated_at INTEGER NOT NULL
-         );
-         INSERT INTO client_preferences_next(key, value_json, updated_at)
-         SELECT key, value_json, updated_at FROM client_preferences
-         WHERE scope='global' AND key IN ('language','theme');
-         INSERT OR IGNORE INTO client_preferences_next(key, value_json, updated_at)
-         SELECT key, value_json, updated_at FROM client_preferences
-         WHERE scope='device'
-           AND key NOT IN (
-             'language','theme',
-             'soms.login-session.v1','soms.native-login-session.v1','soms.lastUserId','device_id'
-           )
-           AND key NOT LIKE 'push-registration:%';",
-    )
-    .map_err(|e| format!("copy preferences: {e}"))?;
-    for key in ["notificationPreviewMode", "notificationEnabled", "notificationSound"] {
-        let stricter = if key == "notificationPreviewMode" {
-            "\"private\""
-        } else {
-            "false"
-        };
-        conn.execute(
-            "INSERT INTO client_preferences_next(key, value_json, updated_at)
-             SELECT ?1, ?2, updated_at FROM client_preferences
-             WHERE key=?1 AND value_json=?2
-             ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json, updated_at=excluded.updated_at",
-            rusqlite::params![key, stricter],
-        )
-        .map_err(|e| format!("keep stricter notification preference: {e}"))?;
-    }
-    conn.execute_batch(
-        "DROP TABLE client_preferences;
-         ALTER TABLE client_preferences_next RENAME TO client_preferences;",
-    )
-    .map_err(|e| format!("replace preferences table: {e}"))?;
-    if super::app_state::get(conn, super::app_state::LOGIN_STATE_KEY)?.is_none() {
-        if let Some(raw) = journal {
-            if let Ok(value) = serde_json::from_str::<serde_json::Value>(&raw) {
-                let phase = value.get("phase").and_then(|item| item.as_str()).unwrap_or("");
-                let session = value.get("session").and_then(|item| item.as_str());
-                let state = match phase {
-                    "active" => "active",
-                    "ending" | "revoking" => "cleaning",
-                    _ => "signed-out",
-                };
-                super::app_state::put(conn, super::app_state::LOGIN_STATE_KEY, state)?;
-                if let Some(uuid) = session.filter(|_| state != "signed-out") {
-                    super::app_state::put(conn, super::app_state::SESSION_UUID_KEY, uuid)?;
-                }
-            }
+        .map_err(|e| format!("create settings table: {e}"))?;
+        super::app_state::ensure_schema(&tx)?;
+        super::app_state::put(
+            &tx,
+            super::app_state::SCHEMA_VERSION_KEY,
+            &super::app_state::SCHEMA_VERSION.to_string(),
+        )?;
+    } else {
+        let expected = vec![
+            ("app_state".to_string(), "table".to_string()),
+            ("settings".to_string(), "table".to_string()),
+        ];
+        if objects != expected {
+            return Err("unsupported device database format".into());
+        }
+        tx.prepare("SELECT key,value_json,updated_at FROM settings LIMIT 0")
+            .map_err(|e| format!("unsupported device settings format: {e}"))?;
+        if super::app_state::get(&tx, super::app_state::SCHEMA_VERSION_KEY)?
+            != Some(super::app_state::SCHEMA_VERSION.to_string())
+        {
+            return Err("unsupported device app-state schema version".into());
         }
     }
-    Ok(())
+    tx.commit()
+        .map_err(|e| format!("commit database start check: {e}"))
 }
 
 pub(super) static DEVICE_CONNECTION: DeviceConnection = DeviceConnection::new();
@@ -264,5 +215,131 @@ mod tests {
             })
             .unwrap();
         assert_eq!(count, 2);
+    }
+
+    fn tables(conn: &Connection) -> Vec<String> {
+        let mut statement = conn
+            .prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+            .unwrap();
+        statement
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    }
+
+    #[test]
+    fn start_check_creates_both_tables_and_keeps_records_of_this_version() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("preferences.sqlite");
+        DeviceConnection::new().initialize(&path).unwrap();
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute(
+                "INSERT INTO settings(key,value_json,updated_at) VALUES('theme','\"dark\"',0)",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO app_state(key,value) VALUES('lifecycleState','\"signed-out\"')",
+                [],
+            )
+            .unwrap();
+        }
+        // The next start keeps what this version wrote.
+        DeviceConnection::new().initialize(&path).unwrap();
+        let conn = Connection::open(&path).unwrap();
+        assert!(tables(&conn).contains(&"settings".to_string()));
+        assert!(tables(&conn).contains(&"app_state".to_string()));
+        let value: String = conn
+            .query_row(
+                "SELECT value_json FROM settings WHERE key='theme'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(value, "\"dark\"");
+        let state: String = conn
+            .query_row(
+                "SELECT value FROM app_state WHERE key='lifecycleState'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(state, "\"signed-out\"");
+    }
+
+    #[test]
+    fn unsupported_app_state_versions_are_rejected_without_changing_records() {
+        for version in [None, Some("99")] {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("preferences.sqlite");
+            DeviceConnection::new().initialize(&path).unwrap();
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "INSERT INTO settings VALUES('theme','\"dark\"',0);
+                 INSERT INTO app_state VALUES('lifecycleState','\"signed-out\"');
+                 DELETE FROM app_state WHERE key='schemaVersion';",
+            )
+            .unwrap();
+            if let Some(value) = version {
+                super::super::app_state::put(&conn, "schemaVersion", value).unwrap();
+            }
+            let database = DeviceConnection::new();
+            assert_eq!(
+                database.initialize(&path).unwrap_err(),
+                "unsupported device app-state schema version"
+            );
+            assert!(database.capture().is_err());
+            assert_eq!(
+                super::super::app_state::get(&conn, "schemaVersion")
+                    .unwrap()
+                    .as_deref(),
+                version
+            );
+            assert_eq!(
+                super::super::app_state::get(&conn, "lifecycleState")
+                    .unwrap()
+                    .as_deref(),
+                Some("\"signed-out\"")
+            );
+            let theme: String = conn
+                .query_row(
+                    "SELECT value_json FROM settings WHERE key='theme'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(theme, "\"dark\"");
+        }
+    }
+
+    #[test]
+    fn a_failed_start_check_leaves_the_file_untouched_and_is_retried() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("preferences.sqlite");
+        {
+            // A view named like the table makes the first attempt fail inside its transaction.
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE blocker(value TEXT);
+                 CREATE VIEW app_state AS SELECT value AS key, value FROM blocker;",
+            )
+            .unwrap();
+        }
+        let database = DeviceConnection::new();
+        assert!(database.initialize(&path).is_err());
+        assert!(database.capture().is_err());
+        let conn = Connection::open(&path).unwrap();
+        assert!(tables(&conn).contains(&"blocker".to_string()));
+        assert!(!tables(&conn).contains(&"settings".to_string()));
+        drop(conn);
+        // After an explicit repair removes the unsupported objects, initialization can retry.
+        Connection::open(&path)
+            .unwrap()
+            .execute_batch("DROP VIEW app_state; DROP TABLE blocker;")
+            .unwrap();
+        database.initialize(&path).unwrap();
+        assert!(database.capture().is_ok());
     }
 }

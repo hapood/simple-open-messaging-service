@@ -22,6 +22,7 @@ object RustRuntimeBridge {
         databasePath = initializeRuntime(
             ctx.applicationContext.dataDir.absolutePath,
             SomsSecureStore.getSessionToken(ctx),
+            SomsSecureStore.getLoginSessionId(ctx),
         )
         val restored = JSONObject(getServerOrigins())
         SomsSecureStore.recordServerOrigins(
@@ -87,6 +88,11 @@ object RustRuntimeBridge {
 
     private external fun syncStateFeed(userId: Int, target: Long): String
     private external fun queryNotifications(userId: Int, threadFeedEndId: Int, allowAlert: Boolean, stateFeedEndId: Long): String?
+    external fun readFirebaseConfig(): String?
     private external fun getServerOrigins(): String
-    private external fun initializeRuntime(dataDirectory: String, token: String?): String
+    private external fun initializeRuntime(
+        dataDirectory: String,
+        token: String?,
+        loginSessionId: String?,
+    ): String
 }

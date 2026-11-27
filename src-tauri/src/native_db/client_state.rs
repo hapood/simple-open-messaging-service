@@ -172,11 +172,6 @@ pub(super) fn delete_thread(
     )
     .map_err(|e| format!("delete thread preview: {e}"))?;
     tx.execute(
-        "DELETE FROM members WHERE user_id=?1 AND thread_id=?2",
-        params![user_id, thread_id],
-    )
-    .map_err(|e| format!("delete thread roster: {e}"))?;
-    tx.execute(
         "DELETE FROM threads WHERE user_id=?1 AND thread_id=?2",
         params![user_id, thread_id],
     )
@@ -197,11 +192,6 @@ pub(super) fn begin_group_meta_recovery(
     let tx = conn
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|e| e.to_string())?;
-    tx.execute(
-        "DELETE FROM members WHERE user_id=?1 AND thread_id=?2",
-        params![user_id, thread_id],
-    )
-    .map_err(|e| e.to_string())?;
     let changed = tx
         .execute(
             "UPDATE group_meta SET member_count=0, feed_id='0',

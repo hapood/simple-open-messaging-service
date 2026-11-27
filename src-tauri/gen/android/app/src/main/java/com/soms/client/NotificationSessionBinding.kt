@@ -4,7 +4,10 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 
-/** Immutable OS-notification destination. Reuses the message tap's session/origin contract. */
+/** Immutable OS-notification destination. Reuses the message tap's session/origin contract.
+ *  Instances are only created by the validated factories; copy() keeps the constructor's visibility
+ *  so it cannot bypass them. */
+@ConsistentCopyVisibility
 data class NotificationSessionBinding private constructor(val sessionId: Int, val origin: String) {
     fun isCurrent(currentSessionId: Int?, currentOrigin: String?): Boolean =
         sessionId == currentSessionId && origin == currentOrigin
