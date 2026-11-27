@@ -32,8 +32,6 @@ import type { GroupMetaFeedItem } from './group-meta-feed.service.js';
 /** Page budget for one scheduler invocation; the scheduler requeues while the
  * applied cursor still trails the target. */
 const META_ROUND_PAGE_BUDGET = 4;
-/** Hard ceiling for one full snapshot scan; a legitimate roster never nears it. */
-const MAX_FULL_SNAPSHOT_PAGES = 200;
 
 export interface MetaRoundPlan {
   groupAccount: string;
@@ -85,11 +83,20 @@ export class FederationThreadMetaRoundExecutorService {
       if (error instanceof RemoteGroupMetaCursorUnavailableError) {
         // Compaction can invalidate either a delta cursor or a fixed full
         // boundary. Re-open at the source's current end before any commit.
-        await this.database.db.transaction(async (tx) => {
+        const reopened = await this.database.db.transaction(async (tx) => {
           signal.throwIfAborted();
-          await reopenMirrorMetaRecoveryInTx(tx, group, error.resumeBefore - 1);
+          const work = await reopenMirrorMetaRecoveryInTx(
+            tx,
+            group,
+            error.resumeBefore - 1,
+            this.messages,
+          );
           signal.throwIfAborted();
+          return work;
         });
+        for (const work of reopened) {
+          this.events.emit(MESSAGE_PROFILE_WORK_COMMITTED, work);
+        }
         return true;
       }
       throw error;
@@ -203,19 +210,19 @@ export class FederationThreadMetaRoundExecutorService {
     return true;
   }
 
-  /** Recovery drains consume one fetched page batch per transaction,
-   * resuming from the durable scan cursor after a crash. */
+  /** Recovery drains consume one fetched page per transaction, resuming from
+   * the durable scan cursor. The round budget stops the loop; the next round
+   * keeps full mode while the window is open. */
   private async runFullWindow(
     group: MirrorGroupAddress,
     through: number,
-    _plan: MetaRoundPlan,
+    plan: MetaRoundPlan,
     signal: AbortSignal,
   ): Promise<void> {
-    let after = 0;
-    const snapshot: MirrorMetaReplicatedItem[] = [];
-    for (let pages = 0; ; pages += 1) {
+    let after = plan.metaProcessedThroughId;
+    for (let page = 0; page < META_ROUND_PAGE_BUDGET; page += 1) {
       signal.throwIfAborted();
-      const page = await this.client.fetchPage(
+      const fetched = await this.client.fetchPage(
         group.publisherNamespaceId,
         {
           account: group.account,
@@ -225,37 +232,33 @@ export class FederationThreadMetaRoundExecutorService {
         },
         signal,
       );
-      const items = page.items.map((item) =>
+      if (fetched.groupMetaFeedEndId < through)
+        throw new Error('group-meta page did not reach its fixed target');
+      const items = fetched.items.map((item) =>
         validateOriginGroupMetaItem(item, 'full'),
       );
-      const reachedBoundary = !page.hasMore;
-      snapshot.push(...items);
-      if (reachedBoundary) {
+      const reachedBoundary = !fetched.hasMore;
+      signal.throwIfAborted();
+      const effect = await this.database.db.transaction(async (tx) => {
         signal.throwIfAborted();
-        const effect = await this.database.db.transaction(async (tx) => {
-          signal.throwIfAborted();
-          const applied = await applyFullMirrorMetaBatchInTx(tx, {
-            group,
-            items: snapshot,
-            through,
-            scannedThrough: page.scannedThrough,
-            reachedBoundary: true,
-            messages: this.messages,
-          });
-          signal.throwIfAborted();
-          return applied;
+        const applied = await applyFullMirrorMetaBatchInTx(tx, {
+          group,
+          items,
+          through,
+          scannedThrough: fetched.scannedThrough,
+          reachedBoundary,
+          messages: this.messages,
         });
-        if (signal.aborted) return;
-        await this.prefetchProfiles(effect.profileDemands);
-        for (const work of effect.systemMessageProfileWorks) {
-          this.events.emit(MESSAGE_PROFILE_WORK_COMMITTED, work);
-        }
-
-        return;
+        signal.throwIfAborted();
+        return applied;
+      });
+      if (signal.aborted) return;
+      await this.prefetchProfiles(effect.profileDemands);
+      for (const work of effect.systemMessageProfileWorks) {
+        this.events.emit(MESSAGE_PROFILE_WORK_COMMITTED, work);
       }
-      if (pages >= MAX_FULL_SNAPSHOT_PAGES)
-        throw new Error('full group-meta snapshot exceeded the page ceiling');
-      after = page.scannedThrough;
+      if (reachedBoundary) return;
+      after = fetched.scannedThrough;
     }
   }
 

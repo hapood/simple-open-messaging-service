@@ -11,6 +11,13 @@ import { groupMeta, messageThread } from '../../database/schema.js';
 import { groupStateFields, groupStateSql } from '../shared/group-state.js';
 import { upsertCurrentGroupMetaFactsInTx } from './current-group-meta-fact.js';
 import { publishClientGroupFactInTx } from './publish-client-group-fact-in-tx.js';
+import { MessageService } from '../../message/message.service.js';
+import { SystemMessageType } from '../../message/system-message.js';
+import { collectCommittedProfileWork } from '../../message/collect-committed-profile-work.js';
+import type { MessageProfileWorkCommittedEvent } from '../../message/message-profile-work.event.js';
+import { groupMemberProfileAddress } from './group-member-profile-address.js';
+import { readCurrentLocalAuthorizedGroupMemberIdsInTx } from './current-group-roster.js';
+import { reconcileClientMemberCountInTx } from './reconcile-client-member-count-in-tx.js';
 
 export interface MirrorGroupAddress {
   account: string;
@@ -246,19 +253,39 @@ async function assertMirrorRosterOwnersInTx(
     throw new Error('group-meta roster cannot have multiple owners');
 }
 
-/** Re-opens the meta recovery drain after the origin compacted below the
- * mirror's delta cursor: the scan cursor zeroes and the drain re-fixes at the
- * merged target in one statement. A no-op while nothing has been scanned or
- * no target is known. */
-export async function reopenMirrorMetaRecoveryInTx(
+/** Opens a full window the same way for the first snapshot and for a restart.
+ * The recovery through is fixed at the merged target, the scan cursor returns
+ * to zero, and current members become MEMBER_DEPART with a new updatedAt.
+ * Those members also become one GROUP_LEFT batch. Lock order: group Account State scope, Thread
+ * Content lock, GroupMeta, roster facts. */
+export async function beginMirrorMetaRecoveryInTx(
   tx: DatabaseTransaction,
   group: MirrorGroupAddress,
   availableThrough?: number,
-): Promise<void> {
+  messages?: Pick<MessageService, 'writeSystemMessageInTx'>,
+): Promise<MessageProfileWorkCommittedEvent[]> {
   await lockMirrorGroupInTx(tx, group);
   const mirror = await requireMirrorMetaInTx(tx, group);
   const target = Math.max(mirror.metaTargetId, availableThrough ?? 0);
-  if (target === 0) return;
+  if (target === 0) return [];
+  const threadLock = await requireThreadContentLockInTx(tx, mirror.threadId);
+  const existing = await tx.execute<{
+    account: string;
+    namespaceId: number;
+    profileRev: number;
+  }>(sql`
+    SELECT body->>'account' AS account,
+      (body->>'namespaceId')::integer AS "namespaceId",
+      COALESCE((body->>'profileRev')::integer, 0) AS "profileRev"
+    FROM "GroupMetaMemberFeed"
+    WHERE "threadId" = ${mirror.threadId} AND operation = 'MEMBER_UPSERT'
+  `);
+  await tx.execute(sql`
+    UPDATE "GroupMetaMemberFeed"
+    SET operation = 'MEMBER_DEPART', "updatedAt" = CURRENT_TIMESTAMP
+    WHERE "threadId" = ${mirror.threadId} AND operation = 'MEMBER_UPSERT'
+  `);
+  await reconcileClientMemberCountInTx(tx, threadLock);
   await tx
     .update(groupMeta)
     .set({
@@ -268,6 +295,75 @@ export async function reopenMirrorMetaRecoveryInTx(
       updatedAt: new Date(),
     })
     .where(eq(groupMeta.threadId, mirror.threadId));
+  if (!messages || existing.rows.length === 0) return [];
+  const publisher = await tx.execute<{ localNamespaceId: number | null }>(sql`
+    SELECT "peerAssignedLocalNamespaceId" AS "localNamespaceId"
+    FROM "IdentityNamespace"
+    WHERE id = ${group.publisherNamespaceId} AND "retiredAt" IS NULL
+  `);
+  const localNamespaceId = publisher.rows[0]?.localNamespaceId;
+  if (localNamespaceId == null)
+    throw new Error(
+      'mirror publisher has no recognized local namespace binding',
+    );
+  const left = existing.rows
+    .filter((member) => member.namespaceId !== localNamespaceId)
+    .map((member) =>
+      groupMemberProfileAddress({
+        account: member.account,
+        publisherNamespaceId: group.publisherNamespaceId,
+        profileNamespaceId: member.namespaceId,
+        profileRev: member.profileRev,
+      }),
+    );
+  if (left.length === 0) return [];
+  const recipients = await readCurrentLocalAuthorizedGroupMemberIdsInTx(tx, {
+    groupId: mirror.threadId,
+    threadId: mirror.threadId,
+  });
+  if (recipients.length === 0) return [];
+  const result = await messages.writeSystemMessageInTx(
+    tx,
+    mirror.threadId,
+    {
+      type: SystemMessageType.GROUP_LEFT,
+      members: left.slice(0, 5) as [(typeof left)[0], ...(typeof left)[0][]],
+      totalCount: left.length,
+    },
+    { threadLock },
+  );
+  const work = collectCommittedProfileWork([
+    {
+      threadType: 'GROUP',
+      threadId: mirror.threadId,
+      seq: result.message.seq,
+      publisherNamespaceId: group.publisherNamespaceId,
+      creator: {
+        account: result.message.creator!.account,
+        profileNamespaceId: result.message.creator!.namespaceId,
+        profileRev: result.message.profileRev,
+      },
+      contentType: result.message.contentType,
+      content: result.message.content,
+      localState: result.message.localState,
+      isDeleted: false,
+      groupAccount: group.account,
+    },
+  ]);
+  return work.demands.length > 0 || work.evidenceProjections.length > 0
+    ? [work]
+    : [];
+}
+
+/** Re-opens the meta recovery drain after the origin compacted below the
+ * mirror's cursor. Same window start as the first snapshot. */
+export async function reopenMirrorMetaRecoveryInTx(
+  tx: DatabaseTransaction,
+  group: MirrorGroupAddress,
+  availableThrough?: number,
+  messages?: Pick<MessageService, 'writeSystemMessageInTx'>,
+): Promise<MessageProfileWorkCommittedEvent[]> {
+  return beginMirrorMetaRecoveryInTx(tx, group, availableThrough, messages);
 }
 
 /** The round's final transaction: advance the applied end to the round's

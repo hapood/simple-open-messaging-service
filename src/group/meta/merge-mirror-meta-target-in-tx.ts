@@ -6,14 +6,18 @@ import { requireThreadContentLockInTx } from '../../common/locks/thread-content-
 import { readGroupState } from '../shared/group-state.js';
 import { and, eq } from 'drizzle-orm';
 import { groupStateFields } from '../shared/group-state.js';
-import type { MirrorGroupAddress } from './mirror-meta-shared.js';
+import {
+  beginMirrorMetaRecoveryInTx,
+  type MirrorGroupAddress,
+} from './mirror-meta-shared.js';
 
 /** The authoritative group's meta head merges its end into the mirror's
  * target — creating the mirror cursor row when absent — inside the
- * head-consumption transaction. A zero processed cursor opens a full snapshot
- * window fixed at the merged target, so a restart resumes the same window
- * instead of re-deriving it. Returns the mirror thread id for the caller's
- * round wake, or null when this peer hosts no mirror for the group.
+ * head-consumption transaction. The first row opens a full window through
+ * `beginMirrorMetaRecoveryInTx`. A later head only raises `metaTargetId`;
+ * an open window's `metaRecoveryThroughId` stays fixed. Returns the mirror
+ * thread id for the caller's round wake, or null when this peer hosts no
+ * mirror for the group.
  *
  * Lock order: group Account State scope, Thread Content lock, GroupMeta. */
 export async function mergeMirrorGroupMetaTargetInTx(
@@ -33,19 +37,16 @@ export async function mergeMirrorGroupMetaTargetInTx(
   );
   if (!mirror) return null;
   await requireThreadContentLockInTx(tx, mirror.id);
-  // A non-positive coordinate carries no window: the row exists so later
-  // merges can advance, but there is nothing to snapshot yet.
-  const windowThrough = input.metaTargetId > 0 ? input.metaTargetId : 0;
-  await tx.execute(sql`
-    INSERT INTO "GroupMeta" ("threadId", "metaTargetId", "metaRecoveryThroughId")
-    VALUES (${mirror.id}, ${input.metaTargetId}, ${windowThrough})
+  const inserted = await tx.execute<{ inserted: boolean }>(sql`
+    INSERT INTO "GroupMeta" ("threadId", "metaTargetId")
+    VALUES (${mirror.id}, ${input.metaTargetId})
     ON CONFLICT ("threadId") DO UPDATE SET
       "metaTargetId" = GREATEST("GroupMeta"."metaTargetId", EXCLUDED."metaTargetId"),
-      "metaRecoveryThroughId" = CASE
-        WHEN "GroupMeta"."metaProcessedThroughId" = 0
-          THEN GREATEST("GroupMeta"."metaTargetId", EXCLUDED."metaTargetId")
-        ELSE "GroupMeta"."metaRecoveryThroughId" END,
       "updatedAt" = CURRENT_TIMESTAMP
+    RETURNING (xmax = 0) AS inserted
   `);
+  if (inserted.rows[0]?.inserted && input.metaTargetId > 0) {
+    await beginMirrorMetaRecoveryInTx(tx, input.group, input.metaTargetId);
+  }
   return { threadId: mirror.id };
 }

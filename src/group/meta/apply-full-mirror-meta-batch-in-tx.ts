@@ -42,10 +42,10 @@ export interface FullMirrorMetaBatchInput {
   messages?: Pick<MessageService, 'writeSystemMessageInTx'>;
 }
 
-/** Commit a complete full Group Meta drain in one transaction, without
- * system messages. Clearing and replacing the roster shares its cursor commit.
- * Lock order: group Account State scope, Thread Content lock, GroupMeta and
- * roster facts. */
+/** Commit one full Group Meta page. The window open already cleared the
+ * previous roster. This page upserts its facts and announces members that
+ * were not already present. The last page closes the window. Lock order:
+ * group Account State scope, Thread Content lock, GroupMeta and roster facts. */
 export async function applyFullMirrorMetaBatchInTx(
   tx: DatabaseTransaction,
   input: FullMirrorMetaBatchInput,
@@ -60,42 +60,41 @@ export async function applyFullMirrorMetaBatchInTx(
     throw new Error('the meta recovery drain closed during this round');
   if (mirror.metaRecoveryThroughId !== input.through)
     throw new Error('the meta recovery drain changed during this round');
-  if (!input.reachedBoundary || input.scannedThrough !== input.through)
-    throw new Error('full group-meta requires a complete fixed-through drain');
+  if (input.reachedBoundary) {
+    if (input.scannedThrough !== input.through)
+      throw new Error('full group-meta boundary did not reach its fixed through');
+  } else if (input.scannedThrough >= input.through) {
+    throw new Error('full group-meta page passed its fixed through');
+  } else if (input.scannedThrough <= mirror.metaProcessedThroughId) {
+    throw new Error('full group-meta page did not advance the scan cursor');
+  }
   const threadLock = await requireGroupThreadContentLockUnderGroupInTx(
     tx,
     mirror.threadId,
     mirror.threadId,
   );
-  const previousMembers = new Map<
-    string,
-    { account: string; namespaceId: number; profileRev: number }
-  >();
-  if (mirror.metaProcessedThroughId > 0) {
-    const existingRows = await tx.execute<{
-      account: string;
-      namespaceId: number;
-      profileRev: number;
-    }>(sql`
-      SELECT
-        body->>'account' AS account,
-        (body->>'namespaceId')::integer AS "namespaceId",
-        COALESCE((body->>'profileRev')::integer, 0) AS "profileRev"
-      FROM "GroupMetaMemberFeed"
+  const joinedMembers: {
+    account: string;
+    namespaceId: number;
+    profileRev: number;
+  }[] = [];
+  for (const item of input.items) {
+    if (item.operation !== 'MEMBER_UPSERT') continue;
+    const previous = await tx.execute<{ operation: string }>(sql`
+      SELECT operation FROM "GroupMetaMemberFeed"
       WHERE "threadId" = ${mirror.threadId}
-        AND operation = 'MEMBER_UPSERT'
+        AND body ->> 'account' = ${item.account}
+        AND body -> 'namespaceId' = to_jsonb(${item.namespaceId}::integer)
+        AND operation <> 'GROUP_ANNOUNCEMENT'
+      LIMIT 1
     `);
-    for (const row of existingRows.rows) {
-      previousMembers.set(`${row.namespaceId}:${row.account}`, row);
-    }
+    if (previous.rows[0]?.operation === 'MEMBER_UPSERT') continue;
+    joinedMembers.push({
+      account: item.account,
+      namespaceId: item.namespaceId,
+      profileRev: item.profileRev,
+    });
   }
-  // Retain facts at the same coordinate so recovery cannot reset their first
-  // local persistence time. Remove facts absent from the completed full scan.
-  await tx.execute(sql`
-    DELETE FROM "GroupMetaMemberFeed"
-    WHERE "threadId" = ${mirror.threadId}
-      AND "feedId" <> ALL(${sql.param(input.items.map((item) => item.feedId))}::integer[])
-  `);
   const profileDemands = input.items
     .map((item) => selectMirrorMetaProfileDemand(input.group, item))
     .filter((demand): demand is ProfilePrefetchDemand => demand !== null);
@@ -174,100 +173,63 @@ export async function applyFullMirrorMetaBatchInTx(
     });
   }
   const systemMessageProfileWorks: MessageProfileWorkCommittedEvent[] = [];
-  if (input.messages && mirror.metaProcessedThroughId > 0) {
-    const nextMembers = new Map<
-      string,
-      { account: string; namespaceId: number; profileRev: number }
-    >();
-    for (const item of input.items) {
-      if (item.operation === 'MEMBER_UPSERT') {
-        nextMembers.set(`${item.namespaceId}:${item.account}`, {
-          account: item.account,
-          namespaceId: item.namespaceId,
-          profileRev: item.profileRev,
-        });
-      }
-    }
-    const joined = [...nextMembers.entries()]
-      .filter(([key]) => !previousMembers.has(key))
-      .map(([, m]) =>
-        groupMemberProfileAddress({
-          account: m.account,
-          publisherNamespaceId: input.group.publisherNamespaceId,
-          profileNamespaceId: m.namespaceId,
-          profileRev: m.profileRev,
-        }),
-      );
-    const localNamespaceId = input.group.publisherNamespaceId;
-    const left = [...previousMembers.entries()]
-      .filter(
-        ([key, m]) => !nextMembers.has(key) && m.namespaceId !== localNamespaceId,
-      )
-      .map(([, m]) =>
-        groupMemberProfileAddress({
-          account: m.account,
-          publisherNamespaceId: input.group.publisherNamespaceId,
-          profileNamespaceId: m.namespaceId,
-          profileRev: m.profileRev,
-        }),
-      );
-    if (joined.length > 0 || left.length > 0) {
-      const recipients = await readCurrentLocalAuthorizedGroupMemberIdsInTx(
+  if (input.messages && joinedMembers.length > 0) {
+    const joined = joinedMembers.map((member) =>
+      groupMemberProfileAddress({
+        account: member.account,
+        publisherNamespaceId: input.group.publisherNamespaceId,
+        profileNamespaceId: member.namespaceId,
+        profileRev: member.profileRev,
+      }),
+    );
+    const recipients = await readCurrentLocalAuthorizedGroupMemberIdsInTx(
+      tx,
+      { groupId: mirror.threadId, threadId: mirror.threadId },
+    );
+    if (recipients.length > 0) {
+      const result = await input.messages.writeSystemMessageInTx(
         tx,
-        { groupId: mirror.threadId, threadId: mirror.threadId },
+        mirror.threadId,
+        {
+          type: SystemMessageType.GROUP_JOINED,
+          members: joined.slice(0, 5) as [
+            (typeof joined)[0],
+            ...(typeof joined)[0][],
+          ],
+          totalCount: joined.length,
+        },
+        { threadLock },
       );
-      if (recipients.length > 0) {
-        for (const [type, members] of [
-          [SystemMessageType.GROUP_JOINED, joined] as const,
-          [SystemMessageType.GROUP_LEFT, left] as const,
-        ]) {
-          if (members.length === 0) continue;
-          const result = await input.messages.writeSystemMessageInTx(
-            tx,
-            mirror.threadId,
-            {
-              type,
-              members: members.slice(0, 5) as [
-                (typeof members)[0],
-                ...(typeof members)[0][],
-              ],
-              totalCount: members.length,
-            },
-            { threadLock },
-          );
-          const work = collectCommittedProfileWork([
-            {
-              threadType: 'GROUP',
-              threadId: mirror.threadId,
-              seq: result.message.seq,
-              publisherNamespaceId: input.group.publisherNamespaceId,
-              creator: {
-                account: result.message.creator!.account,
-                profileNamespaceId: result.message.creator!.namespaceId,
-                profileRev: result.message.profileRev,
-              },
-              contentType: result.message.contentType,
-              content: result.message.content,
-              localState: result.message.localState,
-              isDeleted: false,
-              groupAccount: input.group.account,
-            },
-          ]);
-          if (
-            work.demands.length > 0 ||
-            work.evidenceProjections.length > 0
-          ) {
-            systemMessageProfileWorks.push(work);
-          }
-        }
+      const work = collectCommittedProfileWork([
+        {
+          threadType: 'GROUP',
+          threadId: mirror.threadId,
+          seq: result.message.seq,
+          publisherNamespaceId: input.group.publisherNamespaceId,
+          creator: {
+            account: result.message.creator!.account,
+            profileNamespaceId: result.message.creator!.namespaceId,
+            profileRev: result.message.profileRev,
+          },
+          contentType: result.message.contentType,
+          content: result.message.content,
+          localState: result.message.localState,
+          isDeleted: false,
+          groupAccount: input.group.account,
+        },
+      ]);
+      if (work.demands.length > 0 || work.evidenceProjections.length > 0) {
+        systemMessageProfileWorks.push(work);
       }
     }
   }
-  await finalizeMirrorMetaRecoveryInTx(tx, {
-    threadId: mirror.threadId,
-    through: input.through,
-    threadLock,
-  });
+  if (input.reachedBoundary) {
+    await finalizeMirrorMetaRecoveryInTx(tx, {
+      threadId: mirror.threadId,
+      through: input.through,
+      threadLock,
+    });
+  }
   await advanceMirrorProcessedThroughInTx(
     tx,
     mirror.threadId,

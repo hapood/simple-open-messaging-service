@@ -205,12 +205,18 @@ describe('mirror Group Meta rounds', () => {
     });
   });
 
-  it('greatest-merges targets and re-fixes an open window only at a zero cursor', async () => {
+  it('greatest-merges targets without moving an open recovery window', async () => {
     await database.db.transaction((tx) =>
       mergeMirrorGroupMetaTargetInTx(tx, { group, metaTargetId: 5 }),
     );
-    // A cursor already past zero keeps the running window (a live drain) and
-    // only the target moves forward.
+    await database.db.transaction((tx) =>
+      mergeMirrorGroupMetaTargetInTx(tx, { group, metaTargetId: 8 }),
+    );
+    expect(await readMirrorMeta()).toMatchObject({
+      metaTargetId: 8,
+      metaProcessedThroughId: 0,
+      metaRecoveryThroughId: 5,
+    });
     await database.db
       .update(groupMeta)
       .set({ metaProcessedThroughId: 2 })
@@ -219,13 +225,13 @@ describe('mirror Group Meta rounds', () => {
       mergeMirrorGroupMetaTargetInTx(tx, { group, metaTargetId: 3 }),
     );
     expect(await readMirrorMeta()).toMatchObject({
-      metaTargetId: 5,
+      metaTargetId: 8,
       metaProcessedThroughId: 2,
       metaRecoveryThroughId: 5,
     });
   });
 
-  it('commits a complete full drain atomically and emits no system messages', async () => {
+  it('commits each full page and closes the window on the last page', async () => {
     await database.db.transaction((tx) =>
       mergeMirrorGroupMetaTargetInTx(tx, { group, metaTargetId: 9 }),
     );
@@ -240,6 +246,9 @@ describe('mirror Group Meta rounds', () => {
         profileRev: 1,
       },
     });
+    await database.db.transaction((tx) =>
+      reopenMirrorMetaRecoveryInTx(tx, group, 9, messages),
+    );
     const items: MirrorMetaReplicatedItem[] = [
       memberUpsert(2, 'peer-one', 'OWNER'),
       memberUpsert(3, 'peer-two'),
@@ -253,31 +262,39 @@ describe('mirror Group Meta rounds', () => {
         profileRev: 4,
       },
     ];
-    await expect(
-      database.db.transaction((tx) =>
-        applyFullMirrorMetaBatchInTx(tx, {
-          group,
-          items: items.slice(0, 2),
-          through: 9,
-          scannedThrough: 3,
-          reachedBoundary: false,
-        }),
-      ),
-    ).rejects.toThrow('complete fixed-through drain');
-    expect((await roster()).map((row) => row.body.account)).toEqual([
-      'stale-member',
-    ]);
-    expect(await readMirrorMeta()).toMatchObject({
-      metaProcessedThroughId: 0,
-      metaRecoveryThroughId: 9,
-    });
     await database.db.transaction((tx) =>
       applyFullMirrorMetaBatchInTx(tx, {
         group,
-        items,
+        items: items.slice(0, 2),
+        through: 9,
+        scannedThrough: 3,
+        reachedBoundary: false,
+        messages,
+      }),
+    );
+    expect(await readMirrorMeta()).toMatchObject({
+      metaProcessedThroughId: 3,
+      metaRecoveryThroughId: 9,
+    });
+    const afterFirstPage = await roster();
+    expect(
+      afterFirstPage
+        .filter((row) => row.operation === 'MEMBER_UPSERT')
+        .map((row) => row.body.account)
+        .sort(),
+    ).toEqual(['peer-one', 'peer-two']);
+    expect(
+      afterFirstPage.find((row) => row.body.account === 'stale-member')
+        ?.operation,
+    ).toBe('MEMBER_DEPART');
+    await database.db.transaction((tx) =>
+      applyFullMirrorMetaBatchInTx(tx, {
+        group,
+        items: items.slice(2),
         through: 9,
         scannedThrough: 9,
         reachedBoundary: true,
+        messages,
       }),
     );
     expect(await readMirrorMeta()).toMatchObject({
@@ -297,8 +314,8 @@ describe('mirror Group Meta rounds', () => {
     ).toBeUndefined();
     const rows = await roster();
     expect(
-      rows.find((row) => row.body.account === 'stale-member'),
-    ).toBeUndefined();
+      rows.find((row) => row.body.account === 'stale-member')?.operation,
+    ).toBe('MEMBER_DEPART');
     expect(
       rows.filter((row) => row.operation === 'MEMBER_UPSERT'),
     ).toHaveLength(3);
@@ -318,12 +335,17 @@ describe('mirror Group Meta rounds', () => {
         },
       },
     );
-    expect(
+    const transitions = (
       await database.db
-        .select({ id: message.id })
+        .select({ content: message.content })
         .from(message)
-        .where(eq(message.threadId, threadId)),
-    ).toEqual([]);
+        .where(eq(message.threadId, threadId))
+    ).map((row) => JSON.parse(row.content as string).type);
+    expect(transitions).toEqual([
+      'GROUP_LEFT',
+      'GROUP_JOINED',
+      'GROUP_JOINED',
+    ]);
   });
 
   it('rejects full batches when the window closed or changed mid-drain', async () => {
@@ -708,7 +730,13 @@ describe('mirror Group Meta rounds', () => {
         items: [],
       }),
     );
-    expect(await roster()).toEqual([]);
+    expect(await roster()).toEqual([
+      expect.objectContaining({
+        feedId: 3,
+        operation: 'GROUP_ANNOUNCEMENT',
+        body: { text: null },
+      }),
+    ]);
   });
 
   it.each([
@@ -813,6 +841,17 @@ describe('mirror Group Meta rounds', () => {
       .where(eq(groupMetaMemberFeed.threadId, threadId));
     await database.db.transaction((tx) =>
       reopenMirrorMetaRecoveryInTx(tx, group, 3),
+    );
+    const departed = await database.db
+      .select()
+      .from(groupMetaMemberFeed)
+      .where(eq(groupMetaMemberFeed.threadId, threadId));
+    const departedMember = departed.find(
+      (fact) => fact.operation === 'MEMBER_DEPART',
+    );
+    expect(departedMember?.createdAt).toEqual(savedLocalTime);
+    expect(departedMember!.updatedAt.getTime()).toBeGreaterThan(
+      savedLocalTime.getTime(),
     );
     await recover();
     const facts = await database.db
