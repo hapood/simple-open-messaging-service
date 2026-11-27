@@ -832,7 +832,11 @@ pub(crate) async fn native_db_validate_cache() -> Result<(), String> {
                 crate::download_history::DownloadHistoryStorage::initialize(conn)?;
                 Ok(())
             })
-            .map_err(|e| e.to_string())
+            .map_err(|e| match e {
+                crate::login_connection::ConnectionError::Operation(message) => format!("SESSION_DATABASE_ERROR:{message}"),
+                crate::login_connection::ConnectionError::Closed => "SESSION_DATABASE_ERROR:cache is unavailable".into(),
+                other => other.to_string(),
+            })
     })
     .await
     .map_err(|e| format!("join native cache validation: {e}"))?
@@ -964,6 +968,99 @@ pub(crate) async fn native_db_clear_user(user_id: i64) -> Result<(), String> {
     .map_err(|e| format!("join user clear: {e}"))?
 }
 
+/// Recovery carries the failed restore's identity, never authority inferred from the current slot.
+/// The caller retains auth admission and the replacement fence through all physical effects.
+fn reset_frontend_storage(
+    expected: Option<crate::login_session_store::LoginSessionId>,
+    _guard: crate::auth_lifecycle::TransitionGuard,
+) -> Result<(), String> {
+    let _replacement = lifetime::CACHE_LIFETIME.invalidate()?;
+    let owner = login_connections::LOGIN_CONNECTIONS.current()?;
+    let expected = expected.ok_or("SESSION_SUPERSEDED")?;
+    // The captured UUID must still own the slot even when the journal itself is unreadable.
+    validate_recovery_owner(Some(&expected), owner.as_deref())?;
+    reset_frontend_storage_owned(owner, &_guard)
+}
+
+/// Only callers already holding the replacement fence and validated recovery authority enter here.
+fn reset_frontend_storage_owned(
+    owner: Option<std::sync::Arc<crate::login_connection::LoginConnection>>,
+    _guard: &crate::auth_lifecycle::TransitionGuard,
+) -> Result<(), String> {
+    let configured = crate::server_setup::has_persisted_configuration();
+    if let Some(owner) = owner {
+        owner.end().map_err(|e| e.to_string())?;
+        // Release drains notification delivery before closing the connection.
+        login_connections::LOGIN_CONNECTIONS.release(&owner)?;
+    }
+    delete_login_cache_files(&crate::login_session_store::LoginSessionId::new())?;
+    preferences_connection()?.with_database(|conn| {
+        // Server selection is installation state, not failed-login recovery data.
+        conn.execute_batch("DELETE FROM settings; DELETE FROM app_state WHERE key != 'serverConfig';")
+            .map_err(|e| format!("clear device database: {e}"))?;
+        app_state::put(conn, app_state::SCHEMA_VERSION_KEY, &app_state::SCHEMA_VERSION.to_string())?;
+        crate::login_session_store::SessionStore::initialize(conn, configured)
+    })
+}
+
+/// The original restore command may recover an ownerless damaged journal only while retaining
+/// the same auth admission that observed the database error. This is not a public reset permit.
+pub(crate) fn restore_session_journal(
+    session_uuid: &str,
+    guard: &crate::auth_lifecycle::TransitionGuard,
+) -> Result<Option<String>, String> {
+    let _replacement = lifetime::CACHE_LIFETIME.invalidate()?;
+    let owner = login_connections::LOGIN_CONNECTIONS.current()?;
+    let preferences = preferences_connection()?;
+    // Only the database operation's error reaches recovery. Admission/slot/transport errors above
+    // propagate unchanged; a healthy journal rejecting a stale credential never deletes anything.
+    let restored = preferences.with_database(|conn| {
+        Ok(crate::login_session_store::SessionStore::restore(conn, session_uuid))
+    })?;
+    match restored {
+        Ok(id) => Ok(id.map(String::from)),
+        Err(_database_error) => {
+            if owner.is_some() {
+                let expected = crate::login_session_store::LoginSessionId::try_from(session_uuid.to_owned())?;
+                validate_recovery_owner(Some(&expected), owner.as_deref())?;
+            }
+            // The fence spans both the observation and cleanup. No owner can be installed between
+            // an ownerless corruption check and deletion of the fixed cache filename.
+            reset_frontend_storage_owned(owner, guard)?;
+            Ok(None)
+        }
+    }
+}
+
+fn validate_recovery_owner(
+    expected: Option<&crate::login_session_store::LoginSessionId>,
+    owner: Option<&crate::login_connection::LoginConnection>,
+) -> Result<(), String> {
+    // Unknown credentials are not permission to reset a currently owned store. Ended owners
+    // also reject recovery: logout, including its retained revocation decision, owns cleanup.
+    let matches = match expected {
+        Some(id) => owner.is_some_and(|owner| {
+            owner.id() == id && !owner.cancellation().is_cancelled()
+        }),
+        None => false,
+    };
+    if matches { Ok(()) } else { Err("SESSION_SUPERSEDED".into()) }
+}
+
+#[tauri::command]
+pub(crate) async fn native_reset_frontend_storage(
+    session_uuid: Option<String>,
+    state: tauri::State<'_, crate::ServerSessionState>,
+) -> Result<(), String> {
+    let expected = session_uuid.map(crate::login_session_store::LoginSessionId::try_from).transpose()?;
+    // Acquire before scheduling, and move the permit into the worker. Dropping the IPC waiter
+    // cannot admit a login while a delayed deletion can still remove the fixed cache filename.
+    let guard = state.auth_lifecycle.enter(crate::auth_lifecycle::Phase::Login)?;
+    tauri::async_runtime::spawn_blocking(move || reset_frontend_storage(expected, guard))
+        .await
+        .map_err(|e| format!("join frontend storage reset: {e}"))?
+}
+
 #[tauri::command]
 pub(crate) async fn native_db_clear_all() -> Result<(), String> {
     let owner = login_connections::LOGIN_CONNECTIONS.capture()?;
@@ -1023,6 +1120,67 @@ pub(crate) fn shared_test_location() -> &'static tempfile::TempDir {
 mod login_cache_tests {
     use super::*;
     use crate::login_session_store::{LoginSessionId, SessionStore};
+
+    #[test]
+    fn restoration_recovery_rejects_unknown_successor_and_ended_owners() {
+        let old = LoginSessionId::new();
+        let next = LoginSessionId::new();
+        let owner = crate::login_connection::LoginConnection::restoring(old.clone(), None);
+        assert!(validate_recovery_owner(Some(&old), Some(&owner)).is_ok());
+        assert!(validate_recovery_owner(None, None).is_err());
+        assert!(validate_recovery_owner(None, Some(&owner)).is_err());
+        assert!(validate_recovery_owner(Some(&next), Some(&owner)).is_err());
+        owner.end().unwrap();
+        assert!(validate_recovery_owner(Some(&old), Some(&owner)).is_err());
+    }
+
+    #[test]
+    fn original_restore_recovers_corruption_without_authorizing_stale_credentials() {
+        let _filesystem = FILESYSTEM_TEST_LOCK.lock().unwrap();
+        let directory = shared_test_location();
+        assert!(current_login().unwrap().is_none());
+        let preferences = preferences_connection().unwrap();
+        preferences.with_database(|conn| {
+            conn.execute_batch("DELETE FROM app_state; DELETE FROM settings;").map_err(|e| e.to_string())?;
+            app_state::put(conn, app_state::SCHEMA_VERSION_KEY, &app_state::SCHEMA_VERSION.to_string())?;
+            app_state::put(conn, "serverConfig", "{\"primary\":\"https://preserved.test\"}")?;
+            SessionStore::initialize(conn, true)
+        }).unwrap();
+        let lifecycle = std::sync::Arc::new(crate::auth_lifecycle::AuthLifecycle::default());
+        let guard = lifecycle.enter(crate::auth_lifecycle::Phase::Login).unwrap();
+        let stale = LoginSessionId::new();
+        let cache = directory.path().join(stale.sqlite_filename());
+        std::fs::write(&cache, b"old cache").unwrap();
+        // A healthy signed-out journal plus residual credential is not corruption.
+        assert!(restore_session_journal(&stale.to_string(), &guard).unwrap().is_none());
+        assert!(cache.exists());
+        drop(guard);
+        let guard = lifecycle.enter(crate::auth_lifecycle::Phase::Login).unwrap();
+        assert!(reset_frontend_storage(None, guard).is_err());
+        assert!(cache.exists());
+        preferences.with_database(|conn| app_state::put(conn, "lifecycleState", "\"damaged\"")).unwrap();
+        let guard = lifecycle.enter(crate::auth_lifecycle::Phase::Login).unwrap();
+        assert!(restore_session_journal(&stale.to_string(), &guard).unwrap().is_none());
+        assert!(!cache.exists());
+        preferences.with_database(|conn| {
+            assert_eq!(SessionStore::read(conn)?.state, crate::login_session_store::LifecycleState::SignedOut);
+            assert_eq!(app_state::get(conn, app_state::SCHEMA_VERSION_KEY)?, Some(app_state::SCHEMA_VERSION.to_string()));
+            assert!(app_state::get(conn, "serverConfig")?.is_some());
+            Ok(())
+        }).unwrap();
+        let id = LoginSessionId::try_from(prepare_fresh_login(preferences, &guard).unwrap()).unwrap();
+        let owner = current_login().unwrap().unwrap();
+        preferences.with_database(|conn| app_state::put(conn, "lifecycleState", "\"damaged\"")).unwrap();
+        // The failed original credential cannot reset a different prepared owner.
+        assert!(restore_session_journal(&stale.to_string(), &guard).is_err());
+        assert!(!owner.cancellation().is_cancelled());
+        assert!(cache.exists());
+        assert!(restore_session_journal(&id.to_string(), &guard).unwrap().is_none());
+        assert!(owner.cancellation().is_cancelled());
+        assert!(current_login().unwrap().is_none());
+        assert!(!cache.exists());
+        preferences.with_database(|conn| app_state::remove(conn, "serverConfig")).unwrap();
+    }
 
     #[test]
     fn per_login_cache_files_follow_the_login_journal() {

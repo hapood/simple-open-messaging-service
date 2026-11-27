@@ -1,4 +1,4 @@
-import { openDB, type DBSchema, type IDBPDatabase } from 'idb';
+import { deleteDB, openDB, type DBSchema, type IDBPDatabase } from 'idb';
 import { isTauri, tauriInvoke } from './runtime';
 
 interface SettingRecord {
@@ -24,11 +24,22 @@ let sharedDbPromise: Promise<IDBPDatabase<ClientStorageSchema>> | null = null;
 
 function openClientDb(): Promise<IDBPDatabase<ClientStorageSchema>> {
   if (sharedDbPromise) return sharedDbPromise;
+  sharedDbPromise = openClientDbAttempt(true).catch((error: unknown) => {
+    sharedDbPromise = null;
+    throw error;
+  });
+  return sharedDbPromise;
+}
+
+/** A failed open deletes the database and retries once. The retry reports its own error. */
+function openClientDbAttempt(
+  allowReset: boolean,
+): Promise<IDBPDatabase<ClientStorageSchema>> {
   if (typeof indexedDB === 'undefined') {
     return Promise.reject(new Error('IndexedDB unavailable'));
   }
   let unsupportedFormat = false;
-  sharedDbPromise = openDB<ClientStorageSchema>(DB_NAME, DB_VERSION, {
+  return openDB<ClientStorageSchema>(DB_NAME, DB_VERSION, {
     upgrade(db, oldVersion, _newVersion, tx) {
       if (oldVersion !== 0) {
         unsupportedFormat = true;
@@ -65,16 +76,16 @@ function openClientDb(): Promise<IDBPDatabase<ClientStorageSchema>> {
         throw error;
       }
     })
-    .catch((error: unknown) => {
-      sharedDbPromise = null;
-      if (
+    .catch(async (error: unknown) => {
+      const formatError =
         unsupportedFormat ||
-        (error instanceof DOMException && error.name === 'VersionError')
-      )
-        throw new Error('Unsupported client preferences format');
-      throw error;
+        (error instanceof DOMException && error.name === 'VersionError') ||
+        (error instanceof Error &&
+          error.message === 'Unsupported client preferences format');
+      if (!allowReset || !formatError) throw error;
+      await deleteDB(DB_NAME);
+      return openClientDbAttempt(false);
     });
-  return sharedDbPromise;
 }
 
 /**

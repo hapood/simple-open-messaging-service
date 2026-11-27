@@ -1,4 +1,5 @@
 import { AppStateStorage } from '../preference-storage';
+import { DatabaseRestorationError } from './database-restoration-error';
 import {
   sessionCacheDescriptor,
   parseLoginSessionId,
@@ -52,7 +53,7 @@ export function parseSessionState(
   state: ReadonlyMap<string, unknown>,
 ): SessionStoreRecord {
   if (state.get('schemaVersion') !== 1)
-    throw new Error('Invalid app-state version');
+    throw new DatabaseRestorationError(new Error('Invalid app-state version'));
   const lifecycleState = state.get('lifecycleState');
   if (
     lifecycleState !== 'unconfigured' &&
@@ -60,7 +61,7 @@ export function parseSessionState(
     lifecycleState !== 'active' &&
     lifecycleState !== 'cleaning'
   ) {
-    throw new Error('Invalid login lifecycle');
+    throw new DatabaseRestorationError(new Error('Invalid login lifecycle'));
   }
   const uuid = state.get('sessionUuid');
   const session =
@@ -72,17 +73,24 @@ export function parseSessionState(
     ((lifecycleState === 'signed-out' || lifecycleState === 'unconfigured') &&
       session)
   ) {
-    throw new Error('Inconsistent login lifecycle');
+    throw new DatabaseRestorationError(new Error('Inconsistent login lifecycle'));
   }
   // Server IDs fence notification clicks across logins; the local UUID is not a
   // substitute for the identity carried by server-generated notification targets.
   const identityValue = state.get('notificationSessionIdentity');
-  const identity =
-    identityValue === undefined
-      ? null
-      : parseServerSessionIdentity(identityValue);
+  let identity: ServerSessionIdentity | null;
+  try {
+    identity =
+      identityValue === undefined
+        ? null
+        : parseServerSessionIdentity(identityValue);
+  } catch (error) {
+    throw new DatabaseRestorationError(error);
+  }
   if (identity && lifecycleState !== 'active')
-    throw new Error('Inactive notification identity');
+    throw new DatabaseRestorationError(
+      new Error('Inactive notification identity'),
+    );
   return Object.freeze({ lifecycleState, session, identity });
 }
 
@@ -95,7 +103,7 @@ export class SessionStore {
   initialize(): Promise<SessionStoreRecord> {
     return this.storage.update((state) => {
       if (state.get('schemaVersion') !== 1)
-        throw new Error('Invalid app-state version');
+        throw new DatabaseRestorationError(new Error('Invalid app-state version'));
       if (!state.has('lifecycleState')) {
         state.set(
           'lifecycleState',

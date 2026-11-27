@@ -22,7 +22,9 @@ export function parseLoginSessionId(value: unknown): LoginSessionId {
   return value as LoginSessionId;
 }
 
-export function sessionCacheDescriptor(id: LoginSessionId): SessionCacheDescriptor {
+export function sessionCacheDescriptor(
+  id: LoginSessionId,
+): SessionCacheDescriptor {
   return Object.freeze({
     version: 1,
     id,
@@ -69,6 +71,20 @@ export class SessionSupersededError extends Error {
     super('The local login session is no longer active');
     this.name = 'SessionSupersededError';
   }
+}
+
+/** Also recognize serialized control-flow errors crossing worker/IPC boundaries. */
+export function isSessionSupersededError(error: unknown): boolean {
+  return (
+    error instanceof SessionSupersededError ||
+    error === 'SESSION_SUPERSEDED' ||
+    error === 'native login superseded' ||
+    error === 'native cache work superseded' ||
+    (typeof error === 'object' &&
+      error !== null &&
+      'code' in error &&
+      error.code === 'SESSION_SUPERSEDED')
+  );
 }
 
 /**

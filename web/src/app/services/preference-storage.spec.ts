@@ -53,37 +53,36 @@ describe('client preference storage format', () => {
     expect(await appState.get('schemaVersion')).toBe(1);
   });
 
-  it('rejects an old format without deleting preferences or committing an upgrade', async () => {
+  it('replaces an old format with an empty current database', async () => {
     const old = await openDB(DB_NAME, 1, {
       upgrade(db) {
         db.createObjectStore('preferences', { keyPath: 'key' });
       },
     });
-    const preference = { key: 'theme', value: 'dark', updatedAt: 123 };
-    await old.put('preferences', preference);
+    await old.put('preferences', {
+      key: 'theme',
+      value: 'dark',
+      updatedAt: 123,
+    });
     old.close();
 
-    await expect(settings.getStrict('theme')).rejects.toThrow(
-      'Unsupported client preferences format',
-    );
-    await expect(appState.set('lifecycle', { phase: 'idle' })).rejects.toThrow(
-      'Unsupported client preferences format',
-    );
-    // Flush abort-related promise reactions: the runner must not receive an
-    // unhandled rejection from the aborted upgrade transaction's done promise.
+    expect(await settings.getStrict('theme')).toBeUndefined();
+    expect(await appState.get('schemaVersion')).toBe(1);
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    const unchanged = await openDB(DB_NAME);
+    const replaced = await openDB(DB_NAME);
     try {
-      expect(unchanged.version).toBe(1);
-      expect(Array.from(unchanged.objectStoreNames)).toEqual(['preferences']);
-      expect(await unchanged.get('preferences', 'theme')).toEqual(preference);
+      expect(replaced.version).toBe(2);
+      expect(Array.from(replaced.objectStoreNames)).toEqual([
+        'app_state',
+        'settings',
+      ]);
     } finally {
-      unchanged.close();
+      replaced.close();
     }
   });
 
-  it('rejects an unsupported structure at the current IDB version without changing it', async () => {
+  it('replaces an unsupported structure at the current IDB version', async () => {
     const unsupported = await openDB(DB_NAME, 2, {
       upgrade(db) {
         db.createObjectStore('preferences', { keyPath: 'key' });
@@ -92,37 +91,25 @@ describe('client preference storage format', () => {
     await unsupported.put('preferences', { key: 'language', value: 'en' });
     unsupported.close();
 
-    await expect(settings.set('language', 'fr')).rejects.toThrow(
-      'Unsupported client preferences format',
-    );
-    const unchanged = await openDB(DB_NAME);
+    await settings.set('language', 'fr');
+    const replaced = await openDB(DB_NAME);
     try {
-      expect(Array.from(unchanged.objectStoreNames)).toEqual(['preferences']);
-      expect(await unchanged.get('preferences', 'language')).toEqual({
-        key: 'language',
-        value: 'en',
-      });
+      expect(Array.from(replaced.objectStoreNames)).toEqual([
+        'app_state',
+        'settings',
+      ]);
+      expect((await replaced.get('settings', 'language')).value).toBe('fr');
     } finally {
-      unchanged.close();
+      replaced.close();
     }
   });
 
-  it('rejects unsupported app-state schema versions without overwriting the marker', async () => {
+  it('replaces an unsupported app-state schema version', async () => {
     await settings.set('theme', 'dark');
     await appState.set('schemaVersion', 99);
     await settings.close();
 
-    await expect(settings.getStrict('theme')).rejects.toThrow(
-      'Unsupported client preferences format',
-    );
-    const unchanged = await openDB(DB_NAME);
-    try {
-      expect((await unchanged.get('app_state', 'schemaVersion')).value).toBe(
-        99,
-      );
-      expect((await unchanged.get('settings', 'theme')).value).toBe('dark');
-    } finally {
-      unchanged.close();
-    }
+    expect(await settings.getStrict('theme')).toBeUndefined();
+    expect(await appState.get('schemaVersion')).toBe(1);
   });
 });

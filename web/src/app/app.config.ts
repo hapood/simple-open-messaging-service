@@ -74,8 +74,7 @@ export const appConfig: ApplicationConfig = {
       deps: [SseLifecycleService, ServiceWorkerLifecycleService, SessionStartupService, Router],
       useFactory: (coordinator: SseLifecycleService, workers: ServiceWorkerLifecycleService, startup: SessionStartupService, router: Router) => () => {
         workers.start();
-        if (isTauri()) return coordinator.restoreSession();
-        // Mount the recovery shell, but keep the router outlet absent until admission settles.
+        // Do not block bootstrap: a database failure is answered by a Material dialog on the logo screen.
         void startup.run(() => coordinator.restoreSession()).then(() => {
           if (!startup.restoring()) router.initialNavigation();
         });
@@ -92,7 +91,7 @@ export const appConfig: ApplicationConfig = {
     // disjoint from `[http]` (the httpTraceInterceptor) and `[unhandled]` (the main.ts window listeners).
     // See global-error.handler.ts.
     { provide: ErrorHandler, useClass: GlobalErrorHandler },
-    provideRouter(routes, withComponentInputBinding(), ...(isTauri() ? [] : [withDisabledInitialNavigation()])),
+    provideRouter(routes, withComponentInputBinding(), withDisabledInitialNavigation()),
     // HTTP transport: a custom `HttpBackend` (TauriHttpBackend) is the terminus of the interceptor chain.
     // Browser: delegates to Angular's stock FetchBackend (same-origin fetch; httpOnly cookie authenticates).
     // Tauri (desktop + Android): routes /api/v1 through the Rust `api_request` IPC command — Android's

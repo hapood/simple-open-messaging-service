@@ -43,10 +43,18 @@ impl DeviceConnection {
                 Err("device database already initialized with a different file".into())
             };
         }
-        let mut connection =
-            Connection::open(path).map_err(|e| format!("open device database: {e}"))?;
+        let mut connection = open_or_replace(path)?;
         super::configure(&connection)?;
-        prepare_schema(&mut connection)?;
+        if let Err(error) = prepare_schema(&mut connection) {
+            drop(connection);
+            remove_device_database(path)?;
+            connection = Connection::open(path)
+                .map_err(|e| format!("reopen device database after {error}: {e}"))?;
+            super::configure(&connection)?;
+            prepare_schema(&mut connection).map_err(|retry| {
+                format!("reinitialize device database after {error}: {retry}")
+            })?;
+        }
         *database = Some(Initialized {
             path: path.to_path_buf(),
             connection,
@@ -77,9 +85,41 @@ impl DeviceConnection {
     }
 }
 
-/// Initialize a fresh device database or validate the current format without changing existing
-/// records. Unsupported formats are rejected, never migrated or reset. One transaction covers
-/// initialization so an interrupted start cannot leave a partial schema.
+/// Initialize a fresh device database or accept the current format unchanged. An unreadable
+/// file or an unsupported schema is deleted and created again. One transaction covers a
+/// successful initialization so an interrupted start cannot leave a partial schema.
+fn open_or_replace(path: &Path) -> Result<Connection, String> {
+    match Connection::open(path) {
+        Ok(connection) => Ok(connection),
+        Err(error) => {
+            remove_device_database(path)?;
+            Connection::open(path).map_err(|retry| {
+                format!("reopen device database after {error}: {retry}")
+            })
+        }
+    }
+}
+
+fn remove_device_database(path: &Path) -> Result<(), String> {
+    let name = path
+        .file_name()
+        .ok_or("device database path has no file name")?
+        .to_string_lossy();
+    let directory = path
+        .parent()
+        .ok_or("device database path has no directory")?;
+    for suffix in ["", "-wal", "-shm"] {
+        let file = directory.join(format!("{name}{suffix}"));
+        match std::fs::remove_file(file) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(format!("remove device database: {error}")),
+        }
+    }
+    Ok(())
+}
+
+/// Initialize a fresh device database or accept the current format unchanged.
 fn prepare_schema(conn: &mut Connection) -> Result<(), String> {
     let tx = conn
         .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -270,56 +310,50 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_app_state_versions_are_rejected_without_changing_records() {
+    fn unsupported_app_state_versions_are_replaced_with_an_empty_database() {
         for version in [None, Some("99")] {
             let directory = tempfile::tempdir().unwrap();
             let path = directory.path().join("preferences.sqlite");
             DeviceConnection::new().initialize(&path).unwrap();
-            let conn = Connection::open(&path).unwrap();
-            conn.execute_batch(
-                "INSERT INTO settings VALUES('theme','\"dark\"',0);
-                 INSERT INTO app_state VALUES('lifecycleState','\"signed-out\"');
-                 DELETE FROM app_state WHERE key='schemaVersion';",
-            )
-            .unwrap();
-            if let Some(value) = version {
-                super::super::app_state::put(&conn, "schemaVersion", value).unwrap();
+            {
+                let conn = Connection::open(&path).unwrap();
+                conn.execute_batch(
+                    "INSERT INTO settings VALUES('theme','\"dark\"',0);
+                     INSERT INTO app_state VALUES('lifecycleState','\"signed-out\"');
+                     DELETE FROM app_state WHERE key='schemaVersion';",
+                )
+                .unwrap();
+                if let Some(value) = version {
+                    super::super::app_state::put(&conn, "schemaVersion", value).unwrap();
+                }
             }
             let database = DeviceConnection::new();
-            assert_eq!(
-                database.initialize(&path).unwrap_err(),
-                "unsupported device app-state schema version"
-            );
-            assert!(database.capture().is_err());
+            database.initialize(&path).unwrap();
+            let conn = Connection::open(&path).unwrap();
             assert_eq!(
                 super::super::app_state::get(&conn, "schemaVersion")
                     .unwrap()
                     .as_deref(),
-                version
+                Some("1")
             );
-            assert_eq!(
-                super::super::app_state::get(&conn, "lifecycleState")
-                    .unwrap()
-                    .as_deref(),
-                Some("\"signed-out\"")
-            );
-            let theme: String = conn
+            assert!(super::super::app_state::get(&conn, "lifecycleState")
+                .unwrap()
+                .is_none());
+            assert!(conn
                 .query_row(
                     "SELECT value_json FROM settings WHERE key='theme'",
                     [],
-                    |row| row.get(0),
+                    |row| row.get::<_, String>(0),
                 )
-                .unwrap();
-            assert_eq!(theme, "\"dark\"");
+                .is_err());
         }
     }
 
     #[test]
-    fn a_failed_start_check_leaves_the_file_untouched_and_is_retried() {
+    fn an_unsupported_schema_is_replaced_and_initialization_completes() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("preferences.sqlite");
         {
-            // A view named like the table makes the first attempt fail inside its transaction.
             let conn = Connection::open(&path).unwrap();
             conn.execute_batch(
                 "CREATE TABLE blocker(value TEXT);
@@ -328,18 +362,11 @@ mod tests {
             .unwrap();
         }
         let database = DeviceConnection::new();
-        assert!(database.initialize(&path).is_err());
-        assert!(database.capture().is_err());
-        let conn = Connection::open(&path).unwrap();
-        assert!(tables(&conn).contains(&"blocker".to_string()));
-        assert!(!tables(&conn).contains(&"settings".to_string()));
-        drop(conn);
-        // After an explicit repair removes the unsupported objects, initialization can retry.
-        Connection::open(&path)
-            .unwrap()
-            .execute_batch("DROP VIEW app_state; DROP TABLE blocker;")
-            .unwrap();
         database.initialize(&path).unwrap();
         assert!(database.capture().is_ok());
+        let conn = Connection::open(&path).unwrap();
+        assert!(!tables(&conn).contains(&"blocker".to_string()));
+        assert!(tables(&conn).contains(&"settings".to_string()));
+        assert!(tables(&conn).contains(&"app_state".to_string()));
     }
 }

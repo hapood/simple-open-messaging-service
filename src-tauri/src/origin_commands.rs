@@ -126,15 +126,8 @@ pub(crate) async fn login_session_for_token(
     let guard = state
         .auth_lifecycle
         .enter(crate::auth_lifecycle::Phase::Login)?;
-    let preferences = crate::native_db::preferences_connection()?;
     tauri::async_runtime::spawn_blocking(move || {
-        let id = preferences.with_database(|conn| {
-            Ok(crate::login_session_store::SessionStore::restore(
-                conn,
-                &session_uuid,
-            )?
-            .map(String::from))
-        })?;
+        let id = crate::native_db::restore_session_journal(&session_uuid, &guard)?;
         if let Some(id) = &id {
             guard.register_login(id)?;
         }

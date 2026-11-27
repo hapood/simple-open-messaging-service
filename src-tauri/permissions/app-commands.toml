@@ -12,6 +12,11 @@ description = "Reports primary renderer launch presentation facts to the Rust la
 commands.allow = ["launch_update"]
 
 [[permission]]
+identifier = "allow-exit-app"
+description = "Exits the application after the user declines local database rebuild."
+commands.allow = ["exit_app"]
+
+[[permission]]
 identifier = "allow-server-setup"
 description = "Runs cancellable signed-out server verification and commits the verified server configuration."
 commands.allow = ["begin_server_setup", "cancel_server_setup", "check_server_setup", "commit_server_setup"]
@@ -215,6 +220,7 @@ commands.allow = [
   "native_db_put_message_head",
   "native_db_put_preference",
   "native_db_recreate_cache",
+  "native_reset_frontend_storage",
   "native_db_recreate_messages",
   "native_send_enqueue",
   "native_send_list",
@@ -277,6 +283,7 @@ commands.allow = ["desktop_notifications_clear", "desktop_notification_pending",
 description = "All app-defined IPC commands: origin get/set/is-configured + session token + secure (keyring) token + shell dynamic-update (init_*) + desktop SSE supervisor (sse_*)."
 permissions = [
   "allow-launch-update",
+  "allow-exit-app",
   "allow-server-setup",
   "allow-desktop-notifications",
   "allow-get-api-origin",

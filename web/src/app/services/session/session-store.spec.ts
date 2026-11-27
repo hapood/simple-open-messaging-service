@@ -41,9 +41,10 @@ describe('app-state session lifecycle', () => {
       storage.state.set('serverConfig', { primary: 'https://chat.test' });
       storage.state.set('pushDeviceId', 'retain');
       const before = structuredClone(storage.state);
-      await expect(new SessionStore(storage).initialize()).rejects.toThrow(
-        'Invalid app-state version',
-      );
+      await expect(new SessionStore(storage).initialize()).rejects.toMatchObject({
+        name: 'DatabaseRestorationError',
+        cause: expect.objectContaining({ message: 'Invalid app-state version' }),
+      });
       expect(storage.state).toEqual(before);
     },
   );

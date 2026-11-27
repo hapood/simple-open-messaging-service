@@ -24,6 +24,23 @@ within a login use separate cancellation, not another login counter. The unused
 legacy resolution dispatcher has been removed. Native credential storage itself
 still needs Rust owner-scoped admission; renderer checks do not make it atomic.
 
+Restoration failure handling belongs to the existing session owner, not an outer
+catch that resets whichever database happens to be current. A superseded restore
+must neither delete storage nor publish signed-out state for its successor.
+Web and native restoration are the same short sequence: initialize local
+resources and databases, start the SSE worker (the Rust scheduler on native),
+then load the web components. A permission denial, busy store, or structural database exception during that
+resource and database initialization is logged and shown in the standard
+Material dialog on the logo screen, including the error type. The user chooses
+rebuild, which calls the existing initialization method, or exits the app
+without deleting storage. A runtime page reload and the old `cacheRebuild` marker
+are not a recovery path. Restoration does not handle network, credential, HELLO,
+or other failures. Keep the browser
+transition lane or native admission permit through physical deletion so a new
+login cannot create the same fixed cache path while old deletion is outstanding.
+Fresh-login preparation already owns ordinary old-cache deletion; recovery must
+not introduce a second independent lifecycle or a renderer epoch counter.
+
 Native logout now releases the renderer's resources without deleting account
 storage. Rust captures the ended bearer and origin before acknowledging logout;
 only then does the Android adapter clear secure storage (which also clears the
@@ -438,30 +455,3 @@ in the alpha series, and alpha installs are not migrated. A pre-UUID install's
 old cache files are left untouched (never read, never deleted by this client);
 reinstalling or clearing application data removes them. Do not delete caches
 merely because a valid session restarts.
-
-## Verification gates
-
-- Fresh same-account login gets a different UUID; ordinary restore retains it.
-- Logout invalidates synchronously, closes runtime resources and retains physical
-  caches. Remote failure is tolerated, and a deadline aborts the transport.
-- Partial IndexedDB/SQLite deletion during fresh login survives restart and retries
-  idempotently; new authentication stays blocked until cleanup succeeds. Merely
-  restarting after logout does not perform deletion.
-- Failed server logout does not add a cookie-clearing prerequisite to the next
-  login. An expired queued logout is never dispatched later.
-- Queued old native commands cannot use successor credentials or databases.
-- Old HTTP success, errors and 401s cannot mutate successor state or log it out.
-- A result delayed after an additional await cannot publish to a successor.
-- Database admission versus close/delete is race-tested, including failed cleanup.
-- Offline browser logout followed by refresh cannot restore via a residual cookie.
-- Authentication success followed by cache failure retries initialization without
-  issuing duplicate login requests or leaking a usable session.
-- Waiting-tab takeover and BFCache restore preserve single ownership; worker push
-  and notification callbacks reject an ended UUID and cannot reopen its cache.
-- Native process restart and WebView recreation preserve the session appropriately;
-  logout releases calls/media, and delayed adapter callbacks cannot affect a successor.
-- Existing Angular dependency-graph, realtime and Rust lifecycle regressions pass.
-
-Record exact executed checks separately. Unit tests do not establish physical
-Android lifecycle or browser cookie/worker behavior; retain integration and device
-acceptance gates for those boundaries.

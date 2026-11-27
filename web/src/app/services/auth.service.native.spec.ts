@@ -27,6 +27,8 @@ import { ToastService } from './toast.service';
 import { BROWSER_SESSION } from './browser-session.service';
 import { SessionLifecycleService } from './session-lifecycle.service';
 import { ServerConfigDialogService } from './server-config-dialog.service';
+import { DatabaseRestorationError } from './session/database-restoration-error';
+import { SessionStartupService } from './session-startup.service';
 import { SessionSupersededError } from './session/session-identity';
 
 /**
@@ -132,6 +134,7 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
             'clear_session_token',
             'native_db_validate_cache',
             'native_db_recreate_cache',
+            'native_reset_frontend_storage',
             'desktop_notifications_clear',
             'finish_logout',
           ].includes(cmd)
@@ -494,6 +497,11 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
         nextId,
       );
       expect(svc.loggedIn()).toBe(true);
+      expect(
+        invokeSpy.mock.calls.some(
+          ([command]) => command === 'native_reset_frontend_storage',
+        ),
+      ).toBe(false);
     });
 
     it('does not repair the successor cache when old validation fails late', async () => {
@@ -719,6 +727,135 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
       });
     });
 
+    it('resets a classified cache database failure without attempting token admission', async () => {
+      desktopGlobals({ keyringToken: 'stored-token' });
+      const invoke = invokeSpy.getMockImplementation()!;
+      invokeSpy.mockImplementation((command: string, args?: Record<string, unknown>) => {
+        if (command === 'native_db_validate_cache')
+          return Promise.reject('SESSION_DATABASE_ERROR:invalid schema');
+        return invoke(command, args);
+      });
+      const startup = TestBed.inject(SessionStartupService);
+      void vi.waitFor(() => expect(startup.databaseFailure()).toBe('structural')).then(() =>
+        startup.answerDatabase('rebuild'),
+      );
+      await svc.restoreSession();
+      expect(invokeSpy).toHaveBeenCalledWith('native_reset_frontend_storage', {
+        sessionUuid: '22222222-3333-4444-8555-666666666666',
+      });
+      expect(invokeSpy.mock.calls.some(([command]) => command === 'set_session_token')).toBe(false);
+      expect(svc.loggedIn()).toBe(false);
+    });
+
+    it('does not report successful recovery when database deletion fails', async () => {
+      desktopGlobals({ keyringToken: 'stored-token' });
+      const invoke = invokeSpy.getMockImplementation()!;
+      vi.mocked(TestBed.inject(UserService).restoreWebdb).mockRejectedValueOnce(
+        new DatabaseRestorationError(new Error('cache read failed')),
+      );
+      invokeSpy.mockImplementation((command: string, args?: Record<string, unknown>) => {
+        if (command === 'native_reset_frontend_storage')
+          return Promise.reject(new Error('database deletion blocked'));
+        return invoke(command, args);
+      });
+      const startup = TestBed.inject(SessionStartupService);
+      void vi.waitFor(() => expect(startup.databaseFailure()).toBe('structural')).then(() =>
+        startup.answerDatabase('rebuild'),
+      );
+      await expect(svc.restoreSession()).rejects.toThrow('database deletion blocked');
+      expect(svc.loggedIn()).toBe(false);
+    });
+
+    it('recovers a genuine cache-read failure after restore admission using the admitted UUID', async () => {
+      desktopGlobals({ keyringToken: 'stored-token' });
+      vi.mocked(TestBed.inject(UserService).restoreWebdb).mockRejectedValueOnce(
+        new DatabaseRestorationError(new Error('cache read failed')),
+      );
+      const startup = TestBed.inject(SessionStartupService);
+      void vi.waitFor(() => expect(startup.databaseFailure()).toBe('structural')).then(() =>
+        startup.answerDatabase('rebuild'),
+      );
+      await svc.restoreSession();
+      expect(invokeSpy).toHaveBeenCalledWith('native_reset_frontend_storage', {
+        sessionUuid: '22222222-3333-4444-8555-666666666666',
+      });
+      expect(svc.loggedIn()).toBe(false);
+      expect(
+        TestBed.inject(SessionLifecycleService).capture().sessionId,
+      ).toBeNull();
+    });
+
+    it.each(['login', 'logout'] as const)(
+      'does not reset after an admitted restore is superseded by %s',
+      async (action) => {
+        desktopGlobals({ keyringToken: 'stored-token' });
+        let fail!: (error: Error) => void;
+        vi.mocked(TestBed.inject(UserService).restoreWebdb).mockReturnValueOnce(
+          new Promise((_, reject) => {
+            fail = reject;
+          }),
+        );
+        const restoring = svc.restoreSession();
+        await vi.waitFor(() =>
+          expect(
+            TestBed.inject(UserService).restoreWebdb,
+          ).toHaveBeenCalledOnce(),
+        );
+        if (action === 'login') await passwordLogin('next-token');
+        else await firstValueFrom(svc.logout());
+        fail(new DatabaseRestorationError(new Error('old read failed')));
+        await restoring;
+        expect(
+          invokeSpy.mock.calls.some(
+            ([command]) => command === 'native_reset_frontend_storage',
+          ),
+        ).toBe(false);
+        expect(svc.loggedIn()).toBe(action === 'login');
+      },
+    );
+
+    it('waits for renderer release and native physical deletion before issuing fresh login', async () => {
+      desktopGlobals({ keyringToken: 'stored-token' });
+      await svc.restoreSession();
+      let release!: () => void;
+      vi.mocked(
+        TestBed.inject(UserService).releaseSession,
+      ).mockImplementationOnce(() => {
+        TestBed.inject(SessionLifecycleService).invalidateSession();
+        return new Promise<void>((resolve) => {
+          release = resolve;
+        });
+      });
+      let deleted!: (id: string) => void;
+      const invoke = invokeSpy.getMockImplementation()!;
+      invokeSpy.mockImplementation(
+        (command: string, args?: Record<string, unknown>) =>
+          command === 'native_db_begin_login'
+            ? new Promise<string>((resolve) => {
+                deleted = resolve;
+              })
+            : invoke(command, args),
+      );
+      const signingIn = firstValueFrom(
+        svc.login({ account: 'next', password: 'pw' }),
+      );
+      expect(
+        invokeSpy.mock.calls.some(
+          ([command]) => command === 'native_db_begin_login',
+        ),
+      ).toBe(false);
+      release();
+      await vi.waitFor(() => expect(deleted).toBeDefined());
+      httpMock.expectNone((r) => /auth\/login$/.test(r.url));
+      deleted('11111111-2222-4d9e-af01-234567890abc');
+      (await loginRequest()).flush({
+        code: 0,
+        data: { session_token: 'next-token' },
+      });
+      await signingIn;
+      expect(svc.loggedIn()).toBe(true);
+    });
+
     it('restoreSession with an empty keyring leaves the user logged out but canTrust true (keyring works)', async () => {
       desktopGlobals({ keyringToken: null });
       await svc.restoreSession();
@@ -726,11 +863,14 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
       expect(svc.isLoggedIn()).toBe(false);
     });
 
-    it('restoreSession with an UNREACHABLE keyring sets canTrust false (toggle hidden → no orphan session)', async () => {
-      // secure_get_login rejects → the boot probe fails → this desktop can't be trusted, so the trust
-      // toggle stays hidden and the user can't request a permanent token the client then can't persist.
+    it('restoreSession with an UNREACHABLE keyring preserves local storage and stays logged out', async () => {
       desktopGlobals({ secureGetOk: false });
       await svc.restoreSession();
+      expect(
+        invokeSpy.mock.calls.some(
+          ([command]) => command === 'native_reset_frontend_storage',
+        ),
+      ).toBe(false);
       expect(svc.loggedIn()).toBe(false);
     });
   });
@@ -787,7 +927,12 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
           : Promise.resolve(undefined),
       );
       await svc.restoreSession();
-      expect(discard).toHaveBeenCalledTimes(1);
+      expect(discard).not.toHaveBeenCalled();
+      expect(
+        invokeSpy.mock.calls.some(
+          ([command]) => command === 'native_reset_frontend_storage',
+        ),
+      ).toBe(false);
       expect(set).not.toHaveBeenCalled();
       expect(svc.loggedIn()).toBe(false);
       expect(svc.isLoggedIn()).toBe(false);
@@ -816,7 +961,12 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
       const bridge = (window as unknown as MockWindow).SomsFcm!;
       bridge.getLoginSessionId.mockReturnValue(null);
       await svc.restoreSession();
-      expect(discard).toHaveBeenCalledOnce();
+      expect(discard).not.toHaveBeenCalled();
+      expect(
+        invokeSpy.mock.calls.some(
+          ([command]) => command === 'native_reset_frontend_storage',
+        ),
+      ).toBe(false);
       expect(
         invokeSpy.mock.calls.some(
           ([command]) => command === 'login_session_for_token',

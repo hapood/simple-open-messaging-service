@@ -48,6 +48,8 @@ import { MaterialDialogComponent } from './components/material-dialog/material-d
 import { ServerConfigPageComponent } from './pages/server-config-page/server-config-page.component';
 import { ServerConfigDialogService } from './services/server-config-dialog.service';
 import { SessionStartupService } from './services/session-startup.service';
+import { MatDialog } from '@angular/material/dialog';
+import { DatabaseInitDialogComponent } from './components/database-init-dialog/database-init-dialog.component';
 import { IndicatorSlotComponent } from './components/indicator-slot/indicator-slot.component';
 import { ConnectionBannerComponent } from './components/connection-banner/connection-banner.component';
 import { AppBackDispatcherService } from './services/app-back-dispatcher.service';
@@ -68,6 +70,8 @@ import { AppBackDispatcherService } from './services/app-back-dispatcher.service
 })
 export class AppComponent {
   protected readonly startup = inject(SessionStartupService);
+  private readonly dialog = inject(MatDialog);
+  private databaseDialogOpen = false;
   protected readonly serverConfigDialog = inject(ServerConfigDialogService);
   // Eagerly instantiate so their effects + listeners are live for the whole session.
   private readonly composerGeometry = inject(ComposerGeometryService);
@@ -128,6 +132,24 @@ export class AppComponent {
   private incompatiblePromptShown = false;
   private nativeShareDialogId: string | null = null;
   constructor() {
+    effect(() => {
+      const kind = this.startup.databaseFailure();
+      if (!kind || this.databaseDialogOpen) return;
+      this.databaseDialogOpen = true;
+      // The native launch overlay must not cover the choice.
+      void finishNativeLaunch();
+      this.dialog
+        .open(DatabaseInitDialogComponent, {
+          data: kind,
+          disableClose: true,
+          autoFocus: 'first-tabbable',
+        })
+        .afterClosed()
+        .subscribe((choice: 'rebuild' | 'exit' | undefined) => {
+          this.databaseDialogOpen = false;
+          this.startup.answerDatabase(choice === 'rebuild' ? 'rebuild' : 'exit');
+        });
+    });
     // App-shell fallback below temporary AppBackDispatcher handlers: minimize a foreground call, peel one
     // nav layer, then finish the Activity at the app root. Predictive commit reaches the same fixed entry.
     if (isTauri() && isAndroid()) {

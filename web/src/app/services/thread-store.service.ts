@@ -245,13 +245,10 @@ export class ThreadRepository {
         case 'HELLO': {
           const session = this.lifecycle.capture();
           void this.onHello(m.data as HelloPayload | undefined).catch(
-            async (error) => {
+            (error) => {
               if (!this.lifecycle.isCurrent(session)) return;
-              console.warn(
-                '[cache-recovery] session cache initialization failed',
-                error,
-              );
-              await this.userService.requestCacheRebuild();
+              // SSE already reconnects and redelivers HELLO. Do not enter local recovery.
+              console.warn('[sse] HELLO handling failed; reconnect retries', error);
             },
           );
           break;
@@ -459,8 +456,6 @@ export class ThreadRepository {
     } catch (error) {
       // Cache paint is optional; HELLO owns initialization and authoritative recovery.
       console.warn('[cache-paint] cached thread read failed', error);
-      if (this.isCurrentWork(scope))
-        await this.userService.requestCacheRebuild();
     }
   }
 

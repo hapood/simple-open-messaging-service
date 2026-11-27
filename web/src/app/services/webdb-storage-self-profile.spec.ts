@@ -1,10 +1,12 @@
 import { deleteDB, openDB } from 'idb';
 import type { AccountSelfProfile } from '../../../../shared/account-state';
+import type { ProfileDemand } from '../../../../shared/profile-demand';
 import { SessionLifecycleService } from './session-lifecycle.service';
 import { prepareTestSessionCache } from './session/session-cache.test-helper';
 import type { SessionCacheDescriptor } from './session/session-identity';
 import { SessionStore } from './session/session-store';
 import {
+  LocalCacheCorruptionError,
   LocalCacheUnavailableError,
   LocalCacheVersionMismatchError,
   WebdbStorage,
@@ -19,11 +21,53 @@ const self: AccountSelfProfile = {
   isDeleted: false,
 };
 
+const demand: ProfileDemand = {
+  publisherNamespaceId: 0,
+  lookup: 'ACCOUNT_PROFILE',
+  target: {
+    profileNamespaceId: 0,
+    account: self.account,
+    rev: self.profileRev,
+  },
+};
+
+/** The rejection of an operation that is required to fail. */
+async function rejection(run: () => Promise<unknown>): Promise<Error> {
+  try {
+    await run();
+  } catch (error) {
+    return error as Error;
+  }
+  throw new Error('expected the operation to reject');
+}
+
 describe('cached self discovery before user binding', () => {
   let descriptor: SessionCacheDescriptor;
   let lifecycle: SessionLifecycleService;
   let storage: WebdbStorage;
   let writer: WebdbStorage;
+
+  /** Make the versionless open of the seeded cache fail like a backend that cannot read it.
+   *  The real request genuinely fails, because opening version 2 at version 1 is refused, so no
+   *  connection leaks; the request then reports `reported` instead of its own error. */
+  function failCacheOpen(reported?: DOMException) {
+    const original = IDBFactory.prototype.open;
+    return vi.spyOn(IDBFactory.prototype, 'open').mockImplementation(function (
+      this: IDBFactory,
+      name,
+      version,
+    ) {
+      if (name !== descriptor.indexedDbName || version !== undefined)
+        return original.call(this, name, version);
+      const request = original.call(this, name, 1);
+      if (reported)
+        Object.defineProperty(request, 'error', {
+          get: () => reported,
+          configurable: true,
+        });
+      return request;
+    });
+  }
 
   beforeEach(async () => {
     descriptor = await prepareTestSessionCache();
@@ -71,9 +115,10 @@ describe('cached self discovery before user binding', () => {
         return names;
       });
     try {
-      await expect(storage.readCachedSelfProfile()).rejects.toMatchObject({
-        name: 'AbortError',
-      });
+      // The refusal is an absence, not damage: discovery keeps the browser's own error.
+      const error = await rejection(() => storage.readCachedSelfProfile());
+      expect(error).toMatchObject({ name: 'AbortError' });
+      expect(error).not.toBeInstanceOf(LocalCacheCorruptionError);
       expect((await databases()).map((db) => db.name)).not.toContain(
         descriptor.indexedDbName,
       );
@@ -263,15 +308,18 @@ describe('cached self discovery before user binding', () => {
       const expectedError =
         corruption === 'physical-version'
           ? LocalCacheVersionMismatchError
-          : LocalCacheUnavailableError;
+          : LocalCacheCorruptionError;
 
-      await expect(storage.readCachedSelfProfile()).rejects.toThrowError(
-        expectedError,
-      );
+      for (const restore of [
+        () => storage.readCachedSelfProfile(),
+        () => storage.openExistingForUser('42'),
+      ]) {
+        const error = await rejection(restore);
+        expect(error).toBeInstanceOf(expectedError);
+        // Structural damage is the one failure that may authorize recovery.
+        expect(error).toBeInstanceOf(LocalCacheCorruptionError);
+      }
       expect(storage.numericUserId).toBeNull();
-      await expect(storage.openExistingForUser('42')).rejects.toThrowError(
-        expectedError,
-      );
       expect(storage.ready()).toBe(false);
       const unchanged = await openDB(descriptor.indexedDbName);
       try {
@@ -296,12 +344,18 @@ describe('cached self discovery before user binding', () => {
         return original.apply(this, args);
       });
     try {
-      await expect(storage.readCachedSelfProfile()).rejects.toThrowError(
-        LocalCacheUnavailableError,
-      );
-      await expect(storage.openExistingForUser('42')).rejects.toThrowError(
-        LocalCacheUnavailableError,
-      );
+      for (const restore of [
+        () => storage.readCachedSelfProfile(),
+        () => storage.openExistingForUser('42'),
+      ]) {
+        const error = await rejection(restore);
+        expect(error).toMatchObject({
+          name: 'LocalCacheCorruptionError',
+          message: `invalid local cache: ${descriptor.indexedDbName}`,
+        });
+        // A cache that fails validation is still reported as unavailable.
+        expect(error).toBeInstanceOf(LocalCacheUnavailableError);
+      }
       expect(storage.ready()).toBe(false);
     } finally {
       get.mockRestore();
@@ -372,6 +426,198 @@ describe('cached self discovery before user binding', () => {
     } finally {
       get.mockRestore();
     }
+  });
+
+  describe('local cache corruption classification', () => {
+    const restorePaths = (): Array<() => Promise<unknown>> => [
+      () => storage.readCachedSelfProfile(),
+      () => storage.openExistingForUser('42'),
+    ];
+
+    /** Rejects with `message` and never claims the cache is corrupt. */
+    async function plain(run: () => Promise<unknown>, message: string) {
+      const error = await rejection(run);
+      expect(error).toMatchObject({ message });
+      expect(error).not.toBeInstanceOf(LocalCacheCorruptionError);
+    }
+
+    it('is one class covering version, schema and readability failures', () => {
+      const mismatch = new LocalCacheVersionMismatchError('cache');
+      const unreadable = new LocalCacheCorruptionError(
+        'unreadable local cache: cache',
+      );
+      const absent = new LocalCacheUnavailableError(
+        'missing local cache: cache',
+      );
+      for (const error of [mismatch, unreadable]) {
+        expect(error).toBeInstanceOf(LocalCacheCorruptionError);
+        expect(error).toBeInstanceOf(LocalCacheUnavailableError);
+      }
+      expect(absent).not.toBeInstanceOf(LocalCacheCorruptionError);
+      expect(mismatch).toMatchObject({
+        name: 'LocalCacheVersionMismatchError',
+        message: 'local cache schema version mismatch: cache',
+      });
+      expect(unreadable.name).toBe('LocalCacheCorruptionError');
+    });
+
+    it('reports an absent cache as unavailable, never as corrupt', async () => {
+      await plain(
+        () => storage.openExistingForUser('42'),
+        `missing local cache: ${descriptor.indexedDbName}`,
+      );
+      expect(storage.ready()).toBe(false);
+    });
+
+    it('reports unsupported enumeration as unavailable, never as corrupt', async () => {
+      await seed();
+      await writer.close();
+      Object.defineProperty(indexedDB, 'databases', {
+        value: undefined,
+        configurable: true,
+        writable: true,
+      });
+      try {
+        for (const restore of restorePaths())
+          await plain(restore, 'IndexedDB database enumeration is unavailable');
+      } finally {
+        Reflect.deleteProperty(indexedDB, 'databases');
+      }
+      expect(await storage.readCachedSelfProfile()).toEqual(self);
+    });
+
+    it('reports a cache that vanished before a strict open as unavailable', async () => {
+      await seed();
+      await writer.close();
+      const databases = indexedDB.databases.bind(indexedDB);
+      const enumerate = vi
+        .spyOn(indexedDB, 'databases')
+        .mockImplementationOnce(async () => {
+          const names = await databases();
+          await deleteDB(descriptor.indexedDbName);
+          return names;
+        });
+      try {
+        const error = await rejection(() => storage.openExistingForUser('42'));
+        expect(error).toMatchObject({
+          name: 'LocalCacheUnavailableError',
+          message: `unreadable local cache: ${descriptor.indexedDbName}`,
+        });
+        expect(error).not.toBeInstanceOf(LocalCacheCorruptionError);
+        expect((await databases()).map((db) => db.name)).not.toContain(
+          descriptor.indexedDbName,
+        );
+        expect(storage.ready()).toBe(false);
+      } finally {
+        enumerate.mockRestore();
+      }
+    });
+
+    it('declares a backend that cannot read an existing cache corrupt on both paths', async () => {
+      await seed();
+      await writer.close();
+      const backend = new DOMException(
+        'Internal error opening backing store',
+        'UnknownError',
+      );
+      const open = failCacheOpen(backend);
+      try {
+        for (const restore of restorePaths()) {
+          const error = await rejection(restore);
+          expect(error).toMatchObject({
+            name: 'LocalCacheCorruptionError',
+            message: `unreadable local cache: ${descriptor.indexedDbName}`,
+            cause: backend,
+          });
+          // A cache the backend cannot read is still reported as unavailable.
+          expect(error).toBeInstanceOf(LocalCacheUnavailableError);
+        }
+        expect(storage.ready()).toBe(false);
+      } finally {
+        open.mockRestore();
+      }
+      // Nothing was deleted: the same cache reads again once the backend recovers.
+      expect(await storage.readCachedSelfProfile()).toEqual(self);
+    });
+
+    it('keeps the backend failure itself as the cause', async () => {
+      await seed();
+      await writer.close();
+      const open = failCacheOpen();
+      try {
+        const error = await rejection(() => storage.openExistingForUser('42'));
+        expect(error).toBeInstanceOf(LocalCacheCorruptionError);
+        expect(error).toMatchObject({ cause: { name: 'VersionError' } });
+      } finally {
+        open.mockRestore();
+      }
+    });
+
+    it.each(['SecurityError', 'NotAllowedError', 'NotFoundError'])(
+      'does not declare corruption when the open is refused with %s',
+      async (name) => {
+        await seed();
+        await writer.close();
+        const refused = new DOMException('The open was refused', name);
+        const open = failCacheOpen(refused);
+        try {
+          // Discovery never wrapped these: the browser's error is the only report.
+          expect(await rejection(() => storage.readCachedSelfProfile())).toBe(
+            refused,
+          );
+          const error = await rejection(() =>
+            storage.openExistingForUser('42'),
+          );
+          expect(error).toMatchObject({
+            name: 'LocalCacheUnavailableError',
+            message: `unreadable local cache: ${descriptor.indexedDbName}`,
+          });
+          expect(error).not.toBeInstanceOf(LocalCacheCorruptionError);
+          expect(error).not.toHaveProperty('cause');
+        } finally {
+          open.mockRestore();
+        }
+        expect(await storage.readCachedSelfProfile()).toEqual(self);
+      },
+    );
+
+    it('keeps lifecycle and worker transport failures out of the class', async () => {
+      await seed();
+      await writer.close();
+      // No account is bound to this handle.
+      await plain(() => storage.db(), 'webdb: no user / unavailable');
+
+      // Another owner ends the cache lifetime while the strict open validates the schema.
+      const original = IDBObjectStore.prototype.get;
+      const get = vi
+        .spyOn(IDBObjectStore.prototype, 'get')
+        .mockImplementation(function (this: IDBObjectStore, ...args) {
+          const request = original.apply(this, args);
+          if (this.name === 'accountState') lifecycle.invalidateSession();
+          return request;
+        });
+      try {
+        await plain(
+          () => storage.openExistingForUser('42'),
+          'webdb: stale existing-cache open discarded',
+        );
+      } finally {
+        get.mockRestore();
+      }
+
+      // The discarded open closed the handle, so ordinary admission stays shut.
+      await plain(
+        () => storage.readAccountState(),
+        'account cache lifetime expired',
+      );
+
+      // An open handle without a database worker reports the transport, not damage.
+      await storage.openExistingForUser('42');
+      await plain(
+        () => storage.resolveProfileDemand(demand),
+        'database worker unavailable',
+      );
+    });
   });
 });
 

@@ -1,3 +1,12 @@
+@if (startup.restoring()) {
+  <div class="app-splash" role="status">
+    <img class="app-splash__mark" src="logo.svg" alt="" />
+    <div class="app-splash__word">SOMS.im</div>
+    @if (!startup.databaseFailure()) {
+      <div class="app-splash__spinner"></div>
+    }
+  </div>
+}
 <app-indicator-slot>
   <app-connection-banner />
 </app-indicator-slot>

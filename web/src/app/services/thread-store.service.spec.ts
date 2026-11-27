@@ -53,7 +53,6 @@ describe('ThreadRepository.setOpenThread teardown tolerance', () => {
           useValue: {
             sessionUserId: signal<number | null>(null),
             sessionProfile: signal(null),
-            requestCacheRebuild: vi.fn(),
           },
         },
         {
@@ -249,7 +248,6 @@ describe('ThreadRepository.setOpenThread teardown tolerance', () => {
         await Promise.resolve();
       }
       expect(getThreadStates).not.toHaveBeenCalled();
-      expect(user.requestCacheRebuild).not.toHaveBeenCalled();
     },
   );
 

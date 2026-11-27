@@ -1,4 +1,5 @@
 import { Injectable, inject } from '@angular/core';
+import { deleteDB } from 'idb';
 import { HttpClient, HttpContext } from '@angular/common/http';
 import {
   EMPTY,
@@ -19,6 +20,7 @@ import {
   isTauri,
   isAndroidNative,
   tauriInvoke,
+  exitApplication,
   sessionClient,
   pickLoginOrigin,
 } from './runtime';
@@ -38,9 +40,16 @@ import { SessionStateService } from './session-state.service';
 import type { LogoutOutcome } from './session/logout-outcome';
 import { LogoutDecisionService } from './logout-decision.service';
 import { BROWSER_SESSION } from './browser-session.service';
+import { PreferenceStorage } from './preference-storage';
+import { deleteBrowserSessionCache } from './session/browser-session-cache';
+import { DatabaseRestorationError } from './session/database-restoration-error';
+import { classifyDatabaseInitFailure } from './session/database-init-failure';
+import { SessionStore } from './session/session-store';
+import { SessionStartupService } from './session-startup.service';
 import { sessionRequest } from './session/session-request';
 import {
   SessionSupersededError,
+  isSessionSupersededError,
   parseLoginSessionId,
   type LoginSessionId,
 } from './session/session-identity';
@@ -124,6 +133,7 @@ export class AuthService {
   private readonly logoutDecision = inject(LogoutDecisionService);
   private readonly browserSession = inject(BROWSER_SESSION);
   private readonly lifecycle = inject(SessionLifecycleService);
+  private readonly startup = inject(SessionStartupService);
   private readonly serverConfigDialog = inject(ServerConfigDialogService);
   readonly loggedIn = this.sessionState.loggedIn;
 
@@ -159,6 +169,54 @@ export class AuthService {
    *  false immediately — avoids a stale-logged-in redirect loop with the guest guard. */
   private clearPresenceCookie() {
     this.sessionState.clearPresenceCookie();
+  }
+
+  /** Classified database init failures wait for the Material dialog. Exit does not rebuild. */
+  private async answerDatabaseInit(
+    error: unknown,
+    work?: SessionWorkScope,
+  ): Promise<'rebuild' | 'exit' | null> {
+    if (work && !this.lifecycle.isCurrent(work)) return null;
+    if (isSessionSupersededError(error)) return null;
+    const kind = classifyDatabaseInitFailure(error);
+    if (!kind) return null;
+    console.error('[session] local database initialization failed', error);
+    const choice = await this.startup.decideDatabase(kind);
+    if (choice === 'exit') {
+      await exitApplication();
+      // Keep the logo screen up. A resolved restore would mount routed UI before the process exits.
+      return new Promise(() => {});
+    }
+    return choice;
+  }
+
+  private async resetBrowserFrontend(): Promise<void> {
+    this.clearPresenceCookie();
+    await new PreferenceStorage().close();
+    await deleteBrowserSessionCache();
+    await deleteDB('soms-client-preferences');
+  }
+
+  private async resetNativeFrontend(recovery: {
+    work: SessionWorkScope;
+    sessionUuid: string | null;
+  }): Promise<boolean> {
+    if (!this.lifecycle.isCurrent(recovery.work)) return false;
+    try {
+      await tauriInvoke('native_reset_frontend_storage', {
+        sessionUuid: recovery.sessionUuid,
+      });
+      // Rust held admission through deletion. A successor may start before the IPC reply arrives.
+      if (!this.lifecycle.isCurrent(recovery.work)) return false;
+      this.nativeLoginUuid = null;
+      this.sessionState.setAuthenticated(false);
+      this.lifecycle.invalidateSession();
+      recovery.work = this.lifecycle.capture();
+      return true;
+    } catch (error) {
+      if (!this.lifecycle.isCurrent(recovery.work) || isSessionSupersededError(error)) return false;
+      throw error;
+    }
   }
 
   /** Run the login-init origin race (once) before the auth request, so login targets a reachable origin
@@ -209,9 +267,13 @@ export class AuthService {
    *  work, deletes retired login caches and mints the new UUID. Account-scoped preferences of the
    *  previous login are removed here too, so nothing of the old login survives into the new one. */
   private async prepareNativeLogin(): Promise<NativeAuthentication> {
+    // Cancel and release renderer restoration handles before Rust replaces the fixed cache.
+    const released = this.userService.releaseSession();
     this.userService.prepareFreshCache();
     this.sessionState.setAuthenticated(false);
     const work = this.lifecycle.capture();
+    await released;
+    this.lifecycle.assertCurrent(work);
     const id = parseLoginSessionId(
       await tauriInvoke<string>('native_db_begin_login'),
     );
@@ -314,7 +376,10 @@ export class AuthService {
 
   /** QR-login: poll the sign-in token's status. On 'confirmed' the response carries the session token,
    *  which activates a permanent session (if `trusted` was chosen at create) or a 14-day sliding one. */
-  qrPoll(qrToken: string, device?: string): Observable<{
+  qrPoll(
+    qrToken: string,
+    device?: string,
+  ): Observable<{
     code: number;
     data?: {
       status: string;
@@ -423,6 +488,7 @@ export class AuthService {
   private async setSessionToken(
     token: string,
     context: NativeAuthentication,
+    onAdmitted?: (work: SessionWorkScope) => void,
   ): Promise<SessionWorkScope> {
     if (!isTauri())
       throw new Error('Native token installation requires the native host');
@@ -436,6 +502,7 @@ export class AuthService {
     this.nativeLoginUuid = context.id;
     this.lifecycle.bindSession(context.id);
     const admitted = this.lifecycle.capture();
+    onAdmitted?.(admitted);
     if (isAndroidNative()) {
       // Persist only after Rust admits this exact operation and the renderer lease is still current.
       window.SomsFcm!.setSessionToken(token, context.id);
@@ -484,29 +551,40 @@ export class AuthService {
       const hint = this.sessionState.hasBrowserSessionHint();
       this.sessionState.setAuthenticated(false);
       try {
-        const restored = await browser.restore(hint);
-        this.sessionState.setAuthenticated(restored);
-        if (!restored) this.clearPresenceCookie();
+        await browser.restore(
+          hint,
+          undefined,
+          (restored) => {
+            this.sessionState.setAuthenticated(restored);
+            if (!restored) this.clearPresenceCookie();
+          },
+        );
       } catch (error) {
-        // Preserve the credential for a retry, but admit no business work while local recovery failed.
-        console.warn('[session] browser restoration failed', error);
-        this.toast.warn(this.t('auth.notice.localCacheUnavailable'));
+        if (isSessionSupersededError(error)) return;
+        const choice = await this.answerDatabaseInit(error);
+        if (choice === 'rebuild') {
+          await this.resetBrowserFrontend();
+          await new SessionStore().initialize();
+          this.sessionState.setAuthenticated(false);
+          this.clearPresenceCookie();
+        } else if (choice !== 'exit') {
+          throw error;
+        }
       }
       return;
     }
+    const recovery = { work, sessionUuid: null as string | null };
     if (isAndroidNative()) {
       try {
         const t = window.SomsFcm!.getSessionToken(); // synchronous JNI
         const sessionUuid = window.SomsFcm!.getLoginSessionId();
         if (t && sessionUuid) {
-          await this.restoreNativeSession({ token: t, sessionUuid }, work);
-        } else if (t) {
-          await this.discardResidualNativeToken();
+          recovery.sessionUuid = sessionUuid;
+          await this.restoreNativeSession({ token: t, sessionUuid }, recovery);
         }
-      } catch {
-        // SomsFcm bridge missing (shell wiring bug / renderer reclaimed before the @JavascriptInterface
-        // registered). Stay logged out + canTrust false rather than reject the APP_INITIALIZER — a rejection
-        // aborts bootstrap → a blank webview with no recovery path.
+      } catch (error) {
+        if ((await this.answerDatabaseInit(error, recovery.work)) === 'rebuild')
+          await this.resetNativeFrontend(recovery);
       }
     } else if (isTauri()) {
       try {
@@ -514,51 +592,75 @@ export class AuthService {
           token: string;
           sessionUuid: string;
         } | null>('secure_get_login');
-        if (login) await this.restoreNativeSession(login, work);
-      } catch {
-        // Keyring unavailable (e.g. headless Linux without Secret Service): this desktop CANNOT be
-        // trusted → the trust toggle stays hidden, so the user can't request a permanent token the client
-        // then can't persist (which would orphan a server-side permanent session).
+        this.lifecycle.assertCurrent(recovery.work);
+        if (login) {
+          recovery.sessionUuid = login.sessionUuid;
+          await this.restoreNativeSession(login, recovery);
+        }
+      } catch (error) {
+        if ((await this.answerDatabaseInit(error, recovery.work)) === 'rebuild')
+          await this.resetNativeFrontend(recovery);
       }
     }
     // Browser: _canTrust stays false (web can never be trusted).
   }
 
-  /** Cold-start native restore validates the credential against the durable login record FIRST: a
-   *  residual credential whose login was ended locally is discarded, never restored. A missing, old, or
-   *  damaged cache is rebuildable state, not an authentication failure: recreate the current schema and
-   *  keep the restored token. */
+  /** Validate stored credentials against the durable login before reading account data.
+   * Residual credentials restore nothing. Only a classified database failure may
+   * enter owner-scoped deletion and initialization; credential/transport errors
+   * never authorize resetting the current store. */
   private async restoreNativeSession(
     credential: { token: string; sessionUuid: string },
-    work: SessionWorkScope,
+    recovery: { work: SessionWorkScope; sessionUuid: string | null },
   ): Promise<void> {
+    const work = recovery.work;
     this.lifecycle.assertCurrent(work);
-    const uuid = await tauriInvoke<string | null>('login_session_for_token', {
-      token: credential.token,
-      sessionUuid: credential.sessionUuid,
-    });
+    let uuid: string | null;
+    try {
+      uuid = await tauriInvoke<string | null>('login_session_for_token', {
+        token: credential.token,
+        sessionUuid: credential.sessionUuid,
+      });
+    } catch (error) {
+      this.lifecycle.assertCurrent(work);
+      if (typeof error === 'string' && error.startsWith('SESSION_DATABASE_ERROR:'))
+        throw new DatabaseRestorationError(error);
+      throw error;
+    }
     this.lifecycle.assertCurrent(work);
     if (!uuid) {
-      await this.discardResidualNativeToken();
+      // Residual credentials are not database corruption and grant no cleanup ownership.
       return;
     }
     const id = parseLoginSessionId(uuid);
     this.nativeLoginUuid = id;
     try {
       await tauriInvoke('native_db_validate_cache');
-    } catch {
+    } catch (error) {
       this.lifecycle.assertCurrent(work);
-      await tauriInvoke('native_db_recreate_cache');
+      if (
+        typeof error === 'string' &&
+        error.startsWith('SESSION_DATABASE_ERROR:')
+      )
+        throw new DatabaseRestorationError(error);
+      throw error;
     }
     this.lifecycle.assertCurrent(work);
     // Rust must admit the recovered owner before account-cache reads. The renderer remains
     // unauthenticated until those reads finish, and carries the admitted scope across them.
-    const admitted = await this.setSessionToken(credential.token, {
-      host: 'native',
-      id,
-      work,
-    });
-    await this.userService.restoreWebdb();
+    const admitted = await this.setSessionToken(
+      credential.token,
+      {
+        host: 'native',
+        id,
+        work,
+      },
+      (scope) => {
+        recovery.work = scope;
+      },
+    );
+    recovery.work = admitted;
+    await this.userService.restoreWebdb(admitted.signal);
     this.lifecycle.assertCurrent(admitted);
     this.sessionState.setAuthenticated(true);
   }
@@ -667,26 +769,38 @@ export class AuthService {
     this.browserLogout = pending;
     // Clear the single-flight slot on either outcome without creating an unhandled rejection.
     void pending.then(
-      () => { if (this.browserLogout === pending) this.browserLogout = null; },
-      () => { if (this.browserLogout === pending) this.browserLogout = null; },
+      () => {
+        if (this.browserLogout === pending) this.browserLogout = null;
+      },
+      () => {
+        if (this.browserLogout === pending) this.browserLogout = null;
+      },
     );
     return pending;
   }
 
   private async performBrowserLogout(): Promise<void> {
     const completion = await this.requireBrowserSession().logoutWithDecision(
-      (signal) => sessionRequest(
-        this.http.post<LogoutRes>(`${apiPrefix()}/auth/logout`, {}, {
-          context: new HttpContext()
-            .set(REQUEST_SCOPE, RequestScope.Authentication)
-            .set(SUPPRESS_HTTP_ERROR_TOAST, true),
-        }), signal,
-      ).then(() => undefined),
+      (signal) =>
+        sessionRequest(
+          this.http.post<LogoutRes>(
+            `${apiPrefix()}/auth/logout`,
+            {},
+            {
+              context: new HttpContext()
+                .set(REQUEST_SCOPE, RequestScope.Authentication)
+                .set(SUPPRESS_HTTP_ERROR_TOAST, true),
+            },
+          ),
+          signal,
+        ).then(() => undefined),
       (outcome) => this.logoutDecision.decide(outcome),
       async () => {
         await this.webPush.unsubscribe().catch((error) => {
           console.warn('[push] logout unsubscribe failed', error);
-          this.toast.warn(this.t('auth.notice.pushUnsubscribeFailed'), { duration: IMPORTANT_NOTICE_MS });
+          this.toast.warn(this.t('auth.notice.pushUnsubscribeFailed'), {
+            duration: IMPORTANT_NOTICE_MS,
+          });
         });
         this.clearLocalSessionState();
         this.clearPresenceCookie();
@@ -705,8 +819,12 @@ export class AuthService {
     const pending = this.performNativeLogout();
     this.nativeLogout = pending;
     void pending.then(
-      () => { this.nativeLogout = null; },
-      () => { this.nativeLogout = null; },
+      () => {
+        this.nativeLogout = null;
+      },
+      () => {
+        this.nativeLogout = null;
+      },
     );
     return pending;
   }
@@ -722,7 +840,8 @@ export class AuthService {
       while (true) {
         const outcome = await tauriInvoke<LogoutOutcome>('try_logout');
         if (outcome.status === 'revoked') break;
-        if (outcome.status === 'superseded') throw new Error('Logout interrupted');
+        if (outcome.status === 'superseded')
+          throw new Error('Logout interrupted');
         const decision = await this.logoutDecision.decide(outcome);
         if (decision === 'localOnly') {
           localOnly = true;
@@ -743,19 +862,21 @@ export class AuthService {
       return from(this.requestBrowserLogout()).pipe(
         tap({
           error: () =>
-            this.toast.warn(
-              this.t('auth.notice.logoutCacheClearFailed'),
-              { duration: IMPORTANT_NOTICE_MS },
-            ),
+            this.toast.warn(this.t('auth.notice.logoutCacheClearFailed'), {
+              duration: IMPORTANT_NOTICE_MS,
+            }),
         }),
       );
     }
     if (!this.nativeLogout) this.announceSessionEnding();
-    return from(this.requestNativeLogout()).pipe(tap({
-      error: () => this.toast.warn(this.t('auth.notice.logoutClearFailed'), {
-        duration: IMPORTANT_NOTICE_MS,
+    return from(this.requestNativeLogout()).pipe(
+      tap({
+        error: () =>
+          this.toast.warn(this.t('auth.notice.logoutClearFailed'), {
+            duration: IMPORTANT_NOTICE_MS,
+          }),
       }),
-    }));
+    );
   }
 
   private async endNativeSession(): Promise<boolean> {

@@ -1,15 +1,13 @@
+import {
+  DatabaseRestorationError,
+  restoringDatabase,
+} from './session/database-restoration-error';
 import type { SseFrame } from '../../../../shared/sse-client';
 import { consumeAppSse } from './sse-client';
 import { ThreadSendOutbox } from './thread-send-outbox.service';
 import type { RequestSnapshot } from '../../../../shared/request-snapshot';
 import type { RequestRevocationStatus } from '../../../../shared/request-projection-status';
-import {
-  Injectable,
-  InjectionToken,
-  signal,
-  computed,
-  inject,
-} from '@angular/core';
+import { Injectable, signal, computed, inject } from '@angular/core';
 import { HttpClient, HttpContext } from '@angular/common/http';
 import { REQUEST_SCOPE, RequestScope } from '../request-context';
 import {
@@ -28,13 +26,12 @@ import {
   StandardResponse,
   PersonalQuotaState,
 } from './model';
-import { WebdbService } from './webdb.service';
+import { LocalCacheCorruptionError, WebdbService } from './webdb.service';
 import {
   ProfileRepository,
   type ResolvedProfile,
 } from './profile-store.service';
-import { AppStateStorage } from './preference-storage';
-import { isTauri, tauriInvoke } from './runtime';
+
 import { SessionLifecycleService } from './session-lifecycle.service';
 import { SessionSupersededError } from './session/session-identity';
 import {
@@ -101,14 +98,6 @@ export class FederatedResolveError extends Error {
 
 export type { ClientStateFeedItem } from '../../../../shared/client-state-feed';
 
-/** Recovery metadata lives outside the disposable session cache. */
-const CACHE_REBUILD_KEY = 'cacheRebuild';
-
-export const CACHE_REBUILD_RELOAD = new InjectionToken<() => void>(
-  'CACHE_REBUILD_RELOAD',
-  { providedIn: 'root', factory: () => () => window.location.reload() },
-);
-
 /** Transient self presentation; only account facts are persisted in account state. */
 export type SelfProfileView = SelfAccount &
   Pick<ResolvedProfile, 'name' | 'bio'>;
@@ -158,45 +147,11 @@ export class UserService {
   private readonly webdb = inject(WebdbService);
   private readonly sendOutbox = inject(ThreadSendOutbox);
   private readonly profileRepo = inject(ProfileRepository);
-  private readonly appState = new AppStateStorage();
   private readonly sessionLifecycle = inject(SessionLifecycleService);
   /** The user key whose DB is currently open (or null); cleared by {@link resetSessionState}. */
   private webdbUserKey: string | null = null;
   /** Set only by a real credential/OTP/QR login. Cold-start restore and reconnect never set it. */
   private freshCachePending = false;
-  private cacheRebuildRequest?: Promise<void>;
-  private readonly reloadForCacheRebuild = inject(CACHE_REBUILD_RELOAD);
-
-  /** Persist recovery outside the damaged cache. Rebuild only after reload, when old writers are gone. */
-  requestCacheRebuild(): Promise<void> {
-    if (this.webdbUserKey === null || this.freshCachePending)
-      return Promise.resolve();
-    return (this.cacheRebuildRequest ??= this.scheduleCacheRebuild());
-  }
-
-  private async scheduleCacheRebuild(): Promise<void> {
-    try {
-      const userId =
-        this.webdbUserKey === null ? null : Number(this.webdbUserKey);
-      // A real first login has no cached owner yet. HELLO initializes the fresh cache normally.
-      if (userId === null || this.freshCachePending) return;
-      if ((await this.appState.get(CACHE_REBUILD_KEY)) === 'attempted') {
-        console.warn('[cache-recovery] automatic rebuild already attempted', {
-          userId,
-        });
-        return;
-      }
-      if (this.webdbUserKey !== String(userId)) return;
-      await this.appState.set(CACHE_REBUILD_KEY, 'pending');
-      if (this.webdbUserKey !== String(userId)) return;
-      console.warn('[cache-recovery] reloading to rebuild account cache', {
-        userId,
-      });
-      this.reloadForCacheRebuild();
-    } catch (error) {
-      console.warn('[cache-recovery] could not schedule cache rebuild', error);
-    }
-  }
 
   constructor(private http: HttpClient) {
     this.sessionLifecycle.invalidated$.subscribe(() =>
@@ -223,7 +178,6 @@ export class UserService {
   resetSessionState(): void {
     this.webdbUserKey = null;
     this.freshCachePending = false;
-    this.cacheRebuildRequest = undefined;
     this.sessionId.set(null);
     this.sessionUserId.set(null);
     this.sessionProfile.set(undefined);
@@ -258,10 +212,7 @@ export class UserService {
       checkSession();
       await this.sendOutbox.restore(true);
       checkSession();
-      await this.appState.remove(CACHE_REBUILD_KEY);
-      checkSession();
       this.freshCachePending = false;
-      this.cacheRebuildRequest = undefined;
       this.webdbUserKey = null;
     }
     if (this.sessionUserId() === userId) {
@@ -278,17 +229,10 @@ export class UserService {
       await this.webdb.openExistingForUser(String(userId)); // strict read on the normal path
     } catch (error) {
       checkSession();
-      // Every local-cache validation/open failure is rebuildable state. The Webdb maintenance fence prevents this
-      // recreation from publishing handles if logout/account-switch wins while it is in flight.
-      console.warn('[cache-recovery] session cache open failed', error);
-      if ((await this.appState.get(CACHE_REBUILD_KEY)) === 'attempted')
-        throw error;
-      checkSession();
-      await this.appState.set(CACHE_REBUILD_KEY, 'attempted');
-      checkSession();
-      await this.webdb.recreateForUser(String(userId));
-      checkSession();
-      await this.sendOutbox.restore(true);
+      if (!(error instanceof LocalCacheCorruptionError)) throw error;
+      // HELLO retries transport failures. Structural damage is a restoration choice, not a reload.
+      console.error('[session] unrecoverable local database', error);
+      throw new DatabaseRestorationError(error);
     }
     checkSession();
     await this.sendOutbox.restore();
@@ -316,10 +260,8 @@ export class UserService {
       void this.markRelationshipRequestsRead(durableOptimistic).catch(
         () => undefined,
       );
-    void this.gateSelfProfile(userId, profileRev).catch(async (error) => {
-      console.warn('[cache-recovery] cached self profile read failed', error);
-      if (this.webdbUserKey === String(userId))
-        await this.requestCacheRebuild();
+    void this.gateSelfProfile(userId, profileRev).catch((error) => {
+      console.warn('[profile] self profile refresh failed', error);
     });
   }
 
@@ -393,62 +335,35 @@ export class UserService {
   /** Restore presentation from the admitted login cache before HELLO, without duplicating its
    * identity in settings. Only HELLO publishes authenticated user/session IDs. An empty cache stays
    * unbound until HELLO supplies the real numeric owner required by native storage. */
-  async restoreWebdb(signal?: AbortSignal): Promise<void> {
+  async restoreWebdb(signal: AbortSignal): Promise<void> {
     const scope = this.sessionLifecycle.capture();
     const check = () => {
-      if (signal?.aborted || !this.sessionLifecycle.isCurrent(scope))
+      if (signal.aborted || !this.sessionLifecycle.isCurrent(scope))
         throw new SessionSupersededError();
     };
     try {
       check();
-      const recovery = await this.appState.get(CACHE_REBUILD_KEY);
-      check();
-      if (recovery !== 'pending') {
-        try {
-          const cached = await this.webdb.readCachedSelfProfile();
-          check();
-          if (!cached) return;
-          if (!Number.isSafeInteger(cached.id) || cached.id <= 0)
-            throw new Error('invalid cached self identity');
-          this.webdbUserKey = String(cached.id);
-          await this.webdb.openExistingForUser(this.webdbUserKey);
-          check();
-          await firstValueFrom(this.publishSelfProfile(cached, signal));
-          check();
-          await this.sendOutbox.restore();
-          check();
-          return;
-        } catch (error) {
-          check();
-          console.warn('[cache-recovery] account cache restore failed', error);
-          if (recovery === 'attempted') {
-            if (signal) throw error;
-            return;
-          }
-        }
-      }
-      // Persist before attempting: a failed rebuild must not cause a reload loop.
-      await this.appState.set(CACHE_REBUILD_KEY, 'attempted');
-      check();
-      if (isTauri()) {
-        await tauriInvoke('native_db_recreate_cache');
-        check();
-      }
-      if (this.webdbUserKey !== null) {
-        await this.webdb.recreateForUser(this.webdbUserKey);
-        check();
-        await this.sendOutbox.restore(true);
-      } else if (!isTauri()) {
-        // No cached self survived: initialize the fixed cache without inventing an account ID.
-        await this.webdb.recreateSessionCache();
-      }
-      check();
-      console.warn(
-        '[cache-recovery] account cache rebuilt; awaiting full state replay',
+      const cached = await restoringDatabase(() =>
+        this.webdb.readCachedSelfProfile(),
       );
+      check();
+      if (!cached) return;
+      if (!Number.isSafeInteger(cached.id) || cached.id <= 0)
+        throw new DatabaseRestorationError(
+          new Error('invalid cached self identity'),
+        );
+      this.webdbUserKey = String(cached.id);
+      await restoringDatabase(() =>
+        this.webdb.openExistingForUser(String(cached.id)),
+      );
+      check();
+      // Profile resolution can reach the network. HELLO owns that flow and its existing retry.
+      await restoringDatabase(() => this.sendOutbox.restore());
+      check();
     } catch (error) {
-      console.warn('[cache-recovery] account cache rebuild unavailable', error);
-      if (signal) throw error;
+      check();
+      // Non-database presentation/transport failures retain their original identity.
+      throw error;
     }
   }
 
@@ -514,14 +429,16 @@ export class UserService {
           bio: profile.bio,
         };
         if (!signal?.aborted && this.sessionLifecycle.isCurrent(scope)) {
-          await this.webdb.writeSelfProfile({
-            id: user.id,
-            account: user.account,
-            namespaceId: user.namespaceId,
-            profileRev: user.profileRev,
-            isGroup: user.isGroup,
-            isDeleted: user.isDeleted,
-          });
+          await restoringDatabase(() =>
+            this.webdb.writeSelfProfile({
+              id: user.id,
+              account: user.account,
+              namespaceId: user.namespaceId,
+              profileRev: user.profileRev,
+              isGroup: user.isGroup,
+              isDeleted: user.isDeleted,
+            }),
+          );
           if (!signal?.aborted && this.sessionLifecycle.isCurrent(scope))
             this.sessionProfile.set(resolved);
         }

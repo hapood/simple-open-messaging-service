@@ -12,5 +12,6 @@ function deleteDatabase(name: string): Promise<void> {
 
 export async function deleteBrowserSessionCache(): Promise<void> {
   await deleteDatabase('soms-session-pending-sends');
+  await deleteDatabase('soms-session-download-history');
   await deleteDatabase('soms-session');
 }

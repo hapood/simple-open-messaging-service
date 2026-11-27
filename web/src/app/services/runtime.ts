@@ -427,6 +427,16 @@ export function sessionClient(): 'app' | 'web' | 'desktop' {
  *  propagates — so Rust-side failures (capability rejections, command errors, network failures) always
  *  show up even when a caller swallows the rejection. Callers MUST still guard with `isTauri()` and
  *  swallow errors for non-critical handoffs (e.g. token sync to the media proxy). */
+/** Leave the installed app. Browser tabs can only close when the platform allows it. */
+export async function exitApplication(): Promise<void> {
+  window.SomsBack?.exit();
+  if (isTauri()) {
+    await tauriInvoke('exit_app');
+    return;
+  }
+  window.close();
+}
+
 export function tauriInvoke<T = unknown>(
   cmd: string,
   args?: Record<string, unknown>,

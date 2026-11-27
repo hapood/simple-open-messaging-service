@@ -51,7 +51,7 @@ pub(crate) fn secure_get_login() -> Result<Option<StoredLoginCredential>, String
         return Ok(Some(pair));
     }
     delete_credential()?;
-    Ok(None)
+    Err("unreadable login credential".into())
 }
 
 #[tauri::command]

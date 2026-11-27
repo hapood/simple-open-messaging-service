@@ -1,4 +1,5 @@
 import { Injectable, OnDestroy, signal } from '@angular/core';
+import type { DatabaseInitFailureKind } from './session/database-init-failure';
 
 /** Gates routed UI while browser session admission is still being restored. */
 @Injectable({ providedIn: 'root' })
@@ -6,6 +7,8 @@ export class SessionStartupService implements OnDestroy {
   readonly restoring = signal(false);
   readonly failed = signal(false);
   readonly retryIn = signal<number | null>(null);
+  readonly databaseFailure = signal<DatabaseInitFailureKind | null>(null);
+  private databaseChoice?: (choice: 'rebuild' | 'exit') => void;
   private retryAction?: () => void;
   private releaseRetry?: () => void;
   private destroyed = false;
@@ -17,6 +20,21 @@ export class SessionStartupService implements OnDestroy {
 
   retryNow(): void {
     this.retryAction?.();
+  }
+
+  /** Pause restoration until the logo screen's Material dialog returns a choice. */
+  decideDatabase(kind: DatabaseInitFailureKind): Promise<'rebuild' | 'exit'> {
+    this.databaseFailure.set(kind);
+    return new Promise((resolve) => {
+      this.databaseChoice = resolve;
+    });
+  }
+
+  answerDatabase(choice: 'rebuild' | 'exit'): void {
+    const answer = this.databaseChoice;
+    this.databaseChoice = undefined;
+    this.databaseFailure.set(null);
+    answer?.(choice);
   }
 
   /** Attach only a backoff wake-up; never interrupt an in-flight handshake. */

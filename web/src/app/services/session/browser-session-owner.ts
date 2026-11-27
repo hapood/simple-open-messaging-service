@@ -1,6 +1,11 @@
 import {
+  DatabaseRestorationError,
+  restoringDatabase,
+} from './database-restoration-error';
+import {
   createSessionCacheDescriptor,
   SessionSupersededError,
+  isSessionSupersededError,
   type SessionCacheDescriptor,
 } from './session-identity';
 import {
@@ -115,37 +120,74 @@ export class BrowserSessionOwner {
   }
 
   /** Presence cookies cannot authorize restoration without a recoverable durable login record. */
-  restore(hasCredential: boolean): Promise<boolean> {
+  restore(
+    hasCredential: boolean,
+    recover?: () => Promise<void>,
+    complete?: (restored: boolean) => void,
+  ): Promise<boolean> {
     const signal = this.beginTransition();
     return this.serializeTransition(async () => {
-      this.check(signal);
-      const saved = await this.sessionStore.initialize();
-      this.check(signal);
-      return this.withRestoration(async () => {
+      try {
+        const restored = await this.restoreOwned(hasCredential, signal);
         this.check(signal);
-        if (!hasCredential || saved.lifecycleState !== 'active') {
-          await this.cleanup();
-          return false;
-        }
-        const descriptor = saved.session;
-        if (!descriptor) throw new Error('Missing active session UUID');
-        await this.resources.close();
+        complete?.(restored);
+        return restored;
+      } catch (error) {
+        // Classification alone is insufficient: ordinary I/O failures can arrive after logout.
         this.check(signal);
-        await this.resources.restore(descriptor, signal);
-        this.check(signal);
-        const current = await this.sessionStore.read();
         if (
-          current.lifecycleState !== 'active' ||
-          current.session?.id !== descriptor.id
-        ) {
-          throw new SessionSupersededError();
-        }
+          isSessionSupersededError(error) ||
+          !(error instanceof DatabaseRestorationError) ||
+          !recover
+        )
+          throw error;
+        console.error('[session] unrecoverable local database', error);
+        // Hold the transition lane across every close/delete await. Deletion cannot be cancelled.
+        await this.resources.close();
+        await recover();
+        // Recovery is local only. Re-enter the existing journal initialization; do not retry the network.
+        await this.sessionStore.initialize();
         this.check(signal);
-        this.active = descriptor;
-        this.publish(descriptor);
-        return true;
-      }, signal);
+        complete?.(false);
+        return false;
+      }
     });
+  }
+
+  private async restoreOwned(
+    hasCredential: boolean,
+    signal: AbortSignal,
+  ): Promise<boolean> {
+    this.check(signal);
+    const saved = await restoringDatabase(() => this.sessionStore.initialize());
+    this.check(signal);
+    return this.withRestoration(async () => {
+      this.check(signal);
+      if (!hasCredential || saved.lifecycleState !== 'active') {
+        await this.cleanup();
+        return false;
+      }
+      const descriptor = saved.session;
+      if (!descriptor)
+        throw new DatabaseRestorationError(
+          new Error('Missing active session UUID'),
+        );
+      await this.resources.close();
+      this.check(signal);
+      await this.resources.restore(descriptor, signal);
+      this.check(signal);
+      const current = await restoringDatabase(() => this.sessionStore.read());
+      if (
+        current.lifecycleState !== 'active' ||
+        current.session?.id !== descriptor.id
+      ) {
+        throw new SessionSupersededError();
+      }
+      this.check(signal);
+      this.active = descriptor;
+      this.publish(descriptor);
+      return true;
+    }, signal);
   }
 
   /** Interactive logout keeps the original durable login until revocation is confirmed

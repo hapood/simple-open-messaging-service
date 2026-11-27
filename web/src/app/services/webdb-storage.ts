@@ -43,6 +43,7 @@ import {
   type DBSchema,
   type IDBPDatabase,
   type IDBPObjectStore,
+  type OpenDBCallbacks,
 } from 'idb';
 import {
   type ConversationItem,
@@ -427,14 +428,36 @@ export interface WebdbSchema extends DBSchema {
 
 const IDB_FORMAT_VERSION = 2;
 
+/** The cache cannot serve this build right now for a reason that does not evidence damage:
+ *  it is absent, enumeration is unsupported, storage access was refused, or its lifetime ended.
+ *  Nothing may delete a cache on this error's authority. */
 export class LocalCacheUnavailableError extends Error {
-  constructor(message: string) {
-    super(message);
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
     this.name = 'LocalCacheUnavailableError';
   }
 }
 
-export class LocalCacheVersionMismatchError extends Error {
+/**
+ * The persisted cache is structurally unusable to this build: its format version is obsolete, its
+ * schema is missing or malformed, or the storage backend cannot read it. Replacing the cache is the
+ * only remedy, so this is the one local-cache failure that authorizes destructive recovery.
+ *
+ * It remains a `LocalCacheUnavailableError`. Absent caches, refused storage access, and lifecycle or
+ * transport failures are reported with that base class or the original error instead.
+ */
+export class LocalCacheCorruptionError extends LocalCacheUnavailableError {
+  readonly localCacheCorruption = true;
+
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = 'LocalCacheCorruptionError';
+  }
+}
+
+/** Cache formats are replaced, never migrated across versions, so a mismatched
+ *  format is corruption. */
+export class LocalCacheVersionMismatchError extends LocalCacheCorruptionError {
   constructor(name: string) {
     super(`local cache schema version mismatch: ${name}`);
     this.name = 'LocalCacheVersionMismatchError';
@@ -443,6 +466,56 @@ export class LocalCacheVersionMismatchError extends Error {
 
 function idbAvailable(): boolean {
   return typeof indexedDB !== 'undefined';
+}
+
+/**
+ * Open a cache without a version so that its physical format is preserved. Without a version an
+ * absent database is created at version 1, so the upgrade callback aborts that accidental creation
+ * and reports it to `onCreationRefused` before the open fails.
+ */
+function openPreservingFormat(
+  name: string,
+  onCreationRefused: () => void,
+  callbacks: Pick<OpenDBCallbacks<WebdbSchema>, 'blocking'> = {},
+): Promise<IDBPDatabase<WebdbSchema>> {
+  return openDB<WebdbSchema>(name, undefined, {
+    ...callbacks,
+    upgrade(_db, _oldVersion, _newVersion, transaction) {
+      // idb wraps the upgrade transaction separately from the open request.
+      void transaction.done.catch(() => undefined);
+      onCreationRefused();
+      transaction.abort();
+    },
+  });
+}
+
+/**
+ * Whether a failed open of a cache that enumeration just reported evidences damage. Only a backend
+ * that could not read an existing database does. The aborted upgrade means the cache vanished after
+ * enumeration, a missing database is the same absence, and refused storage access is a policy
+ * outcome; none of them says the content is damaged.
+ */
+function isUnreadableCache(cause: unknown, creationRefused: boolean): boolean {
+  if (creationRefused) return false;
+  const name = (cause as { name?: unknown } | null | undefined)?.name;
+  return (
+    name !== 'NotFoundError' &&
+    name !== 'NotAllowedError' &&
+    name !== 'SecurityError'
+  );
+}
+
+function unreadableCache(
+  name: string,
+  cause: unknown,
+): LocalCacheCorruptionError {
+  return new LocalCacheCorruptionError(`unreadable local cache: ${name}`, {
+    cause,
+  });
+}
+
+function invalidCache(name: string): LocalCacheCorruptionError {
+  return new LocalCacheCorruptionError(`invalid local cache: ${name}`);
 }
 
 function normalizeProfileSnapshot<T extends ProfileSnapshot>(snapshot: T): T {
@@ -1056,16 +1129,15 @@ export class WebdbStorage implements AccountStateStorage {
       throw new LocalCacheUnavailableError(`missing local cache: ${name}`);
     // Omitting a version preserves the physical format. Abort accidental creation
     // if another context deleted the cache after enumeration.
+    let creationRefused = false;
     let db: IDBPDatabase<WebdbSchema>;
     try {
-      db = await openDB<WebdbSchema>(name, undefined, {
-        upgrade(_db, _oldVersion, _newVersion, transaction) {
-          // idb wraps the upgrade transaction separately from the open request.
-          void transaction.done.catch(() => undefined);
-          transaction.abort();
-        },
+      db = await openPreservingFormat(name, () => {
+        creationRefused = true;
       });
-    } catch {
+    } catch (error) {
+      if (isUnreadableCache(error, creationRefused))
+        throw unreadableCache(name, error);
       throw new LocalCacheUnavailableError(`unreadable local cache: ${name}`);
     }
     this.observeCacheDeletion(db);
@@ -1075,13 +1147,13 @@ export class WebdbStorage implements AccountStateStorage {
     }
     if (!db.objectStoreNames.contains('accountState')) {
       db.close();
-      throw new LocalCacheUnavailableError(`invalid local cache: ${name}`);
+      throw invalidCache(name);
     }
     if (await this.isCurrentSchema(db)) {
       return db;
     }
     db.close();
-    throw new LocalCacheUnavailableError(`invalid local cache: ${name}`);
+    throw invalidCache(name);
   }
 
   /** Cache formats are replaced, never migrated across versions. */
@@ -1932,26 +2004,31 @@ export class WebdbStorage implements AccountStateStorage {
           throw new LocalCacheUnavailableError('IndexedDB unavailable');
         } else if (await this.databaseExists(descriptor.indexedDbName)) {
           // Abort creation if deletion raced enumeration; restoration is existing-only.
-          const db = await openDB<WebdbSchema>(
-            descriptor.indexedDbName,
-            undefined,
-            {
-              upgrade(_db, _oldVersion, _newVersion, tx) {
-                void tx.done.catch(() => undefined);
-                tx.abort();
+          let creationRefused = false;
+          let db: IDBPDatabase<WebdbSchema>;
+          try {
+            db = await openPreservingFormat(
+              descriptor.indexedDbName,
+              () => {
+                creationRefused = true;
               },
-              blocking(_currentVersion, _blockedVersion, event) {
-                (event.target as IDBDatabase).close();
+              {
+                blocking(_currentVersion, _blockedVersion, event) {
+                  (event.target as IDBDatabase).close();
+                },
               },
-            },
-          );
+            );
+          } catch (error) {
+            // Only a backend that cannot read the cache is corruption; every other
+            // open failure keeps its original identity.
+            if (isUnreadableCache(error, creationRefused))
+              throw unreadableCache(descriptor.indexedDbName, error);
+            throw error;
+          }
           try {
             if (db.version !== IDB_FORMAT_VERSION)
               throw new LocalCacheVersionMismatchError(db.name);
-            if (!(await this.isCurrentSchema(db)))
-              throw new LocalCacheUnavailableError(
-                `invalid local cache: ${db.name}`,
-              );
+            if (!(await this.isCurrentSchema(db))) throw invalidCache(db.name);
             const tx = db.transaction('accountState', 'readonly');
             const state = await tx.store.get('account');
             await tx.done;

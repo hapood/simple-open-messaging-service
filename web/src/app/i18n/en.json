@@ -205,6 +205,14 @@
       "retry": "Retry revocation",
       "localOnly": "Sign out on this device"
     },
+    "databaseInit": {
+      "title": "Local database could not be initialized",
+      "permission": "Error type: permission denied",
+      "busy": "Error type: storage busy",
+      "structural": "Error type: structural damage",
+      "rebuild": "Rebuild",
+      "exit": "Exit app"
+    },
     "notice": {
       "trustPersistFailed": "This device's secure storage couldn't be reached, so the trusted sign-in wasn't saved. You've been signed out — please sign in again (if it keeps happening, leave \"Trust this device\" unchecked).",
       "logoutClearFailed": "You've been signed out, but this device's secure storage was locked, so it may briefly appear signed in until the next check. You can revoke the session from Settings → Devices.",

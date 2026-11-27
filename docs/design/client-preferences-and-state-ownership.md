@@ -25,7 +25,7 @@ expose two independent key/value stores with JSON values and no scope column.
 | `lifecycleState` | Durable lifecycle: `unconfigured`, `signed-out`, `active`, or `cleaning`. Written by Rust only on native. |
 | `sessionUuid` | Login identity written with `active`. Removed when cleanup finishes and the state becomes `signed-out`. Written by Rust only on native. |
 | `serverConfig` | Server origins (`primary`, `secondary`) and public `firebaseConfig`. Written during server setup and kept on logout. |
-| `cacheRebuild` | `pending` / `attempted` recovery marker. |
+| `cacheRebuild` | Obsolete. No longer written. Logout still deletes a leftover key. |
 | `forwardRecentThreads` | Recent forwarding targets. Kept across restart, removed on explicit logout. |
 | `pushDeviceId` | Installation push identity. Survives logout. |
 | `pushRegistration:<origin><apiPrefix>` | Push registration checkpoint. |

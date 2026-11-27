@@ -25,6 +25,26 @@ describe('session startup gate', () => {
     } finally { vi.useRealTimers(); }
   });
 
+  it('holds restoration on the logo screen until the database choice returns', async () => {
+    const service = new SessionStartupService();
+    let release!: () => void;
+    const pending = service.run(
+      () =>
+        new Promise<void>((resolve) => {
+          release = resolve;
+        }),
+    );
+    const choice = service.decideDatabase('permission');
+    expect(service.databaseFailure()).toBe('permission');
+    expect(service.restoring()).toBe(true);
+    service.answerDatabase('rebuild');
+    await expect(choice).resolves.toBe('rebuild');
+    expect(service.databaseFailure()).toBeNull();
+    release();
+    await pending;
+    expect(service.restoring()).toBe(false);
+  });
+
   it('fails closed on unexpected errors', async () => {
     const warn = vi.spyOn(console, 'error').mockImplementation(() => {});
     try {

@@ -5,13 +5,19 @@ import {
 } from './browser-session-owner';
 import { SessionStore } from './session-store';
 import { MemorySessionStorage as MemoryStorage } from './session-store.test-helper';
+import { DatabaseRestorationError } from './database-restoration-error';
 import { SessionSupersededError } from './session-identity';
 
 function setup(storage = new MemoryStorage()) {
   const resources = {
     close: vi.fn(async () => {}),
     initialize: vi.fn(async () => {}),
-    restore: vi.fn(async () => {}),
+    restore: vi.fn(
+      async (
+        _session: import('./session-identity').SessionCacheDescriptor,
+        _signal: AbortSignal,
+      ) => {},
+    ),
     delete: vi.fn(async () => {}),
     prepareFreshCache: vi.fn(async () => {}),
     resetState: vi.fn(),
@@ -85,7 +91,9 @@ describe('browser app-state owner', () => {
     const restarted = setup(original.storage);
     const deletion = deferred();
     restarted.resources.delete.mockReturnValueOnce(deletion.promise);
-    const restoring = restarted.owner.restore(true);
+    const restoring = restarted.owner
+      .restore(true)
+      .catch((error: unknown) => error);
     await vi.waitFor(() =>
       expect(restarted.resources.delete).toHaveBeenCalledOnce(),
     );
@@ -95,9 +103,65 @@ describe('browser app-state owner', () => {
     const signingIn = restarted.owner.authenticate(request);
     expect(request).not.toHaveBeenCalled();
     deletion.resolve();
-    expect(await restoring).toBe(false);
+    expect(await restoring).toBeInstanceOf(SessionSupersededError);
     await signingIn;
     expect(restarted.owner.currentSession?.id).not.toBe(previous.id);
+  });
+
+  it('serializes failed-restore recovery deletion before fresh login admission', async () => {
+    const original = setup();
+    await login(original.owner);
+    const { owner, resources } = setup(original.storage);
+    resources.restore.mockRejectedValueOnce(
+      new DatabaseRestorationError(new Error('unreadable cache')),
+    );
+    const deletion = deferred();
+    const recover = vi.fn(() => deletion.promise);
+    const restoring = owner
+      .restore(true, recover)
+      .catch((error: unknown) => error);
+    await vi.waitFor(() => expect(recover).toHaveBeenCalledOnce());
+    const signingIn = login(owner);
+    await Promise.resolve();
+    expect(resources.initialize).not.toHaveBeenCalled();
+    deletion.resolve();
+    expect(await restoring).toBeInstanceOf(SessionSupersededError);
+    await signingIn;
+    expect(resources.initialize).toHaveBeenCalledOnce();
+  });
+
+  it('fresh login cancels restoration, drains it, and deletes the cache before creating its successor', async () => {
+    const original = setup();
+    await login(original.owner);
+    const { owner, resources } = setup(original.storage);
+    const read = deferred();
+    const deletion = deferred();
+    resources.restore.mockImplementationOnce(async (_session, signal) => {
+      await read.promise;
+      expect(signal.aborted).toBe(true);
+    });
+    const recovery = vi.fn(async () => {});
+    const restoring = owner
+      .restore(true, recovery)
+      .catch((error: unknown) => error);
+    await vi.waitFor(() => expect(resources.restore).toHaveBeenCalledOnce());
+    resources.delete.mockReturnValueOnce(deletion.promise);
+    const signingIn = login(owner);
+    await Promise.resolve();
+    expect(resources.delete).not.toHaveBeenCalled();
+    read.resolve();
+    expect(await restoring).toBeInstanceOf(SessionSupersededError);
+    await vi.waitFor(() => expect(resources.delete).toHaveBeenCalledOnce());
+    expect(resources.initialize).not.toHaveBeenCalled();
+    expect(recovery).not.toHaveBeenCalled();
+    deletion.resolve();
+    await signingIn;
+    expect(resources.close.mock.invocationCallOrder.at(-1)).toBeLessThan(
+      resources.delete.mock.invocationCallOrder[0],
+    );
+    expect(resources.delete.mock.invocationCallOrder[0]).toBeLessThan(
+      resources.initialize.mock.invocationCallOrder[0],
+    );
   });
 
   it('closes handles even if writing the cleanup marker fails, without deleting evidence', async () => {
