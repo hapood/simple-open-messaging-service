@@ -1,15 +1,21 @@
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { provideZonelessChangeDetection, signal } from '@angular/core';
+import { By } from '@angular/platform-browser';
 import { TranslocoTestingModule } from '@jsverse/transloco';
 import { of } from 'rxjs';
+import { vi } from 'vitest';
+import { ProfileNamespaceRepository } from '../../services/profile-namespace-store.service';
 import { ProfileWatchService } from '../../services/profile-watch.service';
 import { UserService } from '../../services/user.service';
+import { DemandAvatarComponent } from '../user-avatar/demand-avatar.component';
 import { TailActivityRowComponent } from './tail-activity-row.component';
 
 describe('TailActivityRowComponent', () => {
   let fixture: ComponentFixture<TailActivityRowComponent>;
+  const watchProfile = vi.fn();
 
   beforeEach(async () => {
+    watchProfile.mockReset().mockReturnValue(of(null));
     await TestBed.configureTestingModule({
       imports: [
         TailActivityRowComponent,
@@ -22,7 +28,20 @@ describe('TailActivityRowComponent', () => {
         provideZonelessChangeDetection(),
         {
           provide: ProfileWatchService,
-          useValue: { watchProfile: () => of(null) },
+          useValue: { watchProfile },
+        },
+        {
+          provide: ProfileNamespaceRepository,
+          useValue: {
+            resolve: vi.fn(() =>
+              of({
+                publisherNamespaceId: 0,
+                profileNamespaceId: 0,
+                domain: null,
+                status: 'ACTIVE',
+              }),
+            ),
+          },
         },
         {
           provide: UserService,
@@ -81,10 +100,11 @@ describe('TailActivityRowComponent', () => {
     fixture.componentRef.setInput('enabled', true);
     fixture.componentRef.setInput('peerVisible', true);
     fixture.componentRef.setInput('primaryPeerAccount', 'alice');
+    fixture.componentRef.setInput('primaryPeerNamespaceId', 0);
     fixture.componentRef.setInput('overlapPeers', [
-      { key: '0\0bob', account: 'bob' },
-      { key: '0\0carol', account: 'carol' },
-      { key: '0\0dave', account: 'dave' },
+      { key: '0\0bob', account: 'bob', namespaceId: 0 },
+      { key: '0\0carol', account: 'carol', namespaceId: 0 },
+      { key: '0\0dave', account: 'dave', namespaceId: 0 },
     ]);
     fixture.componentRef.setInput('hasOverflow', true);
     fixture.detectChanges();
@@ -110,5 +130,37 @@ describe('TailActivityRowComponent', () => {
     expect(
       host.querySelector('.tail-self .tail-avatar-slot app-demand-avatar'),
     ).not.toBeNull();
+  });
+
+  it('routes peer avatars through profile demand and distinguishes same account across namespaces', () => {
+    fixture.componentRef.setInput('enabled', true);
+    fixture.componentRef.setInput('peerVisible', true);
+    fixture.componentRef.setInput('primaryPeerAccount', 'alice');
+    fixture.componentRef.setInput('primaryPeerNamespaceId', 1);
+    fixture.componentRef.setInput('primaryPeerProfile', {
+      account: 'alice',
+      publisherNamespaceId: 1,
+      profileNamespaceId: 0,
+      rev: 2,
+      linked: true,
+    });
+    fixture.componentRef.setInput('overlapPeers', [
+      { key: '2\0alice', account: 'alice', namespaceId: 2 },
+    ]);
+    fixture.detectChanges();
+
+    expect(watchProfile).toHaveBeenCalledWith({
+      publisherNamespaceId: 1,
+      lookup: 'ACCOUNT_PROFILE',
+      target: { profileNamespaceId: 0, account: 'alice', rev: 2 },
+    });
+
+    const avatars = fixture.debugElement
+      .queryAll(By.directive(DemandAvatarComponent))
+      .map((de) => de.componentInstance as DemandAvatarComponent);
+    expect(avatars.length).toBe(2);
+    expect(avatars[0].view().name).toBe('alice');
+    expect(avatars[1].view().name).toBe('alice');
+    expect(avatars[0].view().colorKey).not.toBe(avatars[1].view().colorKey);
   });
 });

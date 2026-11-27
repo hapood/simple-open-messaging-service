@@ -109,8 +109,10 @@ export class SystemRowComponent {
   private readonly conversations = inject(ConversationListService);
   private readonly namespaces = inject(ProfileNamespaceRepository);
   private readonly users = inject(UserService);
-  private readonly profileName = signal('');
-  private readonly namespaceDomain = signal<string | null>(null);
+  private readonly profileNames = signal<Readonly<Record<string, string>>>({});
+  private readonly namespaceDomains = signal<
+    Readonly<Record<string, string | null>>
+  >({});
   readonly isDeletion = computed(() => {
     const data = this.data();
     return data.type === 'system' && data.deletionType !== undefined;
@@ -138,18 +140,53 @@ export class SystemRowComponent {
       return undefined;
     },
   );
+  private readonly displayIdentities = computed(
+    (): readonly SystemEventAddress[] => {
+      const event = this.event();
+      if (!event) return [];
+      if ('members' in event) return event.members;
+      const single = this.displayIdentity();
+      return single ? [single] : [];
+    },
+  );
 
   constructor() {
     const observation = effect((onCleanup) => {
       const data = this.data();
-      const identity = this.displayIdentity();
-      this.profileName.set('');
-      this.namespaceDomain.set(null);
-      if (!identity || !data.threadId) return;
-      this.resolveIdentityDomain(data, identity, onCleanup);
-      this.resolveProfiledParticipant(data, identity, onCleanup);
+      const identities = this.displayIdentities();
+      this.profileNames.set({});
+      this.namespaceDomains.set({});
+      if (!data.threadId || identities.length === 0) return;
+      const seen = new Set<string>();
+      for (const identity of identities) {
+        const key = this.identityKey(identity);
+        if (seen.has(key)) continue;
+        seen.add(key);
+        this.resolveIdentityDomain(data, identity, key, onCleanup);
+        this.resolveProfiledParticipant(data, identity, key, onCleanup);
+      }
     });
     onCbItemPredestory(() => observation.destroy());
+  }
+
+  private identityKey(identity: SystemEventAddress): string {
+    return JSON.stringify([
+      identity.publisherNamespaceId,
+      identity.profileNamespaceId,
+      identity.account,
+    ]);
+  }
+
+  private setProfileName(key: string, name: string): void {
+    this.profileNames.update((prev) =>
+      prev[key] === name ? prev : { ...prev, [key]: name },
+    );
+  }
+
+  private setNamespaceDomain(key: string, domain: string | null): void {
+    this.namespaceDomains.update((prev) =>
+      prev[key] === domain ? prev : { ...prev, [key]: domain },
+    );
   }
 
   private profilePair(_data: SystemMessageItem, identity: SystemEventAddress) {
@@ -162,14 +199,15 @@ export class SystemRowComponent {
   private resolveIdentityDomain(
     data: SystemMessageItem,
     identity: SystemEventAddress,
+    key: string,
     onCleanup: (callback: () => void) => void,
   ): void {
     const subscription = this.namespaces
       .resolve(this.profilePair(data, identity))
       .subscribe({
         next: (binding) =>
-          this.namespaceDomain.set(namespaceDisplayDomain(binding)),
-        error: () => this.namespaceDomain.set(null),
+          this.setNamespaceDomain(key, namespaceDisplayDomain(binding)),
+        error: () => this.setNamespaceDomain(key, null),
       });
     onCleanup(() => subscription.unsubscribe());
   }
@@ -211,14 +249,10 @@ export class SystemRowComponent {
   private resolveProfiledParticipant(
     data: SystemMessageItem,
     identity: SystemEventAddress,
+    participantKey: string,
     onCleanup: (callback: () => void) => void,
   ): void {
     const threadId = data.threadId!;
-    const participantKey = JSON.stringify([
-      identity.publisherNamespaceId,
-      identity.profileNamespaceId,
-      identity.account,
-    ]);
     let revision =
       data.type === 'system'
         ? (data.localSystemProfileRevs?.[participantKey] ?? identity.profileRev)
@@ -243,10 +277,11 @@ export class SystemRowComponent {
       )
         .then((profile) => {
           if (!cancelled && current === request)
-            this.profileName.set(profile.name.trim());
+            this.setProfileName(participantKey, profile.name.trim());
         })
         .catch(() => {
-          if (!cancelled && current === request) this.profileName.set('');
+          if (!cancelled && current === request)
+            this.setProfileName(participantKey, '');
         });
     };
     refresh();
@@ -281,7 +316,7 @@ export class SystemRowComponent {
               return;
             revision = profile.rev;
             request++; // Invalidate a slower cache read of the previous revision.
-            this.profileName.set(profile.name.trim());
+            this.setProfileName(participantKey, profile.name.trim());
             if (profile.rev !== identity.profileRev)
               void this.webdb.correctSystemMessageProfile(
                 threadId,
@@ -312,10 +347,13 @@ export class SystemRowComponent {
     );
   }
 
-  private readonly participantName = computed(() => {
-    const identity = this.displayIdentity();
+  private resolveDisplayName(
+    identity: SystemEventAddress | undefined,
+  ): string {
+    if (!identity) return '';
+    const key = this.identityKey(identity);
     const alias =
-      identity?.publisherNamespaceId === 0
+      identity.publisherNamespaceId === 0
         ? (this.conversations
             .items()
             .find(
@@ -328,18 +366,19 @@ export class SystemRowComponent {
         : '';
     return (
       alias ||
-      this.profileName() ||
-      displayUserAccount(
-        identity
-          ? {
-              account: identity.account,
-              namespaceId: identity.publisherNamespaceId,
-              domain: this.namespaceDomain(),
-            }
-          : {},
-      )
+      this.profileNames()[key] ||
+      displayUserAccount({
+        account: identity.account,
+        namespaceId:
+          identity.profileNamespaceId || identity.publisherNamespaceId,
+        domain: this.namespaceDomains()[key] ?? null,
+      })
     );
-  });
+  }
+
+  private readonly participantName = computed(() =>
+    this.resolveDisplayName(this.displayIdentity()),
+  );
 
   readonly label = computed(() => {
     this.language.lang();
@@ -402,7 +441,7 @@ export class SystemRowComponent {
         case 'GROUP_CREATED':
           return translate('groupCreated');
         case 'GROUP_JOINED': {
-          const names = this.formatBatchMemberNames(body.members, name);
+          const names = this.formatBatchMemberNames(body.members);
           return this.formatBatchAction(
             names,
             body.totalCount,
@@ -417,7 +456,7 @@ export class SystemRowComponent {
           ) {
             return translate('groupLeftSelf');
           }
-          const names = this.formatBatchMemberNames(body.members, name);
+          const names = this.formatBatchMemberNames(body.members);
           return this.formatBatchAction(
             names,
             body.totalCount,
@@ -454,8 +493,7 @@ export class SystemRowComponent {
         return null;
       }
       this.language.lang();
-      const firstName = this.participantName();
-      const names = this.formatBatchMemberNames(body.members, firstName);
+      const names = this.formatBatchMemberNames(body.members);
       const key = body.type === 'GROUP_JOINED' ? 'groupJoined' : 'groupLeft';
       const full = this.formatBatchAction(
         '',
@@ -469,11 +507,8 @@ export class SystemRowComponent {
 
   private formatBatchMemberNames(
     members: readonly SystemEventAddress[],
-    firstName: string,
   ): string {
-    if (members.length === 1) return firstName;
-    const rest = members.slice(1).map((m) => displayUserAccount(m));
-    return [firstName, ...rest].join('、');
+    return members.map((member) => this.resolveDisplayName(member)).join('、');
   }
 
   private formatBatchAction(

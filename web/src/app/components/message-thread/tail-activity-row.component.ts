@@ -8,12 +8,14 @@ import {
 import { TranslocoPipe } from '@jsverse/transloco';
 import { OutboxIndicatorComponent } from '../message-header/outbox-indicator.component';
 import { DemandAvatarComponent } from '../user-avatar/demand-avatar.component';
-import { UserAvatarType } from '../user-avatar/model';
+import { UserAvatarType, type AvatarDomainSource } from '../user-avatar/model';
 import type { AvatarProfileRef } from '../../services/avatar-profile-ref';
 
 export interface TailOverlapPeerAvatar {
   readonly key: string;
   readonly account: string;
+  readonly namespaceId: number;
+  readonly domainSource?: AvatarDomainSource;
   readonly profile?: AvatarProfileRef;
 }
 
@@ -36,6 +38,7 @@ export interface TailOverlapPeerAvatar {
                 <app-demand-avatar
                   [profile]="primaryPeerProfile()"
                   [account]="primaryPeerAccount()"
+                  [domainSource]="effectivePrimaryPeerDomainSource()"
                   [type]="otherType"
                 />
               }
@@ -54,6 +57,7 @@ export interface TailOverlapPeerAvatar {
                     <app-demand-avatar
                       [profile]="peer.profile"
                       [account]="peer.account"
+                      [domainSource]="overlapPeerDomainSource(peer)"
                       [type]="otherType"
                     />
                   </span>
@@ -242,12 +246,38 @@ export class TailActivityRowComponent {
   readonly peerContinuation = input(false);
   readonly primaryPeerProfile = input<AvatarProfileRef | undefined>(undefined);
   readonly primaryPeerAccount = input<string | null>(null);
+  readonly primaryPeerNamespaceId = input<number | null>(null);
+  readonly primaryPeerDomainSource = input<AvatarDomainSource | undefined>(
+    undefined,
+  );
   readonly overlapPeers = input<readonly TailOverlapPeerAvatar[]>([]);
   readonly hasOverflow = input(false);
   readonly openPanel = output<void>();
 
   protected readonly selfType = UserAvatarType.SELF;
   protected readonly otherType = UserAvatarType.OTHER;
+
+  protected readonly effectivePrimaryPeerDomainSource = computed<
+    AvatarDomainSource | undefined
+  >(() => {
+    const explicit = this.primaryPeerDomainSource();
+    if (explicit) return explicit;
+    const namespaceId = this.primaryPeerNamespaceId();
+    return namespaceId === null
+      ? undefined
+      : { type: 'namespace', namespaceId };
+  });
+
+  protected overlapPeerDomainSource(
+    peer: TailOverlapPeerAvatar,
+  ): AvatarDomainSource {
+    return (
+      peer.domainSource ?? {
+        type: 'namespace',
+        namespaceId: peer.namespaceId,
+      }
+    );
+  }
 
   protected readonly visible = computed(
     () => this.enabled() && (this.selfVisible() || this.peerVisible()),

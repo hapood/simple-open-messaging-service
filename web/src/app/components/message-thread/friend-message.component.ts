@@ -49,7 +49,12 @@ import {
 } from '../../lib/chat-box/chat-box-scroller';
 import { isViewportTransformEnd } from '../../lib/sticky-date';
 import { CbItemLifetime } from '../../lib/chat-box/cb-item-lifetime';
-import { TailActivityRowComponent } from './tail-activity-row.component';
+import {
+  TailActivityRowComponent,
+  type TailOverlapPeerAvatar,
+} from './tail-activity-row.component';
+import type { ThreadAuthor } from '../../../../../shared/thread-author';
+import type { AvatarDomainSource } from '../user-avatar/model';
 import { TailAuthorCache } from './tail-author-cache';
 import { MessageRepository } from '../../services/message-repository.service';
 import { ChatAppearanceService } from '../../services/chat-appearance.service';
@@ -1457,16 +1462,22 @@ export class MessageThreadComponent implements OnDestroy {
         this.tailSummary.messageCount > 0 ||
         this.tailSummary.uploadCount > 0 ||
         this.tailSummary.failedCount > 0;
+      const primary = snap.primaryPeer
+        ? this.tailPeerAvatar(snap.primaryPeer)
+        : null;
       ref.setInput('enabled', next);
       ref.setInput('summary', this.tailSummary);
       ref.setInput('selfVisible', hasSelfSummary || snap.hasPendingSelf);
       ref.setInput('selfDotsVisible', snap.hasPendingSelf);
       ref.setInput('peerVisible', snap.hasPendingPeer);
-      ref.setInput('primaryPeerAccount', snap.primaryPeer?.account ?? null);
-      ref.setInput('overlapPeers', snap.overlapPeers.map((peer) => ({
-        key: `${peer.namespaceId}\0${peer.account}`,
-        account: peer.account,
-      })));
+      ref.setInput('primaryPeerProfile', primary?.profile);
+      ref.setInput('primaryPeerAccount', primary?.account ?? null);
+      ref.setInput('primaryPeerNamespaceId', primary?.namespaceId ?? null);
+      ref.setInput('primaryPeerDomainSource', primary?.domainSource);
+      ref.setInput(
+        'overlapPeers',
+        snap.overlapPeers.map((peer) => this.tailPeerAvatar(peer)),
+      );
       ref.setInput('hasOverflow', snap.hasOverflow);
       ref.changeDetectorRef.detectChanges();
       return cue.offsetHeight !== beforeHeight;
@@ -1496,6 +1507,43 @@ export class MessageThreadComponent implements OnDestroy {
     lifetime.onDestroy(destroy);
     rendered.predestory = () => lifetime.predestory();
     rendered.destroy = () => lifetime.destroy();
+  }
+
+  private tailPeerAvatar(peer: ThreadAuthor): TailOverlapPeerAvatar {
+    const trd = this.userMsgTrd();
+    const domainSource: AvatarDomainSource =
+      trd?.type === 'GROUP'
+        ? {
+            type: 'profile-namespace',
+            publisherNamespaceId: trd.publisherNamespaceId,
+            profileNamespaceId: peer.namespaceId,
+          }
+        : { type: 'namespace', namespaceId: peer.namespaceId };
+    let profile: AvatarProfileRef | undefined;
+    if (
+      trd?.type === 'P2P' &&
+      trd.account === peer.account &&
+      trd.publisherNamespaceId === peer.namespaceId
+    ) {
+      profile = conversationAvatarProfile(trd);
+    } else if (trd?.type === 'GROUP' && trd.publisherNamespaceId === 0) {
+      const p2p = this.convList
+        .items()
+        .find(
+          (item) =>
+            item.type === 'P2P' &&
+            item.account === peer.account &&
+            item.publisherNamespaceId === peer.namespaceId,
+        );
+      if (p2p) profile = conversationAvatarProfile(p2p);
+    }
+    return {
+      key: `${peer.namespaceId}\0${peer.account}`,
+      account: peer.account,
+      namespaceId: peer.namespaceId,
+      domainSource,
+      profile,
+    };
   }
 
   private updateTailCueVisibility(): void {
@@ -2045,7 +2093,7 @@ export class MessageThreadComponent implements OnDestroy {
         clearTimeout(this.unreadReanchorTimer);
         this.unreadReanchorTimer = setTimeout(() => {
           this.unreadReanchorTimer = undefined;
-          void jumpToMessage(this.scroller, unreadReanchor, 'top');
+          void jumpToMessage(this.scroller, unreadReanchor, 0);
         }, 0);
       }
     }
@@ -2123,7 +2171,7 @@ export class MessageThreadComponent implements OnDestroy {
 
   scrollToUnread(): void {
     if (this.scrollState.firstUnreadSeq !== null)
-      void jumpToMessage(this.scroller, this.scrollState.firstUnreadSeq, 'top');
+      void jumpToMessage(this.scroller, this.scrollState.firstUnreadSeq, 0);
   }
 
   openUploadDetails(): void {

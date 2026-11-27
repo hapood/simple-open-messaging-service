@@ -8,6 +8,7 @@ import { of, Subject } from 'rxjs';
 import {
   createGroupConversation,
   createP2PConversation,
+  displayUserAccount,
   type ConversationItem,
 } from '../../../services/model';
 import { vi } from 'vitest';
@@ -590,5 +591,127 @@ describe('SystemRowComponent', () => {
     });
     expect(fixture.nativeElement.textContent).toContain('Outgoing call');
     expect(fixture.nativeElement.textContent).toContain('1:05');
+  });
+
+  it('resolves every batch member with alias, profile name, domain, or @nsid fallback', async () => {
+    const nsResolve = TestBed.inject(ProfileNamespaceRepository)
+      .resolve as ReturnType<typeof vi.fn>;
+    nsResolve.mockImplementation(
+      ({
+        publisherNamespaceId,
+        profileNamespaceId,
+      }: {
+        publisherNamespaceId: number;
+        profileNamespaceId: number;
+      }) =>
+        of({
+          publisherNamespaceId,
+          profileNamespaceId,
+          domain: profileNamespaceId === 8 ? 'remote.test' : null,
+          status: 'ACTIVE',
+        }),
+    );
+    resolveProfile.mockImplementation((input: unknown) => {
+      const demand = (
+        input as { demand?: { target?: { account?: string; profileNamespaceId?: number; rev?: number } } }
+      ).demand ?? (input as { target?: { account?: string; profileNamespaceId?: number; rev?: number } });
+      if (demand.target?.account === 'bob') {
+        return of({
+          account: 'bob',
+          publisherNamespaceId: 0,
+          namespaceId: 5,
+          rev: 2,
+          name: 'Bob Profile',
+        });
+      }
+      return of({
+        account: demand.target?.account ?? '',
+        publisherNamespaceId: 0,
+        namespaceId: demand.target?.profileNamespaceId ?? 0,
+        rev: demand.target?.rev ?? 0,
+        name: '',
+      });
+    });
+    conversations.set([
+      createP2PConversation({
+        threadId: 9,
+        account: 'aliased',
+        publisherNamespaceId: 4,
+        profileRev: 1,
+        alias: 'My Remark',
+      }),
+    ]);
+
+    const fixture = render(
+      {
+        type: 'GROUP_JOINED',
+        members: [
+          {
+            account: 'aliased',
+            publisherNamespaceId: 0,
+            profileNamespaceId: 4,
+            profileRev: 0,
+          },
+          {
+            account: 'bob',
+            publisherNamespaceId: 0,
+            profileNamespaceId: 5,
+            profileRev: 2,
+          },
+          {
+            account: 'carol',
+            publisherNamespaceId: 0,
+            profileNamespaceId: 8,
+            profileRev: 0,
+          },
+          {
+            account: 'dave',
+            publisherNamespaceId: 0,
+            profileNamespaceId: 9,
+            profileRev: 0,
+          },
+        ],
+        totalCount: 4,
+      },
+      { isGroupConversation: true },
+    );
+
+    await vi.waitFor(() =>
+      expect(
+        fixture.nativeElement.querySelector('.system-names')?.textContent,
+      ).toBe('My Remark、Bob Profile、carol@remote.test、dave@9'),
+    );
+  });
+
+  it('falls back to account@nsid for single-user friend events when domain is unavailable', () => {
+    const nsResolve = TestBed.inject(ProfileNamespaceRepository)
+      .resolve as ReturnType<typeof vi.fn>;
+    nsResolve.mockReturnValue(
+      of({
+        publisherNamespaceId: 12,
+        profileNamespaceId: 0,
+        domain: null,
+        status: 'ACTIVE',
+      }),
+    );
+    const fixture = render({
+      type: 'FRIEND_REMOVED',
+      initiator: me,
+      participants,
+    });
+    expect(fixture.nativeElement.textContent).toContain('alice@12');
+    expect(
+      displayUserAccount({ account: 'alice', namespaceId: 12, domain: null }),
+    ).toBe('alice@12');
+    expect(
+      displayUserAccount({
+        account: 'alice',
+        namespaceId: 12,
+        domain: 'peer.test',
+      }),
+    ).toBe('alice@peer.test');
+    expect(
+      displayUserAccount({ account: 'me', namespaceId: 0, domain: null }),
+    ).toBe('me');
   });
 });

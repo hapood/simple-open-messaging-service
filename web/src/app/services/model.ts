@@ -341,8 +341,8 @@ export function displayUserName(u: { name?: string | null }): string {
   return u.name ?? '';
 }
 
-/** A user's login address. Local users display the account verbatim; only federated identities append
- *  the server domain with `@` (account@domain). */
+/** A user's login address. Local users display the account verbatim; federated identities append
+ *  `@domain` when the server domain is known, or `@nsid` as a namespace-distinguishing fallback. */
 export function displayUserAccount(u: {
   account?: string | null;
   domain?: string | null;
@@ -350,8 +350,13 @@ export function displayUserAccount(u: {
   profileNamespaceId?: number | null;
 }): string {
   const account = u.account ?? '';
+  if (!account) return '';
   const namespaceId = u.profileNamespaceId ?? u.namespaceId;
-  return namespaceId === 0 || !u.domain ? account : `${account}@${u.domain}`;
+  if (namespaceId === 0) return account;
+  if (u.domain) return `${account}@${u.domain}`;
+  return namespaceId !== undefined && namespaceId !== null
+    ? `${account}@${namespaceId}`
+    : account;
 }
 
 export type QuotaDimension =
