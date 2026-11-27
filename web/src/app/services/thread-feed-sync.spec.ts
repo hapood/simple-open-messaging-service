@@ -12,10 +12,9 @@ const snapshot = (feedId: number): ThreadFeedSnapshot => ({
   threadId: 7,
   threadFeedId: feedId,
   messageEndSeq: feedId,
-  tombstoneEndSeq: 0,
+  ...(feedId > 0 ? { author: { account: 'peer', namespaceId: 0 } } : {}),
   alias: null,
   profileRev: 0,
-  groupMetaFeedEndId: null,
   joinRequestEndFeedId: 0,
   joinRequestReadFeedId: -1,
   groupInviteEndFeedId: 0,
@@ -27,12 +26,12 @@ const snapshot = (feedId: number): ThreadFeedSnapshot => ({
 
 function accountState(cursor: number): AccountState {
   return {
-    schemaVersion: 1,
     selfProfile: null,
     selfIdentity: null,
     composerDrafts: [],
     threadFeedCursor: cursor,
     stateFeedId: null,
+    stateFeedTarget: 0,
     stateFeedFullThrough: null,
     profileNamespaceChangeEndId: null,
     intentRequestEndId: null,
@@ -44,6 +43,9 @@ function accountState(cursor: number): AccountState {
 function storage() {
   let cursor = 0;
   return {
+    async withThreadFeedLock<T>(run: () => Promise<T>): Promise<T> {
+      return run();
+    },
     readAccountState: vi.fn(async () => accountState(cursor)),
     mergeThreadStates: vi.fn(
       async (states: ThreadFeedSnapshot[], next: number) => {
@@ -73,6 +75,65 @@ function page(
 }
 
 describe('thread feed executor', () => {
+  it('holds the storage lock from the initial cursor read through the final page commit', async () => {
+    const db = storage();
+    let acquire!: () => void;
+    const acquired = new Promise<void>((resolve) => {
+      acquire = resolve;
+    });
+    let locked = false;
+    const lock = vi
+      .spyOn(db, 'withThreadFeedLock')
+      .mockImplementation(async (run) => {
+        await acquired;
+        locked = true;
+        try {
+          return await run();
+        } finally {
+          locked = false;
+        }
+      });
+    db.readAccountState.mockImplementation(async () => {
+      expect(locked).toBe(true);
+      return accountState(0);
+    });
+    db.mergeThreadStates.mockImplementation(async (states) => {
+      expect(locked).toBe(true);
+      return states.map((state) => ({ ...state, localReadSeq: 0 }));
+    });
+    const request = vi.fn(
+      async ({ after, through }: { after: number; through: number }) => {
+        expect(locked).toBe(true);
+        return page(after + 1, through);
+      },
+    );
+
+    const syncing = syncThreadFeed(db, 2, request);
+    expect(lock).toHaveBeenCalledOnce();
+    expect(db.readAccountState).not.toHaveBeenCalled();
+    expect(request).not.toHaveBeenCalled();
+    expect(db.mergeThreadStates).not.toHaveBeenCalled();
+    acquire();
+    expect(await syncing).toMatchObject({ cursor: 2 });
+    expect(db.readAccountState).toHaveBeenCalledOnce();
+    expect(db.mergeThreadStates).toHaveBeenCalledTimes(2);
+    expect(locked).toBe(false);
+  });
+
+  it('propagates lock acquisition failure without reading or requesting unlocked', async () => {
+    const db = storage();
+    vi.spyOn(db, 'withThreadFeedLock').mockRejectedValueOnce(
+      new Error('lock unavailable'),
+    );
+    const request = vi.fn();
+    await expect(syncThreadFeed(db, 1, request)).rejects.toThrow(
+      'lock unavailable',
+    );
+    expect(db.readAccountState).not.toHaveBeenCalled();
+    expect(request).not.toHaveBeenCalled();
+    expect(db.mergeThreadStates).not.toHaveBeenCalled();
+  });
+
   it('ignores a wake already consumed by an earlier synchronization', async () => {
     const db = storage();
     const initial = vi.fn().mockResolvedValue(page(5, 5));
@@ -183,6 +244,40 @@ describe('thread feed executor', () => {
     expect(await syncThreadFeed(db, 2, request)).toMatchObject({
       cursor: 0,
       error: 'unordered thread feed page',
+    });
+    expect(db.mergeThreadStates).not.toHaveBeenCalled();
+  });
+
+  it('validates wire head author invariants before committing a page', async () => {
+    const db = storage();
+    const missing = { ...snapshot(1) };
+    delete missing.author;
+    expect(
+      await syncThreadFeed(
+        db,
+        1,
+        vi.fn().mockResolvedValue(page(1, 1, 1, [missing])),
+      ),
+    ).toMatchObject({
+      cursor: 0,
+      error: 'Nonzero message head requires an author',
+    });
+    expect(db.mergeThreadStates).not.toHaveBeenCalled();
+
+    const extraOnZero: ThreadFeedSnapshot = {
+      ...snapshot(1),
+      messageEndSeq: 0,
+      author: { account: 'peer', namespaceId: 0 },
+    };
+    expect(
+      await syncThreadFeed(
+        db,
+        1,
+        vi.fn().mockResolvedValue(page(1, 1, 1, [extraOnZero])),
+      ),
+    ).toMatchObject({
+      cursor: 0,
+      error: 'Zero message head must omit author',
     });
     expect(db.mergeThreadStates).not.toHaveBeenCalled();
   });

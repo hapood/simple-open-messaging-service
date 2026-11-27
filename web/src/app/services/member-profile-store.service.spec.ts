@@ -1,4 +1,9 @@
 import { TestBed } from '@angular/core/testing';
+import { provideHttpClient } from '@angular/common/http';
+import {
+  HttpTestingController,
+  provideHttpClientTesting,
+} from '@angular/common/http/testing';
 import { Subject } from 'rxjs';
 import { MemberProfileRepository } from './member-profile-store.service';
 import { WebdbService, type ProfileWake } from './webdb.service';
@@ -10,12 +15,13 @@ describe('MemberProfileRepository invalidation', () => {
   it('refreshes queried rosters after resolution, including empty name searches', async () => {
     const wakes = new Subject<ProfileWake>();
     const ended = new Subject<void>();
-    const query = vi.fn().mockResolvedValue([]);
     TestBed.configureTestingModule({
       providers: [
+        provideHttpClient(),
+        provideHttpClientTesting(),
         {
           provide: WebdbService,
-          useValue: { profileWake$: wakes, queryGroupMembers: query },
+          useValue: { profileWake$: wakes },
         },
         { provide: SessionLifecycleService, useValue: { ended$: ended } },
       ],
@@ -23,9 +29,25 @@ describe('MemberProfileRepository invalidation', () => {
     const repo = TestBed.inject(MemberProfileRepository);
     const changed = vi.fn();
     repo.changed$.subscribe(changed);
-    await repo.queryPage(42, { take: 50, search: 'Alice New' });
-    await repo.queryPage(43, { take: 50 });
-    const key = { publisherNamespaceId: 0, profileNamespaceId: 0, account: 'alice', rev: 4 };
+    const http = TestBed.inject(HttpTestingController);
+    for (const threadId of [42, 43]) {
+      const pending = repo.queryPage(threadId, {
+        take: 50,
+        ...(threadId === 42 ? { search: 'Alice New' } : {}),
+      });
+      http.expectOne('/api/v1/group/members').flush({
+        code: 0,
+        data: { items: [], nextCursor: null },
+      });
+      expect(await pending).toEqual([]);
+    }
+    http.verify();
+    const key = {
+      publisherNamespaceId: 0,
+      profileNamespaceId: 0,
+      account: 'alice',
+      rev: 4,
+    };
     wakes.next({ event: 'PROFILE_UNAVAILABLE', key, reason: 'PENDING' });
     expect(changed).not.toHaveBeenCalled();
     wakes.next({ event: 'PROFILE_AVAILABLE', key });
@@ -34,6 +56,149 @@ describe('MemberProfileRepository invalidation', () => {
     changed.mockClear();
     wakes.next({ event: 'PROFILE_AVAILABLE', key });
     expect(changed).not.toHaveBeenCalled();
+  });
+
+  it('queries the server envelope with opaque cursors and preserves publisher-scoped profile identities', async () => {
+    const getProfile = vi
+      .fn()
+      .mockResolvedValueOnce({
+        profileRev: 4,
+        name: 'Alice New',
+        bio: 'About',
+      })
+      .mockResolvedValue(undefined);
+    TestBed.configureTestingModule({
+      providers: [
+        provideHttpClient(),
+        provideHttpClientTesting(),
+        {
+          provide: WebdbService,
+          useValue: { profileWake$: new Subject(), getProfile },
+        },
+        {
+          provide: SessionLifecycleService,
+          useValue: { ended$: new Subject() },
+        },
+      ],
+    });
+    const repo = TestBed.inject(MemberProfileRepository);
+    const http = TestBed.inject(HttpTestingController);
+    const pending = repo.queryRosterPage(42, {
+      take: 1,
+      search: 'Alice',
+      exclude: { account: 'self', namespaceId: 0 },
+    });
+    const request = http.expectOne('/api/v1/group/members');
+    expect(request.request.method).toBe('POST');
+    expect(request.request.body).toEqual({
+      threadId: 42,
+      take: 1,
+      search: 'Alice',
+      excludeSelf: true,
+    });
+    request.flush({
+      code: 0,
+      data: {
+        items: [
+          {
+            account: 'alice',
+            publisherNamespaceId: 7,
+            profileNamespaceId: 2,
+            profileRev: 4,
+            role: 'ADMIN',
+          },
+        ],
+        nextCursor: 'opaque-server-cursor',
+      },
+    });
+    const page = await pending;
+    expect(page.nextCursor).toBe('opaque-server-cursor');
+    expect(page.items).toEqual([
+      expect.objectContaining({
+        account: 'alice',
+        publisherNamespaceId: 7,
+        namespaceId: 2,
+        name: 'Alice New',
+        bio: 'About',
+        profileRev: 4,
+        profileResolved: true,
+        role: 'ADMIN',
+      }),
+    ]);
+    expect(getProfile).toHaveBeenCalledWith({
+      publisherNamespaceId: 7,
+      lookup: 'ACCOUNT_PROFILE',
+      target: { profileNamespaceId: 2, account: 'alice', rev: 4 },
+    });
+    const next = repo.queryRosterPage(42, {
+      take: 1,
+      search: 'Alice',
+      exclude: { account: 'self', namespaceId: 0 },
+      cursor: page.nextCursor,
+    });
+    const nextRequest = http.expectOne('/api/v1/group/members');
+    expect(nextRequest.request.body).toEqual({
+      threadId: 42,
+      take: 1,
+      search: 'Alice',
+      excludeSelf: true,
+      cursor: 'opaque-server-cursor',
+    });
+    nextRequest.flush({
+      code: 0,
+      data: {
+        items: [
+          {
+            account: 'alice-remote',
+            publisherNamespaceId: 7,
+            profileNamespaceId: 0,
+            profileRev: 5,
+            role: 'OWNER',
+          },
+        ],
+        nextCursor: null,
+      },
+    });
+    expect(await next).toEqual({
+      items: [
+        expect.objectContaining({
+          name: 'alice-remote',
+          bio: '',
+          publisherNamespaceId: 7,
+          namespaceId: 0,
+          profileResolved: false,
+          isOwner: true,
+        }),
+      ],
+      nextCursor: null,
+    });
+    http.verify();
+  });
+
+  it('rejects business errors instead of treating them as empty rosters', async () => {
+    TestBed.configureTestingModule({
+      providers: [
+        provideHttpClient(),
+        provideHttpClientTesting(),
+        { provide: WebdbService, useValue: { profileWake$: new Subject() } },
+        {
+          provide: SessionLifecycleService,
+          useValue: { ended$: new Subject() },
+        },
+      ],
+    });
+    const pending = TestBed.inject(MemberProfileRepository).queryPage(42, {
+      take: 50,
+    });
+    const rejected = expect(pending).rejects.toThrow(
+      'group members are not ready',
+    );
+    const http = TestBed.inject(HttpTestingController);
+    http
+      .expectOne('/api/v1/group/members')
+      .flush({ code: 1, message: 'group members are not ready' });
+    await rejected;
+    http.verify();
   });
 
   it('forwards the worker commit event without notifying again for READY or cache hits', async () => {

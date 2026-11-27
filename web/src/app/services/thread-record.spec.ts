@@ -29,7 +29,6 @@ function row(): LocalThreadState {
     publisherNamespaceId: 4,
     profileAccount: '!room',
     profileRev: 3,
-    groupMetaFeedEndId: '8',
   });
   return createLocalThreadState({ ...state, localReadSeq: 0 });
 }
@@ -69,13 +68,16 @@ describe('field-scoped local thread writes', () => {
 
 describe('separate thread and group meta records', () => {
   it('initializes only local columns alongside the supplied feed facts', () => {
-    const { previews: _, ...state } = threadFeedSnapshot(7, {
+    // The message ceiling is a resource target with its own record; it is not
+    // a thread-row column.
+    const { previews: _previews, ...state } = threadFeedSnapshot(7, {
       profileAccount: 'peer',
       publisherNamespaceId: 0,
       profileRev: 1,
     });
+    const { messageEndSeq: _messageEndSeq, ...rowFacts } = state;
     expect(createLocalThreadState({ ...state, localReadSeq: 0 })).toEqual({
-      ...state,
+      ...rowFacts,
       localReadSeq: 0,
       deletedHwm: 0,
       messageHead: null,
@@ -97,10 +99,6 @@ describe('separate thread and group meta records', () => {
       announcementCreatedAt: null,
       announcementOriginCreatedAt: null,
       recoveryThrough: null,
-      recoveryAnnouncementFeedId: null,
-      recoveryAnnouncementText: null,
-      recoveryAnnouncementCreatedAt: null,
-      recoveryAnnouncementOriginCreatedAt: null,
     });
   });
 
@@ -111,6 +109,12 @@ describe('separate thread and group meta records', () => {
       { profile: item.profile },
       undefined,
       { threadId: item.threadId, ...item.meta },
+      {
+        threadId: item.threadId,
+        messageEndSeq: 0,
+        tombstoneEndSeq: 0,
+        groupMetaFeedEndId: '8',
+      },
     );
     expect(restored.account).toBe('!room');
     expect(restored.publisherNamespaceId).toBe(4);
@@ -140,6 +144,12 @@ describe('separate thread and group meta records', () => {
           text,
         },
         { threadId: current.threadId, ...createGroupMeta() },
+        {
+          threadId: current.threadId,
+          messageEndSeq: 0,
+          tombstoneEndSeq: 0,
+          groupMetaFeedEndId: '8',
+        },
       );
       expect(restored).toMatchObject({
         lastMessagePreview: expected,
@@ -155,7 +165,14 @@ describe('separate thread and group meta records', () => {
   );
 
   it('restores null preview fields when the independent record is absent', () => {
-    expect(restoreThread({ ...row(), type: 'P2P' }, {}, undefined)).toMatchObject({
+    expect(
+      restoreThread({ ...row(), type: 'P2P' }, {}, undefined, undefined, {
+        threadId: 7,
+        messageEndSeq: 0,
+        tombstoneEndSeq: 0,
+        groupMetaFeedEndId: '0',
+      }),
+    ).toMatchObject({
       lastMessagePreview: null,
       lastMessageAt: null,
       lastMessageSenderAccount: null,
@@ -164,8 +181,13 @@ describe('separate thread and group meta records', () => {
   });
 
   it('rejects a missing meta row rather than fabricating a recovered group', () => {
-    expect(() => restoreThread(row(), {}, undefined)).toThrow(
-      'missing its meta row',
-    );
+    expect(() =>
+      restoreThread(row(), {}, undefined, undefined, {
+        threadId: 7,
+        messageEndSeq: 0,
+        tombstoneEndSeq: 0,
+        groupMetaFeedEndId: '8',
+      }),
+    ).toThrow('missing its meta row');
   });
 });

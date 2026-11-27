@@ -12,6 +12,7 @@ export function nativeHistoryInterval(
   threadId: number,
   left: number,
   right: number,
+  direction: 'older' | 'newer',
 ): Observable<MessageHistoryIntervalPage> {
   return new Observable((subscriber) => {
     const Channel = window.__TAURI__?.core?.Channel;
@@ -38,6 +39,7 @@ export function nativeHistoryInterval(
       threadId,
       left,
       right,
+      direction,
       events,
     }).then(
       (id) => {

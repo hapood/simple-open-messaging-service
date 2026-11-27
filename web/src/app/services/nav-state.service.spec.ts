@@ -370,7 +370,7 @@ describe('NavStateMachineService', () => {
     svc.pushPane({ kind: 'dialog' });
     svc.setTopSection('profile');
 
-    // Logout → UserService.clearSession sets sessionUserId back to null → the effect fires the hard reset.
+    // Logout → the session owner resets sessionUserId back to null → the effect fires the hard reset.
     sessionUserId.set(null);
     tick();
 

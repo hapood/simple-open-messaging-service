@@ -23,6 +23,10 @@ import { registrationDouble } from '../service-worker-test-doubles';
 import { ServerConfigDialogService } from '../server-config-dialog.service';
 import { WebdbStorage } from '../webdb-storage';
 import {
+  advanceNotificationSince,
+  readNotificationSince,
+} from '../browser-notification-checkpoint';
+import {
   parseLoginSessionId,
   SessionSupersededError,
 } from './session-identity';
@@ -50,25 +54,15 @@ function client(
   const user = {
     sessionProfile: () => undefined,
     resetSessionState: vi.fn(),
-    clearSession: vi.fn(() => {
-      throw new Error('Duplicate legacy cleanup');
-    }),
     releaseSession: vi.fn<() => Promise<void>>(() => {
       throw new Error('Native release is forbidden on the browser');
     }),
     prepareFreshCache: vi.fn(() => {
       throw new Error('Duplicate invalidation');
     }),
-    clearSessionPreferences: vi.fn(async () =>
-      preferences.remove('device', 'soms.lastUserId'),
-    ),
     restoreWebdb: vi.fn(async (signal: AbortSignal) => {
       if (signal.aborted) throw new Error('Obsolete restoration');
-      const id = await preferences.getStrict<number>(
-        'device',
-        'soms.lastUserId',
-      );
-      if (id) await database.openExistingForUser(String(id));
+      await database.openExistingForUser('1');
     }),
   };
   const requests: Request[] = [];
@@ -105,13 +99,7 @@ function client(
       {
         provide: BrowserSessionService,
         useFactory: () =>
-          new BrowserSessionService(
-            preferences,
-            database,
-            user as never,
-            lifecycle,
-            state,
-          ),
+          new BrowserSessionService(database, user as never, lifecycle, state),
       },
       {
         provide: LogoutDecisionService,
@@ -186,11 +174,9 @@ afterEach(async () => {
   // Real preference stores hold open connections; close them before deleting the database,
   // otherwise deleteDatabase blocks forever on the open handle.
   for (const store of preferenceStores.splice(0)) await store.close();
-  // Both database kinds are created by the code under test during a spec: the per-login UUID
-  // caches, and the preferences store that now (real PreferenceStore) persists the session
-  // journal. Deleting both keeps every spec isolated from the previous one's login state.
+  // Delete the fixed login cache and app-state/settings database to isolate login lifetimes.
   const created = (name: string) =>
-    name.startsWith('soms-session-') || name === 'soms-client-preferences';
+    name.startsWith('soms-session') || name === 'soms-client-preferences';
   for (const { name } of await indexedDB.databases()) {
     if (name && created(name)) {
       await new Promise<void>((resolve, reject) => {
@@ -224,7 +210,7 @@ describe('browser AuthService with real session owner and IndexedDB caches', () 
       expect(app.owner).toBeNull();
       await app.auth.restoreSession();
       expect(invoke).toHaveBeenCalledWith('init_pick_origin', undefined);
-      expect(invoke).toHaveBeenCalledWith('secure_get_token', undefined);
+      expect(invoke).toHaveBeenCalledWith('secure_get_login', undefined);
       expect(app.user.resetSessionState).not.toHaveBeenCalled();
       expect(app.requests).toHaveLength(0);
     } finally {
@@ -233,14 +219,13 @@ describe('browser AuthService with real session owner and IndexedDB caches', () 
     }
   });
 
-  it('activates UUID caches and does not call the legacy cleanup or invalidation path', async () => {
+  it('activates UUID caches without duplicate invalidation', async () => {
     const app = client();
     const session = await signIn(app);
     expect(app.auth.isLoggedIn()).toBe(true);
     expect(app.auth.loggedIn()).toBe(true);
     const names = (await indexedDB.databases()).map((item) => item.name);
     expect(names).toContain(session.indexedDbName);
-    expect(app.user.clearSession).not.toHaveBeenCalled();
     expect(app.user.prepareFreshCache).not.toHaveBeenCalled();
     expect(app.requests[0].body).toMatchObject({
       account: 'alice',
@@ -248,7 +233,18 @@ describe('browser AuthService with real session owner and IndexedDB caches', () 
     });
   });
 
-  it('keeps old databases at logout and deletes them before the next login POST', async () => {
+  it('resets both notification checkpoints at the browser fresh-login boundary', async () => {
+    await advanceNotificationSince(7);
+    await advanceNotificationSince(9, 'state');
+    const app = client();
+
+    await signIn(app);
+
+    expect(await readNotificationSince()).toBe(0);
+    expect(await readNotificationSince('state')).toBe(0);
+  });
+
+  it('deletes the fixed cache at logout before the next login POST', async () => {
     const app = client();
     const previous = await signIn(app);
     const exited = firstValueFrom(app.auth.logout());
@@ -257,9 +253,9 @@ describe('browser AuthService with real session owner and IndexedDB caches', () 
     expect(app.requests[1].url).toMatch(/\/auth\/logout$/);
     app.requests[1].fail();
     await exited;
-    expect((await indexedDB.databases()).map((item) => item.name)).toContain(
-      previous.indexedDbName,
-    );
+    expect(
+      (await indexedDB.databases()).map((item) => item.name),
+    ).not.toContain(previous.indexedDbName);
     const signingIn = firstValueFrom(
       app.auth.login({ account: 'alice', password: 'pw' }),
     );
@@ -276,33 +272,38 @@ describe('browser AuthService with real session owner and IndexedDB caches', () 
     ).toHaveLength(1);
   });
 
-  it('blocks authentication on a cache deletion conflict and supports retry', async () => {
+  it('waits for blocked fixed-name deletion before dispatching a successor login', async () => {
     const app = client();
     const previous = await signIn(app);
-    await app.auth.clearToken();
     const blocker = await new Promise<IDBDatabase>((resolve, reject) => {
       const request = indexedDB.open(previous.indexedDbName);
       request.onsuccess = () => resolve(request.result);
       request.onerror = () => reject(request.error);
     });
-    try {
-      const pending = firstValueFrom(
-        app.auth.login({ account: 'alice', password: 'pw' }),
-      );
-      await expect(pending).rejects.toThrow(
-        'Close other cache connections and retry',
-      );
-      expect(app.requests).toHaveLength(1);
-      expect(app.owner!.currentSession).toBeNull();
-    } finally {
-      blocker.close();
-    }
-    const successor = await signIn(app);
-    expect(successor.id).not.toBe(previous.id);
-    expect(app.requests).toHaveLength(2);
+    let blocked!: () => void;
+    const deletionRequested = new Promise<void>((resolve) => {
+      blocked = resolve;
+    });
+    blocker.onversionchange = () => blocked();
+    const ending = app.auth.clearToken();
+    await deletionRequested;
+    const pending = firstValueFrom(
+      app.auth.login({ account: 'alice', password: 'pw' }),
+    );
+    expect(app.requests).toHaveLength(1);
+    expect(app.owner!.currentSession).toBeNull();
+    blocker.close();
+    await ending;
+    await vi.waitFor(() => expect(app.requests).toHaveLength(2));
+    app.requests[1].flush({ code: 0, data: { session_token: 'successor' } });
+    await pending;
+    expect(app.owner!.currentSession?.id).not.toBe(previous.id);
+    expect((await indexedDB.databases()).map((item) => item.name)).toContain(
+      'soms-session',
+    );
   });
 
-  it('does not adopt a residual cookie without a journal or create login caches at boot', async () => {
+  it('does not adopt a residual cookie without active app-state or create login caches at boot', async () => {
     const app = client();
     document.cookie = 'logged_in=1; Path=/';
     const before = (await indexedDB.databases()).map(({ name }) => name).sort();
@@ -325,7 +326,8 @@ describe('browser AuthService with real session owner and IndexedDB caches', () 
   it('restores the same UUID and databases after renderer recreation', async () => {
     const original = client();
     const session = await signIn(original);
-    await original.preferences.set('device', 'soms.lastUserId', 1);
+    await original.database.openForUser('1');
+    await original.database.close();
     const restored = client(original.preferences);
     await restored.auth.restoreSession();
     expect(restored.owner!.currentSession).toEqual(session);
@@ -334,7 +336,7 @@ describe('browser AuthService with real session owner and IndexedDB caches', () 
     expect(restored.database.ready()).toBe(true);
   });
 
-  it('does not restore an ended UUID from a residual cookie and does not delete it at boot', async () => {
+  it('does not restore a deleted login from a residual cookie', async () => {
     const original = client();
     const session = await signIn(original);
     await original.auth.clearToken();
@@ -344,9 +346,9 @@ describe('browser AuthService with real session owner and IndexedDB caches', () 
     expect(restored.owner!.currentSession).toBeNull();
     expect(restored.auth.isLoggedIn()).toBe(false);
     expect(restored.requests).toHaveLength(0);
-    expect((await indexedDB.databases()).map((item) => item.name)).toContain(
-      session.indexedDbName,
-    );
+    expect(
+      (await indexedDB.databases()).map((item) => item.name),
+    ).not.toContain(session.indexedDbName);
   });
 
   it('cancels notification recovery and releases retry timers when its injector is destroyed', async () => {
@@ -361,8 +363,8 @@ describe('browser AuthService with real session owner and IndexedDB caches', () 
     const rejected = expect(restoring).rejects.toBeInstanceOf(
       SessionSupersededError,
     );
-    await vi.advanceTimersByTimeAsync(0);
-    expect(app.startup.retryIn()).toBe(1000);
+    // IndexedDB initialization is real asynchronous I/O, not a timer/microtask.
+    await vi.waitFor(() => expect(app.startup.retryIn()).toBe(1000));
     expect(registration).toHaveBeenCalledOnce();
 
     app.destroy();
@@ -450,7 +452,6 @@ describe('native logout adapter integration', () => {
         });
         try {
           expect(app.user.releaseSession).not.toHaveBeenCalled();
-          expect(app.user.clearSession).not.toHaveBeenCalled();
           expect(setToken).not.toHaveBeenCalled();
           expect(finished).toBe(false);
           admission.resolve();
@@ -459,11 +460,15 @@ describe('native logout adapter integration', () => {
           });
           expect(app.user.releaseSession).toHaveBeenCalledTimes(1);
           expect(setToken).not.toHaveBeenCalled();
-          expect(invoke).not.toHaveBeenCalledWith('finish_logout', { localOnly: false });
+          expect(invoke).not.toHaveBeenCalledWith('finish_logout', {
+            localOnly: false,
+          });
           expect(finished).toBe(false);
           remote.resolve();
           await done;
-          expect(invoke).toHaveBeenCalledWith('finish_logout', { localOnly: false });
+          expect(invoke).toHaveBeenCalledWith('finish_logout', {
+            localOnly: false,
+          });
           expect(setToken).not.toHaveBeenCalled();
           expect(app.auth.isLoggedIn()).toBe(false);
           expect(app.requests).toHaveLength(0);
@@ -504,8 +509,14 @@ describe('native logout adapter integration', () => {
       app.user.releaseSession.mockResolvedValue(undefined);
       const first = firstValueFrom(app.auth.logout());
       const second = firstValueFrom(app.auth.logout());
-      await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith('finish_logout', { localOnly: false }));
-      expect(invoke.mock.calls.filter(([command]) => command === 'begin_logout')).toHaveLength(1);
+      await vi.waitFor(() =>
+        expect(invoke).toHaveBeenCalledWith('finish_logout', {
+          localOnly: false,
+        }),
+      );
+      expect(
+        invoke.mock.calls.filter(([command]) => command === 'begin_logout'),
+      ).toHaveLength(1);
       expect(app.user.releaseSession).toHaveBeenCalledTimes(1);
       cleanup.resolve();
       await Promise.all([first, second]);
@@ -521,12 +532,14 @@ describe('native logout adapter integration', () => {
     let cleanupPending = false;
     let cleanupAttempts = 0;
     const invoke = vi.fn(async (command: string) => {
-      if (command === 'logout_status') return cleanupPending ? 'awaitingCleanup' : 'awaitingRevocation';
+      if (command === 'logout_status')
+        return cleanupPending ? 'awaitingCleanup' : 'awaitingRevocation';
       if (command === 'try_logout') {
         cleanupPending = true;
         return { status: 'revoked' };
       }
-      if (command === 'finish_logout' && ++cleanupAttempts === 1) throw new Error('storage unavailable');
+      if (command === 'finish_logout' && ++cleanupAttempts === 1)
+        throw new Error('storage unavailable');
       return undefined;
     });
     window.__TAURI_INTERNALS__ = {};
@@ -535,9 +548,13 @@ describe('native logout adapter integration', () => {
       const app = client(undefined, false);
       app.state.setAuthenticated(true);
       app.user.releaseSession.mockResolvedValue(undefined);
-      await expect(firstValueFrom(app.auth.logout())).rejects.toThrow('storage unavailable');
+      await expect(firstValueFrom(app.auth.logout())).rejects.toThrow(
+        'storage unavailable',
+      );
       await firstValueFrom(app.auth.logout());
-      expect(invoke.mock.calls.filter(([command]) => command === 'try_logout')).toHaveLength(1);
+      expect(
+        invoke.mock.calls.filter(([command]) => command === 'try_logout'),
+      ).toHaveLength(1);
       expect(cleanupAttempts).toBe(2);
       expect(app.auth.isLoggedIn()).toBe(false);
     } finally {
@@ -551,12 +568,10 @@ describe('native logout adapter integration', () => {
     const resetSessionState = vi.fn();
     const close = vi.fn(async () => {});
     const closeAndDelete = vi.fn();
-    const clearSessionPreferences = vi.fn();
     const resourceOwner = {
       sessionLifecycle: { invalidateSession },
       resetSessionState,
       webdb: { close, closeAndDelete },
-      clearSessionPreferences,
     };
     const releasing = UserService.prototype.releaseSession.call(
       resourceOwner as unknown as UserService,
@@ -566,6 +581,5 @@ describe('native logout adapter integration', () => {
     await releasing;
     expect(close).toHaveBeenCalledTimes(1);
     expect(closeAndDelete).not.toHaveBeenCalled();
-    expect(clearSessionPreferences).not.toHaveBeenCalled();
   });
 });

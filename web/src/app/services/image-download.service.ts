@@ -60,7 +60,7 @@ export class ImageDownloadService {
   );
 
   key(media: Pick<AlbumMedia, 'msgId' | 'src'>): string {
-    return `${media.msgId ?? 0}:${media.src}`;
+    return `${media.msgId}:${media.src}`;
   }
 
   task(
@@ -75,7 +75,7 @@ export class ImageDownloadService {
 
   /** Lightweight list-card representation. Detail/gallery/save callers deliberately keep displayUrl(),
    * whose contract is the original media. Optimistic blob/data URLs pass through unchanged. */
-  thumbnailUrl(media: Pick<AlbumMedia, 'msgId' | 'src'>): string {
+  thumbnailUrl(media: { src: string }): string {
     return chatThumbnailUrl(media.src);
   }
 
@@ -96,7 +96,7 @@ export class ImageDownloadService {
     const task: ImageDownloadTask = {
       key,
       threadId,
-      msgId: media.msgId ?? 0,
+      msgId: media.msgId,
       src: media.src,
       name: media.name,
       expectedSize,

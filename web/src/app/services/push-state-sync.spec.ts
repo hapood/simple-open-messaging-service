@@ -7,12 +7,19 @@ describe('personal request notification deltas', () => {
     let state = {
       stateFeedId: 1,
       stateFeedFullThrough: null,
+      stateFeedTarget: 1,
       intentRequestEndId: '100',
       intentRequestReadId: '0',
       intentRequestOptimisticReadId: null,
     } as AccountState;
     const storage = {
       readAccountState: async () => ({ ...state }),
+      advanceStateFeedTarget: async (target: number) => {
+        state = {
+          ...state,
+          stateFeedTarget: Math.max(state.stateFeedTarget, target),
+        };
+      },
       applyStateFeedPage: async (_items: unknown[], cursor: number) => {
         state = {
           ...state,

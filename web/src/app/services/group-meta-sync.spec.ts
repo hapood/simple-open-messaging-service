@@ -1,11 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { LocalThreadAttention } from '../../../../shared/thread-attention';
 import {
+  syncGroupMetaPage,
   syncGroupMetaThread,
   type GroupMetaSyncStorage,
 } from './group-meta-sync';
 import { createGroupConversation } from './model';
-import { threadStructure } from './thread-feed.test-helper';
 
 function fixture() {
   const thread = createGroupConversation({
@@ -15,37 +14,23 @@ function fixture() {
     profileRev: 1,
     profile: { name: 'Room', bio: '', avatarDigest: null },
   });
-  const state: LocalThreadAttention = {
-    ...threadStructure(12, {
-      type: 'GROUP',
-      publisherNamespaceId: 7,
-      profileAccount: 'room',
-      profileRev: 1,
-    }),
+  const state = {
     threadId: 12,
-    localReadSeq: 0,
-    threadFeedId: 1,
-    messageEndSeq: 0,
     tombstoneEndSeq: 0,
-    alias: null,
-    profileRev: 1,
-    groupMetaFeedEndId: '3',
-    joinRequestEndFeedId: 0,
-    joinRequestReadFeedId: -1,
-    groupInviteEndFeedId: 0,
-    announcementReadFeedId: 0,
-    lastReadSeq: 0,
-    unreadCount: 0,
-    lastMentionSeq: null,
+    groupMetaFeedEndId: '3' as string | null,
   };
   const storage: GroupMetaSyncStorage = {
     getThreads: vi.fn(async () => [structuredClone(thread)]),
-    getThreadStates: vi.fn(async () => [state]),
+    getThreadResourceHeads: vi.fn(async () => [state]),
     beginGroupMetaRecovery: vi.fn(async (_threadId, through) => {
       thread.meta.groupMetaFeedId = '0';
       thread.meta.recoveryThrough = through;
     }),
     applyGroupMetaPage: vi.fn(async ({ page }) => {
+      for (const item of page.items) {
+        if (item.operation === 'GROUP_MEMBER_COUNT')
+          thread.meta.memberCount = item.body.memberCount;
+      }
       thread.meta.groupMetaFeedId = page.scannedThrough;
       thread.meta.recoveryThrough = page.hasMore ? '3' : null;
       return {
@@ -63,12 +48,12 @@ function fixture() {
   return { storage, thread, state };
 }
 
+/** One wire page. The request cursor bounds decide the window; there is no mode. */
 function page(scannedThrough: string, hasMore: boolean) {
   return {
     code: 0,
     data: {
       account: 'room',
-      mode: 'full',
       items: [],
       scannedThrough,
       groupMetaFeedEndId: '3',
@@ -127,10 +112,7 @@ describe('Group Meta per-thread drain', () => {
       })
       .mockResolvedValueOnce({
         code: 0,
-        data: {
-          ...page('3', false).data,
-          mode: 'delta',
-        },
+        data: page('3', false).data,
       });
 
     await syncGroupMetaThread(storage, request, 12);
@@ -155,7 +137,7 @@ describe('Group Meta per-thread drain', () => {
     expect(storage.applyGroupMetaPage).not.toHaveBeenCalled();
   });
 
-  it('commits group profile facts without resolving presentation', async () => {
+  it('commits member-count facts without resolving presentation', async () => {
     const { storage, thread } = fixture();
     thread.profile.name = '';
     thread.profile.bio = '';
@@ -166,14 +148,13 @@ describe('Group Meta per-thread drain', () => {
         code: 0,
         data: {
           account: 'room',
-          mode: 'full',
           items: [
             {
               feedId: '1',
               createdAt: 1_000,
               originCreatedAt: null,
-              operation: 'GROUP_PROFILE',
-              body: { account: 'room', namespaceId: 7, profileRev: 1 },
+              operation: 'GROUP_MEMBER_COUNT',
+              body: { memberCount: 4 },
             },
           ],
           scannedThrough: '1',
@@ -185,7 +166,6 @@ describe('Group Meta per-thread drain', () => {
         code: 0,
         data: {
           account: 'room',
-          mode: 'full',
           items: [],
           scannedThrough: '3',
           groupMetaFeedEndId: '3',
@@ -194,11 +174,47 @@ describe('Group Meta per-thread drain', () => {
       });
     await expect(
       syncGroupMetaThread(storage, request, 12),
-    ).resolves.toMatchObject({ threadIds: [12] });
-    expect(thread.profile.name).toBe('');
-    expect(thread.profile.bio).toBe('');
+    ).resolves.toMatchObject({
+      threadIds: [12],
+      patches: [{ threadId: 12, memberCount: 4, groupMetaFeedId: '3' }],
+    });
+    // The group's profile reference stays on the thread row; the feed only
+    // carries the count.
+    expect(thread.profile).toEqual({ name: '', bio: '', avatarDigest: null });
+    expect(thread.profileRev).toBe(1);
+    expect(thread.meta.memberCount).toBe(4);
     expect(thread.meta.groupMetaFeedId).toBe('3');
   });
+
+  it.each(['GROUP_PROFILE', 'MEMBER_UPSERT', 'MEMBER_DEPART'])(
+    'rejects a %s fact because only counts and announcements are client-visible',
+    async (operation) => {
+      const { storage, thread } = fixture();
+      thread.meta.groupMetaFeedId = '0';
+      const request = vi.fn().mockResolvedValue({
+        code: 0,
+        data: {
+          account: 'room',
+          items: [
+            {
+              feedId: '1',
+              createdAt: 1_000,
+              originCreatedAt: null,
+              operation,
+              body: { account: 'room', namespaceId: 7, profileRev: 1 },
+            },
+          ],
+          scannedThrough: '1',
+          groupMetaFeedEndId: '3',
+          hasMore: true,
+        },
+      });
+      await expect(syncGroupMetaThread(storage, request, 12)).rejects.toThrow(
+        'group room (namespace 7, thread 12): invalid group-meta page',
+      );
+      expect(storage.applyGroupMetaPage).not.toHaveBeenCalled();
+    },
+  );
 
   it('continues with delta after finishing an older persisted recovery window', async () => {
     const { storage, thread } = fixture();
@@ -215,23 +231,18 @@ describe('Group Meta per-thread drain', () => {
       })
       .mockResolvedValueOnce({
         code: 0,
-        data: {
-          ...page('3', false).data,
-          mode: 'delta',
-        },
+        data: page('3', false).data,
       });
 
     await syncGroupMetaThread(storage, request, 12);
     expect(
-      request.mock.calls.map(([input]) => [
-        input.mode,
-        input.after,
-        input.through,
-      ]),
+      request.mock.calls.map(([input]) => [input.after, input.through]),
     ).toEqual([
-      ['full', '1', '2'],
-      ['delta', '2', '3'],
+      ['1', '2'],
+      ['2', '3'],
     ]);
+    expect(thread.meta.recoveryThrough).toBeNull();
+    expect(thread.meta.groupMetaFeedId).toBe('3');
   });
 
   it('surfaces the business code of a rejected page', async () => {
@@ -271,18 +282,15 @@ describe('Group Meta per-thread fact delivery', () => {
     expect(resumed.mock.calls[0][0].after).toBe('2');
   });
 
-  it('delivers a committed page when the open-thread guard stops the drain', async () => {
+  it('delivers a committed page from one round and leaves the continuation to the scheduler', async () => {
     const { storage } = fixture();
-    let active = true;
-    const request = vi.fn(async () => {
-      active = false;
-      return page('1', true);
-    });
+    const request = vi.fn(async () => page('1', true));
     await expect(
-      syncGroupMetaThread(storage, request, 12, () => active),
+      syncGroupMetaPage(storage, request, 12),
     ).resolves.toMatchObject({
-      threadIds: [12],
-      patches: [{ groupMetaFeedId: '1' }],
+      status: 'MORE',
+      changed: true,
+      patch: { groupMetaFeedId: '1' },
     });
     expect(request).toHaveBeenCalledOnce();
   });

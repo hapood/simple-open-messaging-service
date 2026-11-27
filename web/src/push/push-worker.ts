@@ -17,7 +17,10 @@ import type { BrowserNotificationBatch } from '../app/services/notification-desc
 import en from '../app/i18n/en.json';
 import zh from '../app/i18n/zh-CN.json';
 import { activePageClientId } from '../app/services/active-page';
-import { SessionStore } from '../app/services/session/session-store';
+import {
+  SessionStore,
+  type SessionStoreRecord,
+} from '../app/services/session/session-store';
 import {
   isActiveMessage,
   notificationClickUrl,
@@ -35,10 +38,9 @@ export function installPushWorker(scope: ServiceWorkerGlobalScope): void {
   const cards = new BrowserNotificationCards(
     scope.registration,
     async () =>
-      (await preferences.get<string>('device', 'notificationAlertPolicy')) ??
-      undefined,
+      (await preferences.get<string>('notificationAlertPolicy')) ?? undefined,
   );
-  const sessionStore = new SessionStore(preferences);
+  const sessionStore = new SessionStore();
   // Resource restoration belongs to this Worker lifetime and the existing cache owner.
   // Keep the original candidates on failure; recapturing could admit new instances.
   let reconstruction:
@@ -52,9 +54,20 @@ export function installPushWorker(scope: ServiceWorkerGlobalScope): void {
       }
     | undefined;
 
+  async function currentLogin(captured: SessionStoreRecord): Promise<boolean> {
+    const current = await sessionStore.read();
+    return (
+      current.lifecycleState === 'active' &&
+      captured.lifecycleState === 'active' &&
+      current.session?.id === captured.session?.id &&
+      current.identity?.userId === captured.identity?.userId &&
+      current.identity?.serverSessionId === captured.identity?.serverSessionId
+    );
+  }
+
   async function activeCache() {
     const saved = await sessionStore.read();
-    return saved?.phase === 'active' ? saved.session : null;
+    return saved.lifecycleState === 'active' ? saved.session : null;
   }
 
   async function visibleChat(pages: readonly Client[]): Promise<{
@@ -157,13 +170,15 @@ export function installPushWorker(scope: ServiceWorkerGlobalScope): void {
       scope.navigator.locks.request(
         'soms-notification-projection',
         async () => {
+          const login = await sessionStore.read();
           if (
-            data.userId !== (await accountId()) ||
+            login.lifecycleState !== 'active' ||
+            !login.identity ||
+            data.userId !== login.identity.userId ||
             !Array.isArray(data.entries)
           )
             return;
-          const postingSessionId = await sessionId();
-          if (postingSessionId === null) return;
+          const postingSessionId = login.identity.serverSessionId;
           const stream = data.stream === 'state' ? 'state' : 'thread';
           const since = await readNotificationSince(stream);
           const pages = await scope.clients.matchAll({
@@ -171,7 +186,8 @@ export function installPushWorker(scope: ServiceWorkerGlobalScope): void {
             includeUncontrolled: true,
           });
           const { known, threadId: activeChat } = await visibleChat(pages);
-          const cache = await activeCache();
+          const cache = login.session;
+          if (!(await currentLogin(login))) return;
           if (
             (data.requestReadChanged ||
               data.groupRequestReadChanged !== undefined) &&
@@ -248,7 +264,7 @@ export function installPushWorker(scope: ServiceWorkerGlobalScope): void {
             try {
               await storage.openExistingForUser(String(data.userId));
               const language =
-                (await preferences.get<string>('global', 'language')) ??
+                (await preferences.get<string>('language')) ??
                 scope.navigator.language;
               const locale = language.startsWith('zh') ? zh : en;
               const projection = await projectNotificationReconstruction(
@@ -316,11 +332,7 @@ export function installPushWorker(scope: ServiceWorkerGlobalScope): void {
                 end = Math.max(end, entry.feedId);
               continue;
             }
-            if (
-              data.userId !== (await accountId()) ||
-              postingSessionId !== (await sessionId())
-            )
-              return;
+            if (!(await currentLogin(login))) return;
             if (
               !Number.isInteger(entry.feedId) ||
               entry.feedId <= since ||
@@ -336,17 +348,14 @@ export function installPushWorker(scope: ServiceWorkerGlobalScope): void {
               await cards.remove(notificationKey(entry.descriptor.data)!);
             else if (known) {
               const id = await cards.show(entry.descriptor, postingSessionId);
-              if (
-                data.userId !== (await accountId()) ||
-                postingSessionId !== (await sessionId())
-              ) {
+              if (!(await currentLogin(login))) {
                 if (id) await cards.removeInstance(id);
                 return;
               }
             }
             end = Math.max(end, entry.feedId);
           }
-          if (data.userId === (await accountId()))
+          if (await currentLogin(login))
             await advanceNotificationSince(end, stream);
         },
       ),
@@ -366,16 +375,11 @@ export function installPushWorker(scope: ServiceWorkerGlobalScope): void {
     );
   });
 
-  async function accountId(): Promise<number | null> {
-    const saved = await sessionStore.read();
-    return saved?.phase === 'active' ? (saved.identity?.userId ?? null) : null;
-  }
-
   // Subscription recovery is not an identity authority. Background work uses
   // the same durable login record as the online runtime.
   async function sessionId(): Promise<number | null> {
     const saved = await sessionStore.read();
-    return saved?.phase === 'active'
+    return saved.lifecycleState === 'active'
       ? (saved.identity?.serverSessionId ?? null)
       : null;
   }
@@ -418,7 +422,7 @@ export function installPushWorker(scope: ServiceWorkerGlobalScope): void {
           )
             return;
           const language =
-            (await preferences.get<string>('global', 'language')) ??
+            (await preferences.get<string>('language')) ??
             scope.navigator.language;
           const locale = language?.startsWith('zh') ? zh : en;
           await scope.registration.showNotification(
@@ -460,11 +464,16 @@ export function installPushWorker(scope: ServiceWorkerGlobalScope): void {
         await scope.navigator.locks.request(
           'soms-notification-projection',
           async () => {
-            const userId = await accountId();
-            const postingSessionId = await sessionId();
-            if (userId === null || postingSessionId === null) return;
-            const cache = await activeCache();
-            if (!cache) return;
+            const login = await sessionStore.read();
+            if (
+              login.lifecycleState !== 'active' ||
+              !login.identity ||
+              !login.session
+            )
+              return;
+            const { userId, serverSessionId: postingSessionId } =
+              login.identity;
+            const cache = login.session;
             if (reconstruction?.cacheId !== cache.id) {
               reconstruction = {
                 cacheId: cache.id,
@@ -480,13 +489,10 @@ export function installPushWorker(scope: ServiceWorkerGlobalScope): void {
             try {
               await storage.openExistingForUser(String(userId));
               const current = async () =>
-                (await activeCache())?.id === cache.id &&
-                (await accountId()) === userId &&
-                (await sessionId()) === postingSessionId &&
-                storage.ready();
+                (await currentLogin(login)) && storage.ready();
               if (!(await current())) return;
               const language =
-                (await preferences.get<string>('global', 'language')) ??
+                (await preferences.get<string>('language')) ??
                 scope.navigator.language;
               const locale = language?.startsWith('zh') ? zh : en;
               const copy = {

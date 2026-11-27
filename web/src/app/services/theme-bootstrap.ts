@@ -30,11 +30,9 @@ export function initialThemeMode(): ThemeMode {
 export async function prepareTheme(): Promise<void> {
   const preferences = new PreferenceStorage();
   try {
-    bootMode = normalizeThemeMode(await preferences.get('global', 'theme'));
+    bootMode = normalizeThemeMode(await preferences.get('theme'));
   } catch {
     bootMode = 'system';
-  } finally {
-    await preferences.close().catch(() => {});
   }
   const systemDark = !!window.matchMedia?.('(prefers-color-scheme: dark)')
     .matches;

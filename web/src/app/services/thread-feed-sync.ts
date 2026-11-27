@@ -4,6 +4,7 @@ import type {
   LocalThreadAttention,
   ThreadFeedSnapshot,
 } from '../../../../shared/thread-attention';
+import { assertThreadAuthor } from '../../../../shared/thread-author';
 
 const THREAD_FEED_PREVIEW_COUNT = 3;
 
@@ -14,7 +15,7 @@ export interface ThreadFeedSyncResult {
 }
 
 export interface ThreadFeedSyncStorage {
-  withThreadFeedLock?<T>(run: () => Promise<T>): Promise<T>;
+  withThreadFeedLock<T>(run: () => Promise<T>): Promise<T>;
   readAccountState(): Promise<AccountState>;
   mergeThreadStates(
     states: ThreadFeedSnapshot[],
@@ -36,8 +37,9 @@ export async function syncThreadFeed(
     previewCount: number;
   }) => Promise<unknown>,
 ): Promise<ThreadFeedSyncResult> {
-  const run = () => syncThreadFeedUnlocked(storage, target, request);
-  return storage.withThreadFeedLock ? storage.withThreadFeedLock(run) : run();
+  return storage.withThreadFeedLock(() =>
+    syncThreadFeedUnlocked(storage, target, request),
+  );
 }
 
 async function syncThreadFeedUnlocked(
@@ -98,6 +100,7 @@ async function syncThreadFeedUnlocked(
           state.threadFeedId > page.scannedThrough
         )
           throw new Error('unordered thread feed page');
+        assertThreadAuthor(state.messageEndSeq, state.author);
         previous = state.threadFeedId;
       }
       for (const state of await storage.mergeThreadStates(

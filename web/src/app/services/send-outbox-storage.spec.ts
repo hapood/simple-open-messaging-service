@@ -15,7 +15,7 @@ describe('reference-only browser send storage', () => {
     const store = await BrowserSendOutboxStorage.open(name);
     await store.enqueue(task());
     store.close();
-    await deleteBrowserSessionCache(descriptor);
+    await deleteBrowserSessionCache();
     const reopened = await BrowserSendOutboxStorage.open(name);
     expect(await reopened.list()).toEqual([]);
     reopened.close();

@@ -69,15 +69,14 @@ roll back a committed cache write or cancel another consumer's shared demand.
 
 ## Mention candidates
 
-Mention search and presentation are separate stages. Search reads the local
-roster joined to the exact selected profile snapshot and matches account or
-cached profile name, without authorizing a profile request. The browser uses
-IndexedDB; PC WebViews use `native_db_query_group_members`; Android reaches the
-same Rust query through JNI. Matching uses locale-independent Unicode lowercase
-substring comparison. Departed members and the namespace-qualified self identity
-are excluded before limiting the page. Pages sort by namespace and then the
-account's Unicode scalar order, matching SQLite BINARY ordering rather than
-host-dependent locale collation.
+Mention search and presentation are separate stages. All hosts use the
+server-owned `/group/members` roster query, then join each result to its exact
+cached profile revision for presentation. They do not materialize a local
+roster. The Rust native mention owner captures the authenticated request and
+session/cache lifetime before scheduling; replacement searches and lifecycle
+changes cancel outstanding roster requests. The server owns literal substring
+matching, ordering and namespace-qualified self exclusion. Suggestions request
+only the first bounded page and do not follow its continuation cursor.
 
 A page contains at most five rows. If the viewer may mention everyone and the
 localized audience label matches the query, that row comes first and leaves four

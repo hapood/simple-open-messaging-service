@@ -3,7 +3,7 @@ import { HttpClient, HttpContext } from '@angular/common/http';
 import { firstValueFrom, timeout } from 'rxjs';
 import { apiPrefix } from './constants';
 import { apiOrigin } from './runtime';
-import { PreferenceStore } from './preference-store.service';
+import { AppStateStorage } from './preference-storage';
 import { SessionLifecycleService } from './session-lifecycle.service';
 import { SUPPRESS_HTTP_ERROR_TOAST } from '../request-context';
 
@@ -27,12 +27,17 @@ interface PreparedSubscription {
   token: string | null;
 }
 
+/** The checkpoint belongs to the installation and is scoped to one server. */
+function checkpointKey(origin: string, prefix: string): string {
+  return `pushRegistration:${origin}${prefix}`;
+}
+
 /** Shared Web/Android recovery. Only HELLO, revision events, permission changes
  * and platform token changes trigger work; there is no periodic synchronization. */
 @Injectable({ providedIn: 'root' })
 export class PushRegistrationService {
   private readonly http = inject(HttpClient);
-  private readonly preferences = inject(PreferenceStore);
+  private readonly appState = new AppStateStorage();
   private readonly lifecycle = inject(SessionLifecycleService);
   private adapter?: PushRegistrationAdapter;
   private sessionId = 0;
@@ -49,8 +54,8 @@ export class PushRegistrationService {
       this.dirty = false;
       this.failures = 0;
       clearTimeout(this.retry);
-      const key = `push-registration:${apiOrigin()}${apiPrefix()}`;
-      const clear = () => this.preferences.remove('device', key);
+      const key = checkpointKey(apiOrigin(), apiPrefix());
+      const clear = () => this.appState.remove(key);
       if (typeof navigator !== 'undefined' && navigator.locks)
         void navigator.locks.request('soms-push-registration', clear);
       else void clear();
@@ -127,11 +132,8 @@ export class PushRegistrationService {
           apiOrigin() === origin;
         const reconcile = async () => {
           if (!current() || !this.adapter) return;
-          const key = `push-registration:${origin}${prefix}`;
-          const saved = await this.preferences.get<PreparedSubscription>(
-            'device',
-            key,
-          );
+          const key = checkpointKey(origin, prefix);
+          const saved = await this.appState.get<PreparedSubscription>(key);
           let local = await this.adapter.read();
           if (!current()) return;
           const sameGeneration =
@@ -142,7 +144,7 @@ export class PushRegistrationService {
               saved.token !== (local?.token ?? null));
           const replace = rev > 1 && !alreadyPrepared;
           if (replace || !local) {
-            await this.preferences.set<PreparedSubscription>('device', key, {
+            await this.appState.set<PreparedSubscription>(key, {
               sessionId,
               rev,
               phase: 'replacing',
@@ -150,12 +152,11 @@ export class PushRegistrationService {
             });
             if (!current()) return;
             local = await this.adapter.create(replace);
-            if (!local && current())
-              await this.preferences.remove('device', key);
+            if (!local && current()) await this.appState.remove(key);
           }
           // Denied permission or unavailable platform waits for a new external event.
           if (!local || !current()) return;
-          await this.preferences.set<PreparedSubscription>('device', key, {
+          await this.appState.set<PreparedSubscription>(key, {
             sessionId,
             rev,
             phase: 'prepared',

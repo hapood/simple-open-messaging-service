@@ -1,8 +1,11 @@
-import { registrationDouble, subscriptionDouble } from './service-worker-test-doubles';
+import {
+  registrationDouble,
+  subscriptionDouble,
+} from './service-worker-test-doubles';
 import { provideHttpClient } from '@angular/common/http';
 import { TestBed } from '@angular/core/testing';
 import { TranslocoService } from '@jsverse/transloco';
-import { PreferenceStore } from './preference-store.service';
+import { AppStateStorage } from './preference-storage';
 import { ToastService } from './toast.service';
 import { SessionStore } from './session/session-store';
 import { SessionLifecycleService } from './session-lifecycle.service';
@@ -11,7 +14,7 @@ import { WebPushService } from './web-push.service';
 
 describe('WebPushService device ID', () => {
   let service: WebPushService;
-  let preferences: PreferenceStore;
+  let preferences: AppStateStorage;
 
   beforeEach(async () => {
     TestBed.configureTestingModule({
@@ -21,8 +24,8 @@ describe('WebPushService device ID', () => {
         { provide: ToastService, useValue: { warn: () => {} } },
       ],
     });
-    preferences = TestBed.inject(PreferenceStore);
-    await preferences.remove('device', 'device_id');
+    preferences = new AppStateStorage();
+    await preferences.remove('pushDeviceId');
     service = TestBed.inject(WebPushService);
   });
 
@@ -42,7 +45,9 @@ describe('WebPushService device ID', () => {
     const lifecycle = TestBed.inject(SessionLifecycleService);
     lifecycle.bindSession(session.id);
     vi.spyOn(SessionStore.prototype, 'read').mockResolvedValue({
-      version: 1, phase: 'active', session, identity: null, pendingCleanup: [],
+      lifecycleState: 'active',
+      session,
+      identity: null,
     });
     expect(await service.worker()).toBeNull();
   });
@@ -53,27 +58,50 @@ describe('WebPushService device ID', () => {
     lifecycle.bindSession(session.id);
     vi.spyOn(SessionStore.prototype, 'read').mockImplementation(async () => {
       lifecycle.invalidateSession();
-      return { version: 1, phase: 'active', session,
-        identity: { userId: 1, serverSessionId: 2 }, pendingCleanup: [] };
+      return {
+        lifecycleState: 'active',
+        session,
+        identity: { userId: 1, serverSessionId: 2 },
+      };
     });
     expect(await service.worker()).toBeNull();
   });
 
   it('logout unsubscribes without registering a worker', async () => {
     const unsubscribe = vi.fn().mockResolvedValue(true);
-    const getRegistration = vi.spyOn(navigator.serviceWorker, 'getRegistration')
-      .mockResolvedValue(registrationDouble({ scope: new URL('/push/', location.href).href, pushManager: { ...registrationDouble().pushManager, getSubscription: async () => subscriptionDouble(unsubscribe) } }));
+    const getRegistration = vi
+      .spyOn(navigator.serviceWorker, 'getRegistration')
+      .mockResolvedValue(
+        registrationDouble({
+          scope: new URL('/push/', location.href).href,
+          pushManager: {
+            ...registrationDouble().pushManager,
+            getSubscription: async () => subscriptionDouble(unsubscribe),
+          },
+        }),
+      );
     const register = vi.spyOn(navigator.serviceWorker, 'register');
     await service.unsubscribe();
-    expect(getRegistration).toHaveBeenCalledWith(new URL('/push/', location.href).href);
+    expect(getRegistration).toHaveBeenCalledWith(
+      new URL('/push/', location.href).href,
+    );
     expect(unsubscribe).toHaveBeenCalledOnce();
     expect(register).not.toHaveBeenCalled();
   });
 
   it('does not claim a failed unsubscribe succeeded', async () => {
-    vi.spyOn(navigator.serviceWorker, 'getRegistration')
-      .mockResolvedValue(registrationDouble({ scope: new URL('/push/', location.href).href, pushManager: { ...registrationDouble().pushManager, getSubscription: async () => subscriptionDouble(async () => false) } }));
-    await expect(service.unsubscribe()).rejects.toThrow('Could not cancel push subscription');
+    vi.spyOn(navigator.serviceWorker, 'getRegistration').mockResolvedValue(
+      registrationDouble({
+        scope: new URL('/push/', location.href).href,
+        pushManager: {
+          ...registrationDouble().pushManager,
+          getSubscription: async () => subscriptionDouble(async () => false),
+        },
+      }),
+    );
+    await expect(service.unsubscribe()).rejects.toThrow(
+      'Could not cancel push subscription',
+    );
   });
 
   it('creates and persists one ID for concurrent registrations', async () => {
@@ -83,11 +111,11 @@ describe('WebPushService device ID', () => {
     ]);
 
     expect(first).toBe(second);
-    expect(await preferences.get('device', 'device_id')).toBe(first);
+    expect(await preferences.get('pushDeviceId')).toBe(first);
   });
 
   it('reuses a stored device ID', async () => {
-    await preferences.set('device', 'device_id', 'existing-device');
+    await preferences.set('pushDeviceId', 'existing-device');
 
     expect(await service['clientDeviceId']()).toBe('existing-device');
   });

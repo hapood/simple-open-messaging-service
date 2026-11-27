@@ -3,7 +3,7 @@ import { TranslocoService } from '@jsverse/transloco';
 import { apiPrefix } from './constants';
 import { isTauri } from './runtime';
 import { ToastService } from './toast.service';
-import { PreferenceStore } from './preference-store.service';
+import { AppStateStorage } from './preference-storage';
 import { SessionStore } from './session/session-store';
 import { SessionLifecycleService } from './session-lifecycle.service';
 import { uuid } from '../lib/uuid';
@@ -18,10 +18,10 @@ import {
 export class WebPushService {
   private readonly transloco = inject(TranslocoService);
   private readonly toast = inject(ToastService);
-  private readonly preferences = inject(PreferenceStore);
+  private readonly appState = new AppStateStorage();
   private readonly registration = inject(PushRegistrationService);
   private readonly lifecycle = inject(SessionLifecycleService);
-  private readonly sessionStore = new SessionStore(this.preferences);
+  private readonly sessionStore = new SessionStore(this.appState);
   private deviceIdPromise: Promise<string> | null = null;
   private initialized = false;
 
@@ -85,8 +85,13 @@ export class WebPushService {
     const scope = this.lifecycle.capture();
     if (!scope.sessionId || !this.lifecycle.isCurrent(scope)) return null;
     const saved = await this.sessionStore.read();
-    if (!this.lifecycle.isCurrent(scope) || saved?.phase !== 'active' ||
-        saved.session?.id !== scope.sessionId || !saved.identity) return null;
+    if (
+      !this.lifecycle.isCurrent(scope) ||
+      saved.lifecycleState !== 'active' ||
+      saved.session?.id !== scope.sessionId ||
+      !saved.identity
+    )
+      return null;
     if (
       typeof Notification === 'undefined' ||
       Notification.permission !== 'granted'
@@ -135,7 +140,8 @@ export class WebPushService {
       }
     };
     // Serialize with registration recovery so an older subscribe cannot finish after logout.
-    if (navigator.locks) await navigator.locks.request('soms-push-registration', release);
+    if (navigator.locks)
+      await navigator.locks.request('soms-push-registration', release);
     else await release();
   }
 
@@ -170,7 +176,8 @@ export class WebPushService {
     });
     if (!this.lifecycle.isCurrent(scope)) {
       // A subscription created by a cancelled login must not survive as an orphan.
-      if (!(await sub.unsubscribe())) throw new Error('Could not remove cancelled push subscription');
+      if (!(await sub.unsubscribe()))
+        throw new Error('Could not remove cancelled push subscription');
       return null;
     }
     return this.serialize(sub);
@@ -194,11 +201,11 @@ export class WebPushService {
   }
 
   private async loadClientDeviceId(): Promise<string> {
-    const stored = await this.preferences.get<unknown>('device', 'device_id');
+    const stored = await this.appState.get<unknown>('pushDeviceId');
     if (typeof stored === 'string' && stored.length > 0 && stored.length <= 127)
       return stored;
     const created = uuid();
-    await this.preferences.set('device', 'device_id', created);
+    await this.appState.set('pushDeviceId', created);
     return created;
   }
 }

@@ -26,7 +26,7 @@ export class ChatAppearanceService {
   setShowSelfAvatar(show: boolean): void {
     this.writeRevision++;
     this._showSelfAvatar.set(show);
-    void this.preferences.set('device', SHOW_SELF_AVATAR_KEY, show).catch(() => {});
+    void this.preferences.set(SHOW_SELF_AVATAR_KEY, show).catch(() => {});
   }
 
   private applySelfAvatar(show: boolean): void {
@@ -35,7 +35,7 @@ export class ChatAppearanceService {
 
   private async restore(): Promise<void> {
     const revision = this.writeRevision;
-    const show = await this.preferences.get<boolean>('device', SHOW_SELF_AVATAR_KEY);
+    const show = await this.preferences.get<boolean>(SHOW_SELF_AVATAR_KEY);
     if (revision !== this.writeRevision) return;
     if (typeof show === 'boolean') this._showSelfAvatar.set(show);
   }

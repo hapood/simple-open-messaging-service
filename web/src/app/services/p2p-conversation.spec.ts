@@ -17,7 +17,11 @@ describe('conversation construction', () => {
   });
 
   it('accepts the selected display snapshot as one profile group', () => {
-    const profile = { name: 'Bob', bio: 'Hello', avatarDigest: 'avatar-digest' };
+    const profile = {
+      name: 'Bob',
+      bio: 'Hello',
+      avatarDigest: 'avatar-digest',
+    };
     const item = createP2PConversation({ ...identity, profile });
     expect(item.profile).toEqual(profile);
     expect(item.account).toBe(identity.account);
@@ -47,10 +51,6 @@ describe('conversation construction', () => {
       announcementCreatedAt: 1_000,
       announcementOriginCreatedAt: null,
       recoveryThrough: null,
-      recoveryAnnouncementFeedId: null,
-      recoveryAnnouncementText: null,
-      recoveryAnnouncementCreatedAt: null,
-      recoveryAnnouncementOriginCreatedAt: null,
     });
   });
 });

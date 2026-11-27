@@ -10,7 +10,7 @@ describe('ChatAppearanceService', () => {
       providers: [provideZonelessChangeDetection()],
     });
     const preferences = TestBed.inject(PreferenceStore);
-    await preferences.remove('device', 'soms.chat.showSelfAvatar');
+    await preferences.remove('soms.chat.showSelfAvatar');
   });
 
   it('defaults on, persists changes, and exposes them to mounted message rows', async () => {
@@ -26,9 +26,7 @@ describe('ChatAppearanceService', () => {
     TestBed.flushEffects();
 
     expect(service.showSelfAvatar()).toBe(false);
-    expect(await preferences.get('device', 'soms.chat.showSelfAvatar')).toBe(
-      false,
-    );
+    expect(await preferences.get('soms.chat.showSelfAvatar')).toBe(false);
     expect(document.documentElement.getAttribute('data-show-self-avatar')).toBe(
       'false',
     );

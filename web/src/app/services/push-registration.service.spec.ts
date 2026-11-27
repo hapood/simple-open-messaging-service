@@ -9,7 +9,7 @@ import {
   PushRegistrationService,
   type PushRegistration,
 } from './push-registration.service';
-import { PreferenceStore } from './preference-store.service';
+import { AppStateStorage } from './preference-storage';
 import { SessionLifecycleService } from './session-lifecycle.service';
 import { apiOrigin } from './runtime';
 
@@ -20,6 +20,7 @@ describe('Shared push registration recovery', () => {
   let create: ReturnType<
     typeof vi.fn<(replace: boolean) => Promise<PushRegistration | null>>
   >;
+  /** The `app_state` records the checkpoint is written to. */
   let storage: Map<string, unknown>;
   const settle = async () => {
     for (let i = 0; i < 25; i++) await Promise.resolve();
@@ -32,6 +33,8 @@ describe('Shared push registration recovery', () => {
   });
   const pending = () =>
     http.expectOne((request) => request.url.endsWith('/devices/register'));
+  /** The checkpoint is keyed by the server it is registered with. */
+  const checkpoint = `pushRegistration:${apiOrigin()}/api/v1`;
 
   beforeEach(() => {
     // These tests cover registration recovery, not cross-tab lock scheduling.
@@ -44,6 +47,19 @@ describe('Shared push registration recovery', () => {
         } as Lock),
     );
     storage = new Map();
+    vi.spyOn(AppStateStorage.prototype, 'get').mockImplementation(async (key) =>
+      storage.get(key),
+    );
+    vi.spyOn(AppStateStorage.prototype, 'set').mockImplementation(
+      async (key, value) => {
+        storage.set(key, value);
+      },
+    );
+    vi.spyOn(AppStateStorage.prototype, 'remove').mockImplementation(
+      async (key) => {
+        storage.delete(key);
+      },
+    );
     local = { platform: 'WEB', token: 'old', p256dh: 'key', auth: 'auth' };
     create = vi.fn(
       async (_replace: boolean) =>
@@ -55,22 +71,7 @@ describe('Shared push registration recovery', () => {
         }),
     );
     TestBed.configureTestingModule({
-      providers: [
-        provideHttpClient(),
-        provideHttpClientTesting(),
-        {
-          provide: PreferenceStore,
-          useValue: {
-            get: async (_scope: string, key: string) => storage.get(key),
-            remove: async (_scope: string, key: string) => {
-              storage.delete(key);
-            },
-            set: async (_scope: string, key: string, value: unknown) => {
-              storage.set(key, value);
-            },
-          },
-        },
-      ],
+      providers: [provideHttpClient(), provideHttpClientTesting()],
     });
     service = TestBed.inject(PushRegistrationService);
     http = TestBed.inject(HttpTestingController);
@@ -164,7 +165,7 @@ describe('Shared push registration recovery', () => {
   });
 
   it('reuses the prepared token after coordinator reload at a recovery revision', async () => {
-    storage.set(`push-registration:${apiOrigin()}/api/v1`, {
+    storage.set(checkpoint, {
       sessionId: 5,
       rev: 2,
       phase: 'prepared',
@@ -175,6 +176,13 @@ describe('Shared push registration recovery', () => {
     pending().flush(success(2));
     await settle();
     expect(create).not.toHaveBeenCalled();
+    // The checkpoint stays under its server-scoped `app_state` key.
+    expect(storage.get(checkpoint)).toEqual({
+      sessionId: 5,
+      rev: 2,
+      phase: 'prepared',
+      token: 'old',
+    });
   });
 
   it('does not mistake a denied recovery attempt for a prepared subscription', async () => {
@@ -189,6 +197,12 @@ describe('Shared push registration recovery', () => {
     expect(create).toHaveBeenLastCalledWith(true);
     pending().flush(success(2));
     await settle();
+    expect(storage.get(checkpoint)).toEqual({
+      sessionId: 5,
+      rev: 2,
+      phase: 'prepared',
+      token: 'new',
+    });
   });
 
   it('uses the same protocol for Android automatic token rotation', async () => {

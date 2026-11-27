@@ -36,29 +36,36 @@ describe('LanguageService native notification language', () => {
     const service = TestBed.inject(LanguageService);
     await Promise.resolve();
     expect(service.lang()).toBe('zh-CN');
-    expect(get).toHaveBeenCalledWith('global', 'language');
+    expect(get).toHaveBeenCalledWith('language');
     expect(set).not.toHaveBeenCalled();
   });
 
-  it.each([['en-US', 'en'], ['fr-FR', 'en']])(
+  it.each([
+    ['en-US', 'en'],
+    ['fr-FR', 'en'],
+  ])(
     'persists the resolved initial %s language as %s for headless Rust',
     async (browser, resolved) => {
       vi.spyOn(navigator, 'language', 'get').mockReturnValue(browser);
       const service = TestBed.inject(LanguageService);
       await Promise.resolve();
       expect(service.lang()).toBe(resolved);
-      expect(set).toHaveBeenCalledExactlyOnceWith('global', 'language', resolved);
+      expect(set).toHaveBeenCalledExactlyOnceWith('language', resolved);
     },
   );
 
   it('does not let delayed restoration overwrite an explicit choice', async () => {
     let resolve!: (value: string | undefined) => void;
-    get.mockReturnValue(new Promise<string | undefined>((done) => { resolve = done; }));
+    get.mockReturnValue(
+      new Promise<string | undefined>((done) => {
+        resolve = done;
+      }),
+    );
     const service = TestBed.inject(LanguageService);
     service.setLang('en');
     resolve('zh-CN');
     await Promise.resolve();
     expect(service.lang()).toBe('en');
-    expect(set).toHaveBeenCalledExactlyOnceWith('global', 'language', 'en');
+    expect(set).toHaveBeenCalledExactlyOnceWith('language', 'en');
   });
 });

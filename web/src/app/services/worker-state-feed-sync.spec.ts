@@ -8,7 +8,6 @@ import type { ClientStateFeedItem } from './user.service';
 
 function accountState(overrides: Partial<AccountState>): AccountState {
   return {
-    schemaVersion: 1,
     selfProfile: null,
     selfIdentity: null,
     composerDrafts: [],

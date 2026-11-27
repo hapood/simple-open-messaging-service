@@ -14,18 +14,19 @@ function persisted(id = FIRST) {
   return {
     version: 1,
     id,
-    indexedDbName: `soms-session-${id}`,
-    sqliteFileName: `soms-session-${id}.sqlite`,
+    indexedDbName: 'soms-session',
+    sqliteFileName: 'soms-session.sqlite',
   };
 }
 
 describe('local login identity', () => {
-  it('creates a distinct identity and cache for every fresh login', () => {
+  it('creates a distinct identity for every fresh login behind one fixed cache name', () => {
     const first = createSessionCacheDescriptor();
     const second = createSessionCacheDescriptor();
     expect(first.id).not.toBe(second.id);
-    expect(first.indexedDbName).not.toBe(second.indexedDbName);
-    expect(first.sqliteFileName).not.toBe(second.sqliteFileName);
+    expect(first.indexedDbName).toBe('soms-session');
+    expect(second.indexedDbName).toBe(first.indexedDbName);
+    expect(second.sqliteFileName).toBe(first.sqliteFileName);
     expect(Object.isFrozen(first)).toBe(true);
   });
 
@@ -52,9 +53,9 @@ describe('local login identity', () => {
   );
 
   it.each([
-    { ...persisted(), indexedDbName: `soms-session-${SECOND}` },
+    { ...persisted(), indexedDbName: `soms-session-${FIRST}` },
     { ...persisted(), sqliteFileName: '../device.sqlite' },
-  ])('rejects resource names not belonging to the UUID', (saved) => {
+  ])('rejects resource names other than the fixed cache names', (saved) => {
     expect(() => restoreSessionCacheDescriptor(saved)).toThrow(
       'Session cache names do not match login identity',
     );

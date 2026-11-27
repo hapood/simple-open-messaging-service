@@ -69,7 +69,14 @@ export function applyLocalThreadPatch(
 }
 
 /** Dedicated group_meta row mirrored by GroupMetaSlot. */
-export type StoredGroupMeta = GroupMetaSlot & { threadId: number };
+export type StoredGroupMeta = GroupMetaSlot & {
+  threadId: number;
+  recoveryMemberCount?: number;
+  recoveryAnnouncementFeedId?: string | null;
+  recoveryAnnouncementText?: string | null;
+  recoveryAnnouncementCreatedAt?: number | null;
+  recoveryAnnouncementOriginCreatedAt?: number | null;
+};
 
 /** Explicit boundary: never spread transport-only preview payloads into a thread row. */
 export function threadAttentionFields(state: LocalThreadAttention) {

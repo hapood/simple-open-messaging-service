@@ -219,7 +219,7 @@ async function synchronizeNotifications(
   target: number,
 ): Promise<PushThreadResult> {
   const language =
-    (await preferences.get<string>('global', 'language')) ?? navigator.language;
+    (await preferences.get<string>('language')) ?? navigator.language;
   const locale = language.startsWith('zh') ? zh : en;
   const result = await syncPushThreads(
     storage,
@@ -480,7 +480,7 @@ addEventListener('message', ({ data }: MessageEvent<Request>) => {
               if (feedPort !== port) return;
               try {
                 const language =
-                  (await preferences.get<string>('global', 'language')) ??
+                  (await preferences.get<string>('language')) ??
                   navigator.language;
                 const result = await syncPushState(
                   storage,

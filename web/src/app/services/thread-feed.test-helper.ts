@@ -40,8 +40,6 @@ export function threadFeedSnapshot(
     threadFeedId: 1,
     alias: null,
     messageEndSeq: 0,
-    tombstoneEndSeq: 0,
-    groupMetaFeedEndId: null,
     joinRequestEndFeedId: 0,
     joinRequestReadFeedId: -1,
     groupInviteEndFeedId: 0,

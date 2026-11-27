@@ -221,7 +221,7 @@ export class NavStateMachineService {
       .ended$.pipe(takeUntilDestroyed())
       .subscribe(() => this.resetForSessionEnd());
 
-    // Session-end reset: when the session ends (sessionUserId → null — clearSession on logout / 401-bounce /
+    // Session-end reset: when the session ends (sessionUserId → null — owner reset on logout / 401-bounce /
     // account switch), drop ALL nav layers so the next account logging into the same live SPA cannot inherit
     // this user's open chat, dialogs, aside, or mobile section. Mirrors the session-end effects in the
     // data-layer services (thread-store / folder / message-repository) that key off the same signal — this

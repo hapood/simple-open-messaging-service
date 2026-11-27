@@ -3,236 +3,195 @@ import {
   createSessionCacheDescriptor,
   SessionSupersededError,
 } from './session-identity';
+import { parseSessionState, SessionStore } from './session-store';
 import {
-  parseSessionStore,
-  SessionStore,
-  type SessionStoreStorage,
-} from './session-store';
+  MemorySessionStorage,
+  resetTestAppState,
+} from './session-store.test-helper';
+import { AppStateStorage, PreferenceStorage } from '../preference-storage';
 
-class MemoryStorage implements SessionStoreStorage {
-  value: unknown;
-  readFailure = false;
-  writeFailure = false;
-
-  async getStrict<T>(): Promise<T | undefined> {
-    if (this.readFailure) throw new Error('Read failed');
-    return structuredClone(this.value) as T | undefined;
-  }
-
-  async set<T>(_scope: 'device', _key: string, value: T): Promise<void> {
-    if (this.writeFailure) throw new Error('Write failed');
-    this.value = structuredClone(value);
-  }
+async function setup() {
+  const storage = new MemorySessionStorage();
+  const store = new SessionStore(storage);
+  await store.initialize();
+  await store.configure({ primary: 'https://chat.test' });
+  return { storage, store };
 }
 
-function setup() {
-  const storage = new MemoryStorage();
-  const sessionStore = new SessionStore(storage);
-  return { storage, sessionStore };
-}
-
-describe('session store', () => {
-  it('restores legacy records without inventing server identity', async () => {
-    const { storage, sessionStore } = setup();
-    const session = createSessionCacheDescriptor();
-    storage.value = {
-      version: 1,
-      phase: 'active',
-      session,
-      pendingCleanup: [],
-    };
-    expect((await sessionStore.read())?.identity).toBeNull();
-    await sessionStore.bindIdentity(session.id, { userId: 42, serverSessionId: 11 });
-    expect((await new SessionStore(storage).read())?.identity).toEqual({
-      userId: 42,
-      serverSessionId: 11,
-    });
-  });
-
-  it('binds identity once and rejects old-login handshakes after logout', async () => {
-    const { sessionStore } = setup();
-    const session = createSessionCacheDescriptor();
-    const identity = { userId: 42, serverSessionId: 11 };
-    await sessionStore.prepare(session);
-    await expect(sessionStore.bindIdentity(session.id, identity)).rejects.toThrow(
-      SessionSupersededError,
-    );
-    await sessionStore.activate(session.id);
-    await sessionStore.bindIdentity(session.id, identity);
-    await sessionStore.bindIdentity(session.id, identity);
+describe('app-state session lifecycle', () => {
+  it('initializes the current format as unconfigured and requires server setup', async () => {
+    const storage = new MemorySessionStorage();
+    const store = new SessionStore(storage);
+    expect((await store.initialize()).lifecycleState).toBe('unconfigured');
+    expect(storage.state.get('schemaVersion')).toBe(1);
     await expect(
-      sessionStore.bindIdentity(session.id, { ...identity, serverSessionId: 12 }),
+      store.activate(createSessionCacheDescriptor().id),
     ).rejects.toThrow(SessionSupersededError);
-    await sessionStore.end(session.id);
-    expect((await sessionStore.read())?.identity).toBeNull();
-    await expect(sessionStore.bindIdentity(session.id, identity)).rejects.toThrow(
-      SessionSupersededError,
-    );
+    await store.configure({ primary: 'https://chat.test' });
+    expect((await store.read()).lifecycleState).toBe('signed-out');
   });
 
-  it('rejects malformed server identities without writing', async () => {
-    const { sessionStore } = setup();
-    const session = createSessionCacheDescriptor();
-    await sessionStore.prepare(session);
-    await sessionStore.activate(session.id);
+  it.each([undefined, 0, 2, '1'])(
+    'rejects schema version %s without resetting state',
+    async (version) => {
+      const storage = new MemorySessionStorage();
+      if (version === undefined) storage.state.delete('schemaVersion');
+      else storage.state.set('schemaVersion', version);
+      storage.state.set('sessionUuid', createSessionCacheDescriptor().id);
+      storage.state.set('serverConfig', { primary: 'https://chat.test' });
+      storage.state.set('pushDeviceId', 'retain');
+      const before = structuredClone(storage.state);
+      await expect(new SessionStore(storage).initialize()).rejects.toThrow(
+        'Invalid app-state version',
+      );
+      expect(storage.state).toEqual(before);
+    },
+  );
+
+  it('binds notification identity once and rejects stale or conflicting HELLOs', async () => {
+    const { store } = await setup();
+    const { id } = createSessionCacheDescriptor();
+    const identity = { userId: 42, serverSessionId: 11 };
+    await expect(store.bindIdentity(id, identity)).rejects.toThrow(
+      SessionSupersededError,
+    );
+    await store.activate(id);
+    await store.bindIdentity(id, identity);
+    await store.bindIdentity(id, identity);
+    await expect(
+      store.bindIdentity(id, { ...identity, serverSessionId: 12 }),
+    ).rejects.toThrow(SessionSupersededError);
     expect(() =>
-      sessionStore.bindIdentity(session.id, { userId: 0, serverSessionId: 11 }),
+      store.bindIdentity(id, { userId: 0, serverSessionId: 1 }),
     ).toThrow();
-    expect((await sessionStore.read())?.identity).toBeNull();
-  });
-
-  it('distinguishes first boot from durable local logout', async () => {
-    const { storage, sessionStore } = setup();
-    expect(await sessionStore.read()).toBeNull();
-    await sessionStore.end(null);
-    const restored = await new SessionStore(storage).read();
-    expect(restored?.phase).toBe('signed-out');
-    expect(restored?.session).toBeNull();
-  });
-
-  it('keeps the same identity across preparation retry and process restoration', async () => {
-    const { storage, sessionStore } = setup();
-    const session = createSessionCacheDescriptor();
-    await sessionStore.prepare(session);
-    const restarted = new SessionStore(storage);
-    expect((await restarted.prepare(session)).session).toEqual(session);
-    await restarted.activate(session.id);
-    expect((await new SessionStore(storage).read())?.session).toEqual(session);
-  });
-
-  it('blocks successor activation until all old stores have been deleted', async () => {
-    const { storage, sessionStore } = setup();
-    const old = createSessionCacheDescriptor();
-    const next = createSessionCacheDescriptor();
-    await sessionStore.prepare(old);
-    await sessionStore.activate(old.id);
-    await sessionStore.end(old.id);
-    const restarted = new SessionStore(storage);
-    expect((await restarted.read())?.pendingCleanup).toEqual([old]);
-    await expect(restarted.prepare(next)).rejects.toThrow('finish cleanup');
-    await restarted.completeCleanup(old.id);
-    await restarted.prepare(next);
-    expect((await restarted.activate(next.id)).session).toEqual(next);
-    await expect(restarted.end(old.id)).rejects.toBeInstanceOf(
+    await store.beginCleaning(id);
+    expect((await store.read()).identity).toBeNull();
+    await expect(store.bindIdentity(id, identity)).rejects.toThrow(
       SessionSupersededError,
     );
-    await expect(restarted.completeCleanup(old.id)).rejects.toBeInstanceOf(
-      SessionSupersededError,
-    );
-    expect((await restarted.read())?.session).toEqual(next);
   });
 
-  it('retains every pending cache across partial cleanup and restart', async () => {
-    const { storage, sessionStore } = setup();
-    const first = createSessionCacheDescriptor();
-    const second = createSessionCacheDescriptor();
-    storage.value = {
-      version: 1,
-      phase: 'ending',
+  it('retains UUID during cleanup and preserves installation state but not account state', async () => {
+    const { store, storage } = await setup();
+    storage.state.set('pushDeviceId', 'installation');
+    storage.state.set('forwardRecentThreads', [1]);
+    storage.state.set('cacheRebuild', 'pending');
+    const { id } = createSessionCacheDescriptor();
+    await store.activate(id);
+    await store.beginCleaning(id);
+    const restarted = new SessionStore(storage);
+    expect(await restarted.read()).toMatchObject({
+      lifecycleState: 'cleaning',
+      session: { id },
+    });
+    await expect(
+      restarted.activate(createSessionCacheDescriptor().id),
+    ).rejects.toThrow();
+    await restarted.finishCleaning(id);
+    expect(await restarted.read()).toMatchObject({
+      lifecycleState: 'signed-out',
       session: null,
-      pendingCleanup: [first, second],
-    };
-    await sessionStore.completeCleanup(first.id);
-    const restarted = new SessionStore(storage);
-    expect((await restarted.read())?.pendingCleanup).toEqual([second]);
-    await expect(
-      restarted.prepare(createSessionCacheDescriptor()),
-    ).rejects.toThrow('finish cleanup');
-    await restarted.completeCleanup(second.id);
-    expect((await restarted.read())?.phase).toBe('signed-out');
-  });
-
-  it('does not claim durable logout when persisting ending intent fails', async () => {
-    const { storage, sessionStore } = setup();
-    const session = createSessionCacheDescriptor();
-    await sessionStore.prepare(session);
-    await sessionStore.activate(session.id);
-    storage.writeFailure = true;
-    await expect(sessionStore.end(session.id)).rejects.toThrow('Write failed');
-    storage.writeFailure = false;
-    await sessionStore.end(session.id);
-    expect((await sessionStore.read())?.phase).toBe('ending');
-  });
-
-  it('records interrupted preparation as cleanup work', async () => {
-    const { storage, sessionStore } = setup();
-    const session = createSessionCacheDescriptor();
-    await sessionStore.prepare(session);
-    await new SessionStore(storage).end(session.id);
-    expect((await sessionStore.read())?.pendingCleanup).toEqual([session]);
-    await expect(sessionStore.activate(session.id)).rejects.toBeInstanceOf(
+    });
+    expect(storage.state.get('pushDeviceId')).toBe('installation');
+    expect(storage.state.get('serverConfig')).toEqual({
+      primary: 'https://chat.test',
+    });
+    expect(storage.state.has('forwardRecentThreads')).toBe(false);
+    expect(storage.state.has('cacheRebuild')).toBe(false);
+    const next = createSessionCacheDescriptor();
+    await store.activate(next.id);
+    await expect(store.beginCleaning(id)).rejects.toThrow(
       SessionSupersededError,
     );
-  });
-
-  it('fails closed on read errors instead of treating them as first boot', async () => {
-    const { storage, sessionStore } = setup();
-    storage.readFailure = true;
-    await expect(sessionStore.read()).rejects.toThrow('Read failed');
-    await expect(
-      sessionStore.prepare(createSessionCacheDescriptor()),
-    ).rejects.toThrow('Read failed');
-    expect(storage.value).toBeUndefined();
-  });
-
-  it('retains cleanup work after a failed completion write and permits retry', async () => {
-    const { storage, sessionStore } = setup();
-    const session = createSessionCacheDescriptor();
-    await sessionStore.prepare(session);
-    await sessionStore.end(session.id);
-    storage.writeFailure = true;
-    await expect(sessionStore.completeCleanup(session.id)).rejects.toThrow(
-      'Write failed',
+    await expect(store.finishCleaning(id)).rejects.toThrow(
+      SessionSupersededError,
     );
-    expect((await sessionStore.read())?.pendingCleanup).toEqual([session]);
-    storage.writeFailure = false;
-    await sessionStore.completeCleanup(session.id);
-    expect((await sessionStore.read())?.phase).toBe('signed-out');
+    await expect(store.configure({})).rejects.toThrow(SessionSupersededError);
   });
 
-  it('never publishes an active record when durable activation fails', async () => {
-    const { storage, sessionStore } = setup();
-    const session = createSessionCacheDescriptor();
-    await sessionStore.prepare(session);
-    storage.writeFailure = true;
-    await expect(sessionStore.activate(session.id)).rejects.toThrow('Write failed');
-    storage.writeFailure = false;
-    expect((await sessionStore.read())?.phase).toBe('preparing');
-    expect((await sessionStore.activate(session.id)).phase).toBe('active');
+  it('never publishes failed activation and retains cleaning after failed completion', async () => {
+    const { store, storage } = await setup();
+    const { id } = createSessionCacheDescriptor();
+    storage.failWrites = true;
+    await expect(store.activate(id)).rejects.toThrow('Metadata unavailable');
+    expect((await store.read()).lifecycleState).toBe('signed-out');
+    storage.failWrites = false;
+    await store.activate(id);
+    await store.beginCleaning(id);
+    storage.failWrites = true;
+    await expect(store.finishCleaning(id)).rejects.toThrow(
+      'Metadata unavailable',
+    );
+    expect((await store.read()).lifecycleState).toBe('cleaning');
+    storage.failWrites = false;
+    await store.finishCleaning(id);
   });
 
-  it('serializes competing preparations without poisoning the queue on failure', async () => {
-    const { sessionStore } = setup();
+  it('fails closed on reads and inconsistent lifecycle records', async () => {
+    const { store, storage } = await setup();
+    storage.failReads = true;
+    await expect(store.read()).rejects.toThrow('Read failed');
+    await expect(
+      store.activate(createSessionCacheDescriptor().id),
+    ).rejects.toThrow('Read failed');
+    for (const state of [
+      'preparing',
+      'revoking',
+      'ending',
+      'active',
+      'unknown',
+    ]) {
+      expect(() =>
+        parseSessionState(
+          new Map<string, unknown>([
+            ['schemaVersion', 1],
+            ['lifecycleState', state],
+          ]),
+        ),
+      ).toThrow();
+    }
+  });
+
+  it('atomically admits only one competing activation across store instances', async () => {
+    const { store, storage } = await setup();
     const first = createSessionCacheDescriptor();
     const second = createSessionCacheDescriptor();
     const results = await Promise.allSettled([
-      sessionStore.prepare(first),
-      sessionStore.prepare(second),
+      store.activate(first.id),
+      new SessionStore(storage).activate(second.id),
     ]);
     expect(results.map((result) => result.status)).toEqual([
       'fulfilled',
       'rejected',
     ]);
-    expect((await sessionStore.activate(first.id)).session).toEqual(first);
+    expect((await store.read()).session?.id).toBe(first.id);
   });
 
-  it('rejects inconsistent metadata before using it for cleanup', () => {
-    const session = createSessionCacheDescriptor();
-    for (const value of [
-      null,
-      { version: 2 },
-      { version: 1, phase: 'unknown', session: null, pendingCleanup: [] },
-      { version: 1, phase: 'active', session: null, pendingCleanup: [] },
-      { version: 1, phase: 'signed-out', session, pendingCleanup: [] },
-      { version: 1, phase: 'active', session, pendingCleanup: [session] },
-      {
-        version: 1,
-        phase: 'ending',
-        session: null,
-        pendingCleanup: [session, session],
-      },
-    ]) {
-      expect(() => parseSessionStore(value)).toThrow();
+  it('rolls back a failed real IDB transaction and reads a coherent lifecycle snapshot', async () => {
+    const appState = new AppStateStorage();
+    await resetTestAppState(appState);
+    try {
+      const store = new SessionStore(appState);
+      await store.initialize();
+      await store.configure({ primary: 'https://chat.test' });
+      const { id } = createSessionCacheDescriptor();
+      await store.activate(id);
+      await expect(
+        appState.update((state) => {
+          state.set('lifecycleState', 'cleaning');
+          throw new Error('rollback');
+        }),
+      ).rejects.toThrow('rollback');
+      expect(await store.read()).toMatchObject({
+        lifecycleState: 'active',
+        session: { id },
+      });
+    } finally {
+      try {
+        await resetTestAppState(appState);
+      } finally {
+        await new PreferenceStorage().close();
+      }
     }
   });
 });

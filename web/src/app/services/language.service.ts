@@ -83,7 +83,7 @@ export class LanguageService {
   setLang(l: AppLang): void {
     this.writeRevision++;
     this.lang.set(l);
-    void this.preferences.set('global', LANG_KEY, l).catch(() => {});
+    void this.preferences.set(LANG_KEY, l).catch(() => {});
   }
 
   /** Reflect one language onto Transloco, `<html lang>`, and dayjs. */
@@ -100,14 +100,14 @@ export class LanguageService {
 
   private async restore(): Promise<void> {
     const revision = this.writeRevision;
-    const stored = await this.preferences.get<AppLang>('global', LANG_KEY);
+    const stored = await this.preferences.get<AppLang>(LANG_KEY);
     if (revision !== this.writeRevision) return;
     if (stored === 'en' || stored === 'zh-CN') {
       this.lang.set(stored);
     } else if (isTauri()) {
       // Persist the resolved initial choice so background Rust uses the UI language
       // even when no language has been selected manually and no WebView is alive.
-      await this.preferences.set('global', LANG_KEY, this.lang()).catch(() => {});
+      await this.preferences.set(LANG_KEY, this.lang()).catch(() => {});
     }
   }
 }

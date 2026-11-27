@@ -1,4 +1,5 @@
 import type { ClientGroupMetaFact } from '../../../../shared/client-group-meta';
+export type { ClientGroupMetaFact };
 
 export interface ClientGroupMetaFeedPage {
   account: string;

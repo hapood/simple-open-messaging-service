@@ -69,7 +69,10 @@ describe('MessageRepository', () => {
         MessageRepository,
         WebdbService,
         ProfileRepository,
-        { provide: ProfileWatchService, useValue: { watchProfile: () => of(null) } },
+        {
+          provide: ProfileWatchService,
+          useValue: { watchProfile: () => of(null) },
+        },
         { provide: WebsocketService, useValue: { eventSubject, reconnect$ } },
         {
           provide: MsgService,
@@ -139,26 +142,59 @@ describe('MessageRepository', () => {
       gaps: [{ left: 20, right: 80, state: 'SERVER_PENDING' }],
     });
     let stream!: ReadableStreamDefaultController<Uint8Array>;
-    const fetch = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(
-      new ReadableStream<Uint8Array>({ start(controller) { stream = controller; } }),
-    ));
-    queryMessageHistoryPageSpy.mockReturnValue(of({ code: 0, data: {
-      messages: [msg(42, 76)], gaps: [
-        { startSeq: 1, endSeq: 74, recoverable: false },
-        { startSeq: 78, endSeq: 100, recoverable: false },
-      ],
-      scannedThrough: 71, hasMore: true,
-    } }));
+    const fetch = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            stream = controller;
+          },
+        }),
+      ),
+    );
+    queryMessageHistoryPageSpy.mockReturnValue(
+      of({
+        code: 0,
+        data: {
+          messages: [msg(42, 76)],
+          gaps: [
+            { startSeq: 1, endSeq: 74, recoverable: false },
+            { startSeq: 78, endSeq: 100, recoverable: false },
+          ],
+          scannedThrough: 71,
+          hasMore: true,
+        },
+      }),
+    );
     const pages: Array<{ left: number; right: number }> = [];
-    const subscription = repo.watchHistoryInterval(42, 20, 80).subscribe((page) => pages.push(page));
+    const subscription = repo
+      .watchHistoryInterval(42, 20, 80)
+      .subscribe((page) => pages.push(page));
     try {
-      stream.enqueue(new TextEncoder().encode('event: MESSAGE_HISTORY_INTERVAL\ndata: {"threadId":42,"left":20,"right":80}\n\n'));
+      stream.enqueue(
+        new TextEncoder().encode(
+          'event: MESSAGE_HISTORY_INTERVAL\ndata: {"threadId":42,"left":20,"right":80}\n\n',
+        ),
+      );
       await vi.waitFor(() => expect(pages).toHaveLength(1));
-      expect(pages[0]).toMatchObject({ left: 70, right: 80, items: [
-        { kind: 'serverGap', left: 70, right: 74, state: 'SERVER_UNAVAILABLE' },
-        { kind: 'message', message: { seq: 76 } },
-        { kind: 'serverGap', left: 77, right: 80, state: 'SERVER_UNAVAILABLE' },
-      ] });
+      expect(pages[0]).toMatchObject({
+        left: 70,
+        right: 80,
+        items: [
+          {
+            kind: 'serverGap',
+            left: 70,
+            right: 74,
+            state: 'SERVER_UNAVAILABLE',
+          },
+          { kind: 'message', message: { seq: 76 } },
+          {
+            kind: 'serverGap',
+            left: 77,
+            right: 80,
+            state: 'SERVER_UNAVAILABLE',
+          },
+        ],
+      });
       expect((await webdb.getMessage(42, 10))?.content).toBe('outside-left');
       expect((await webdb.getMessage(42, 90))?.content).toBe('outside-right');
       expect(await webdb.getMessageRanges(42)).toEqual([
@@ -170,7 +206,10 @@ describe('MessageRepository', () => {
         { threadId: 42, left: 80, right: 100, state: 'LOCAL_COVERED' },
       ]);
       expect(queryMessageHistoryPageSpy).toHaveBeenCalledExactlyOnceWith({
-        threadId: 42, before: 81, through: 21, take: 50,
+        threadId: 42,
+        before: 81,
+        through: 21,
+        take: 50,
       });
     } finally {
       subscription.unsubscribe();
@@ -399,15 +438,24 @@ describe('MessageRepository', () => {
   });
 
   it('localAround stops at unknown coverage on both edges instead of joining cached islands', async () => {
-    for (const [left, right] of [[0, 10], [90, 110], [190, 200]]) {
+    for (const [left, right] of [
+      [0, 10],
+      [90, 110],
+      [190, 200],
+    ]) {
       await webdb.commitBrowserMessagePage({
-        threadId: 42, scan: { left, right },
-        messages: [left + 1, right].map(seq => msg(42, seq)),
-        gaps: [], knownNewestSeq: 250,
+        threadId: 42,
+        scan: { left, right },
+        messages: [left + 1, right].map((seq) => msg(42, seq)),
+        gaps: [],
+        knownNewestSeq: 250,
       });
     }
     const result = await repo.queryBrowserMessageHistory(42, {
-      kind: 'localAround', anchor: 100, olderCount: 50, newerCount: 50,
+      kind: 'localAround',
+      anchor: 100,
+      olderCount: 50,
+      newerCount: 50,
     });
     expect(result.items).toEqual([
       { kind: 'message', message: msg(42, 91) },
@@ -419,64 +467,115 @@ describe('MessageRepository', () => {
 
   it('localAround at zero does not skip unknown beginning coverage to a later cached row', async () => {
     await webdb.commitBrowserMessagePage({
-      threadId: 42, scan: { left: 249, right: 250 },
-      messages: [msg(42, 250)], gaps: [], knownNewestSeq: 250,
+      threadId: 42,
+      scan: { left: 249, right: 250 },
+      messages: [msg(42, 250)],
+      gaps: [],
+      knownNewestSeq: 250,
     });
     const result = await repo.queryBrowserMessageHistory(42, {
-      kind: 'localAround', anchor: 0, olderCount: 0, newerCount: 50,
+      kind: 'localAround',
+      anchor: 0,
+      olderCount: 0,
+      newerCount: 50,
     });
-    expect(result).toEqual({ items: [], hasOlder: false, hasNewer: true, failed: false });
+    expect(result).toEqual({
+      items: [],
+      hasOlder: false,
+      hasNewer: true,
+      failed: false,
+    });
     expect(queryMessageHistoryPageSpy).not.toHaveBeenCalled();
   });
 
   it('localAround projects a known server gap once across the anchor without filling it', async () => {
     // Supply source range facts without writing a gap message to the cache.
-    const ranges = vi.spyOn(webdb, 'getMessageRanges').mockResolvedValue([
-      { threadId: 42, left: 90, right: 110, state: 'SERVER_PENDING' },
-    ]);
+    const ranges = vi
+      .spyOn(webdb, 'getMessageRanges')
+      .mockResolvedValue([
+        { threadId: 42, left: 90, right: 110, state: 'SERVER_PENDING' },
+      ]);
     try {
       const result = await repo.queryBrowserMessageHistory(42, {
-        kind: 'localAround', anchor: 100, olderCount: 50, newerCount: 50,
+        kind: 'localAround',
+        anchor: 100,
+        olderCount: 50,
+        newerCount: 50,
       });
       expect(result.items).toEqual([
         { kind: 'serverGap', left: 90, right: 110, state: 'SERVER_PENDING' },
       ]);
       expect(result.hasOlder && result.hasNewer).toBe(true);
       expect(queryMessageHistoryPageSpy).not.toHaveBeenCalled();
-    } finally { ranges.mockRestore(); }
+    } finally {
+      ranges.mockRestore();
+    }
   });
 
   it('localAround empty cache does not claim exhaustion or perform HTTP', async () => {
     const result = await repo.queryBrowserMessageHistory(42, {
-      kind: 'localAround', anchor: 100, olderCount: 50, newerCount: 50,
+      kind: 'localAround',
+      anchor: 100,
+      olderCount: 50,
+      newerCount: 50,
     });
-    expect(result).toEqual({ items: [], hasOlder: true, hasNewer: true, failed: false });
+    expect(result).toEqual({
+      items: [],
+      hasOlder: true,
+      hasNewer: true,
+      failed: false,
+    });
     expect(queryMessageHistoryPageSpy).not.toHaveBeenCalled();
   });
 
-  it.each([-1, Number.MAX_SAFE_INTEGER, Number.NaN])('localAround rejects invalid anchor %s before reading', async (anchor) => {
-    await expect(repo.queryBrowserMessageHistory(42, {
-      kind: 'localAround', anchor, olderCount: 50, newerCount: 50,
-    })).resolves.toEqual({ items: [], hasOlder: true, hasNewer: true, failed: true });
-    expect(queryMessageHistoryPageSpy).not.toHaveBeenCalled();
-  });
+  it.each([-1, Number.MAX_SAFE_INTEGER, Number.NaN])(
+    'localAround rejects invalid anchor %s before reading',
+    async (anchor) => {
+      await expect(
+        repo.queryBrowserMessageHistory(42, {
+          kind: 'localAround',
+          anchor,
+          olderCount: 50,
+          newerCount: 50,
+        }),
+      ).resolves.toEqual({
+        items: [],
+        hasOlder: true,
+        hasNewer: true,
+        failed: true,
+      });
+      expect(queryMessageHistoryPageSpy).not.toHaveBeenCalled();
+    },
+  );
 
-  it.each([0, 100])('localAround includes R=%s and never reads the latest tail or HTTP', async (anchor) => {
-    await webdb.commitBrowserMessagePage({
-      threadId: 42,
-      scan: { left: 0, right: 200 },
-      messages: [1, 2, 99, 100, 101, 102, 180, 200].map(seq => msg(42, seq)),
-      gaps: [], knownNewestSeq: 250,
-    });
-    const result = await repo.queryBrowserMessageHistory(42, {
-      kind: 'localAround', anchor, olderCount: 2, newerCount: 2,
-    });
-    expect(result.items.map(item => item.kind === 'message' ? item.message.seq : null))
-      .toEqual(anchor === 0 ? [1, 2] : [99, 100, 101, 102]);
-    expect(result.hasOlder).toBe(anchor > 0);
-    expect(result.hasNewer).toBe(true);
-    expect(queryMessageHistoryPageSpy).not.toHaveBeenCalled();
-  });
+  it.each([0, 100])(
+    'localAround includes R=%s and never reads the latest tail or HTTP',
+    async (anchor) => {
+      await webdb.commitBrowserMessagePage({
+        threadId: 42,
+        scan: { left: 0, right: 200 },
+        messages: [1, 2, 99, 100, 101, 102, 180, 200].map((seq) =>
+          msg(42, seq),
+        ),
+        gaps: [],
+        knownNewestSeq: 250,
+      });
+      const result = await repo.queryBrowserMessageHistory(42, {
+        kind: 'localAround',
+        anchor,
+        olderCount: 2,
+        newerCount: 2,
+      });
+      expect(
+        result.items.map((item) =>
+          item.kind === 'message' ? item.message.seq : null,
+        ),
+      ).toEqual(anchor === 0 ? [1, 2] : [99, 100, 101, 102]);
+      expect(result.hasOlder).toBe(anchor > 0);
+      expect(result.hasNewer).toBe(true);
+      expect(queryMessageHistoryPageSpy).not.toHaveBeenCalled();
+    },
+  );
 
   it.each([false, true])(
     'localLatest returns immediately without HTTP (cached=%s)',
@@ -962,8 +1061,13 @@ describe('MessageRepository', () => {
     expect(await webdb.getDeletedHwm(42)).toBe(9);
     const db = await webdb.db();
     const raw = await db.get('messages', [42, 10]);
-    expect(raw?.isDeleted).toBe(true);
-    expect(raw?.contentType).not.toBe('TOMB');
+    expect(raw).toEqual({
+      threadId: 42,
+      seq: 10,
+      contentType: 'TOMB',
+      isDeleted: true,
+      deletionType: 'USER_RETRACTION',
+    });
   });
 
   it('turns an existing cached message into a tombstone atomically with its HWM', async () => {
@@ -988,10 +1092,63 @@ describe('MessageRepository', () => {
     expect(await webdb.getDeletedHwm(42)).toBe(12);
     const db = await webdb.db();
     const raw = await db.get('messages', [42, 10]);
-    expect(raw?.isDeleted).toBe(true);
-    expect(raw?.contentType).not.toBe('TOMB');
+    expect(raw).toEqual({
+      threadId: 42,
+      seq: 10,
+      contentType: 'TOMB',
+      isDeleted: true,
+      deletionType: 'MODERATION_REMOVAL',
+    });
     expect(await webdb.getMessageDeletions(42, [10])).toEqual([
       { seq: 10, type: 'MODERATION_REMOVAL' },
     ]);
+  });
+
+  it('projectBrowserLocalInterval projects disconnected cached islands and server gaps without HTTP', async () => {
+    await webdb.commitBrowserMessagePage({
+      threadId: 42,
+      scan: { left: 10, right: 30 },
+      messages: [msg(42, 15), msg(42, 25)],
+      gaps: [],
+    });
+    await webdb.commitBrowserMessagePage({
+      threadId: 42,
+      scan: { left: 40, right: 60 },
+      messages: [],
+      gaps: [{ left: 40, right: 60, state: 'SERVER_PENDING' }],
+    });
+
+    const items = await repo.projectBrowserLocalInterval(42, 0, 70);
+    expect(items).toEqual([
+      { kind: 'localGap', left: 0, right: 10 },
+      { kind: 'message', message: msg(42, 15) },
+      { kind: 'message', message: msg(42, 25) },
+      { kind: 'localGap', left: 30, right: 40 },
+      { kind: 'serverGap', left: 40, right: 60, state: 'SERVER_PENDING' },
+      { kind: 'localGap', left: 60, right: 70 },
+    ]);
+    expect(queryMessageHistoryPageSpy).not.toHaveBeenCalled();
+  });
+
+  it('evaluateBrowserEntrySeam checks R and R+1 locally without HTTP', async () => {
+    await webdb.commitBrowserMessagePage({
+      threadId: 42,
+      scan: { left: 95, right: 105 },
+      messages: [msg(42, 100), msg(42, 101)],
+      gaps: [],
+    });
+    expect(await repo.evaluateBrowserEntrySeam(42, 100, 250)).toEqual({
+      ready: true,
+      empty: false,
+      olderReady: true,
+      newerReady: true,
+    });
+    expect(await repo.evaluateBrowserEntrySeam(42, 105, 250)).toEqual({
+      ready: false,
+      empty: false,
+      olderReady: true,
+      newerReady: false,
+    });
+    expect(queryMessageHistoryPageSpy).not.toHaveBeenCalled();
   });
 });

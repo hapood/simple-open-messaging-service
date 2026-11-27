@@ -32,8 +32,8 @@ afterEach(async () => {
   for (const item of owned.splice(0)) await item.closeAndDelete('1');
 });
 
-describe('UUID-bound browser cache', () => {
-  it('uses one UUID account database and deletes it at logout', async () => {
+describe('session-bound browser cache', () => {
+  it('uses one fixed account database and deletes it at logout', async () => {
     const cache = storage();
     const descriptor = createSessionCacheDescriptor();
     cache.bindSessionCache(descriptor);
@@ -45,7 +45,7 @@ describe('UUID-bound browser cache', () => {
     expect(remaining).not.toContain(descriptor.indexedDbName);
   });
 
-  it('initializes UUID tables before HELLO without publishing a user handle', async () => {
+  it('initializes the cache tables before HELLO without publishing a user handle', async () => {
     const cache = storage();
     const descriptor = createSessionCacheDescriptor();
     cache.bindSessionCache(descriptor);
@@ -57,7 +57,7 @@ describe('UUID-bound browser cache', () => {
     expect(cache.ready()).toBe(true);
   });
 
-  it('retains the same cache on restoration and isolates a fresh same-user login', async () => {
+  it('retains the same cache on restoration and gives the next login the same fixed name', async () => {
     const descriptor = createSessionCacheDescriptor();
     const original = storage();
     original.bindSessionCache(descriptor);
@@ -69,10 +69,15 @@ describe('UUID-bound browser cache', () => {
     restored.bindSessionCache(descriptor);
     await restored.openExistingForUser('1');
     expect(await readProbe(restored)).toBe('old-session');
-    await restored.close();
+    // One cache name serves every login, so the ended login's data must be deleted
+    // before the next login reuses the name.
+    await restored.closeAndDelete('1');
 
     const successor = storage();
-    successor.bindSessionCache(createSessionCacheDescriptor());
+    const next = createSessionCacheDescriptor();
+    expect(next.id).not.toBe(descriptor.id);
+    expect(next.indexedDbName).toBe(descriptor.indexedDbName);
+    successor.bindSessionCache(next);
     await successor.openForUser('1');
     expect(await readProbe(successor)).toBeUndefined();
   });
@@ -107,7 +112,7 @@ describe('UUID-bound browser cache', () => {
     expect(await readProbe(cache)).toBe('original-user');
   });
 
-  it('rebuilds the bound UUID partition without falling back to user-named databases', async () => {
+  it('rebuilds the bound session cache without falling back to user-named databases', async () => {
     const cache = storage();
     const descriptor = createSessionCacheDescriptor();
     cache.bindSessionCache(descriptor);

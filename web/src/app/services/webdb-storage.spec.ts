@@ -3,7 +3,7 @@ import type { ProfileNamespacePairKey } from './webdb-storage';
 import { WebdbService } from './webdb.service';
 import { SessionLifecycleService } from './session-lifecycle.service';
 import { syncThreadFeed } from './thread-feed-sync';
-import { threadFeedSnapshot, threadStructure } from './thread-feed.test-helper';
+import { threadFeedSnapshot } from './thread-feed.test-helper';
 import { prepareTestSessionCache as prepareSession } from './session/session-cache.test-helper';
 import type { SessionCacheDescriptor } from './session/session-identity';
 
@@ -23,35 +23,69 @@ describe('shared background storage', () => {
 
   it('rejects embedded file bytes before writing tasks, including gallery members', async () => {
     await storage.openForUser(userId);
-    const file = { partId: 'part', name: 'image.png', mimeType: 'image/png', path: 'image.png', size: 5, blob: new Blob(['image']) };
-    await expect(storage.enqueuePendingSend({ clientMessageId: 'file', threadId: 7,
-      item: { type: 'IMAGE', file },
-    })).rejects.toThrow('pending send requires attachment paths, not file bytes');
-    await expect(storage.enqueuePendingSend({ clientMessageId: 'gallery', threadId: 7,
-      item: { type: 'GALLERY', files: [{ ...file, intent: 'IMAGE' }] },
-    })).rejects.toThrow('pending send requires attachment paths, not file bytes');
+    const file = {
+      partId: 'part',
+      name: 'image.png',
+      mimeType: 'image/png',
+      path: 'image.png',
+      size: 5,
+      blob: new Blob(['image']),
+    };
+    await expect(
+      storage.enqueuePendingSend({
+        clientMessageId: 'file',
+        threadId: 7,
+        item: { type: 'IMAGE', file },
+      }),
+    ).rejects.toThrow('pending send requires attachment paths, not file bytes');
+    await expect(
+      storage.enqueuePendingSend({
+        clientMessageId: 'gallery',
+        threadId: 7,
+        item: { type: 'GALLERY', files: [{ ...file, intent: 'IMAGE' }] },
+      }),
+    ).rejects.toThrow('pending send requires attachment paths, not file bytes');
     expect(await storage.pendingSends()).toEqual([]);
   });
 
   it('clears pending sends during full account cache recreation', async () => {
     await storage.openForUser(userId);
-    await storage.enqueuePendingSend({ clientMessageId: 'discard-on-reset', threadId: 7, item: { type: 'PURE_TEXT', content: 'hello' } });
+    await storage.enqueuePendingSend({
+      clientMessageId: 'discard-on-reset',
+      threadId: 7,
+      item: { type: 'PURE_TEXT', content: 'hello' },
+    });
     await storage.recreateForUser(userId);
     expect(await storage.pendingSends()).toEqual([]);
   });
 
   it('clears pending path metadata through the database manager', async () => {
     await storage.openForUser(userId);
-    await storage.enqueuePendingSend({ clientMessageId: 'audio', threadId: 7, item: {
-      type: 'AUDIO', file: { partId: 'part', path: 'voice', size: 5, name: 'voice.webm', mimeType: 'audio/webm' },
-    } });
+    await storage.enqueuePendingSend({
+      clientMessageId: 'audio',
+      threadId: 7,
+      item: {
+        type: 'AUDIO',
+        file: {
+          partId: 'part',
+          path: 'voice',
+          size: 5,
+          name: 'voice.webm',
+          mimeType: 'audio/webm',
+        },
+      },
+    });
     await storage.clearPendingSends();
     expect(await storage.pendingSends()).toEqual([]);
   });
 
   it('preserves pending sends through message eviction and close, but deletes them with account data', async () => {
     await storage.openForUser(userId);
-    const task = { clientMessageId: 'persisted', threadId: 7, item: { type: 'PURE_TEXT' as const, content: 'hello' } };
+    const task = {
+      clientMessageId: 'persisted',
+      threadId: 7,
+      item: { type: 'PURE_TEXT' as const, content: 'hello' },
+    };
     await storage.enqueuePendingSend(task);
     expect(await storage.pendingSend(task.clientMessageId)).toEqual(task);
     expect(await storage.pendingSend('missing')).toBeNull();
@@ -76,6 +110,7 @@ describe('shared background storage', () => {
             publisherNamespaceId: 0,
             profileRev: 0,
             messageEndSeq: 2,
+            author: { account: 'peer', namespaceId: 0 },
             unreadCount: 2,
           }),
         ],
@@ -85,6 +120,7 @@ describe('shared background storage', () => {
         hasMore: false,
       },
     }));
+    expect(result.error).toBeUndefined();
     expect(result.cursor).toBe(1);
     expect(
       result.states[0].threadFeedId === null
@@ -97,7 +133,12 @@ describe('shared background storage', () => {
     try {
       await page.openExistingForUser(userId);
       expect((await page.readAccountState()).threadFeedCursor).toBe(1);
-      expect((await page.getThreadStates())[0]).toEqual(result.states[0]);
+      const { author, ...persistedState } = result.states[0];
+      expect(author).toEqual({ account: 'peer', namespaceId: 0 });
+      expect((await page.getThreadStates())[0]).toEqual(persistedState);
+      expect(await (await page.db()).get('threads', 7)).not.toHaveProperty(
+        'author',
+      );
     } finally {
       await page.close();
     }
@@ -122,7 +163,6 @@ describe('shared background storage', () => {
       profileRev: 3,
       threadFeedId: 1,
       messageEndSeq: 9,
-      tombstoneEndSeq: 2,
       lastReadSeq: 5,
       unreadCount: 2,
       previews: [
@@ -131,6 +171,16 @@ describe('shared background storage', () => {
         preview(8, 'LIVE'),
       ],
     });
+    await storage.applyStateFeedPage(
+      [
+        {
+          feedId: 1,
+          type: 'THREAD_TOMB_HEAD',
+          body: { threadId: 7, tombstoneEndSeq: 2 },
+        },
+      ],
+      1,
+    );
     const delivered = await storage.mergeThreadStates([first], 1);
     expect(delivered[0].previews).toHaveLength(3);
     const db = await storage.db();
@@ -158,9 +208,12 @@ describe('shared background storage', () => {
     expect((await storage.getThreadStates())[0]).toMatchObject({
       localReadSeq: 8,
       lastReadSeq: 5,
-      tombstoneEndSeq: 2,
       previews: [{ seq: 9, status: 'USER_RETRACTION' }],
     });
+    expect(await db.get('threadResourceSync', 7)).toMatchObject({
+      tombstoneEndSeq: 2,
+    });
+    expect(await storage.getDeletedHwm(7)).toBe(0);
     await storage.mergeThreadStates(
       [{ ...first, threadFeedId: 2, previews: [] }],
       2,
@@ -169,9 +222,12 @@ describe('shared background storage', () => {
     expect((await storage.getThreadStates())[0]).toMatchObject({
       localReadSeq: 8,
       lastReadSeq: 5,
-      tombstoneEndSeq: 2,
       previews: [],
     });
+    expect(await db.get('threadResourceSync', 7)).toMatchObject({
+      tombstoneEndSeq: 2,
+    });
+    expect(await storage.getDeletedHwm(7)).toBe(0);
   });
 
   it('joins preview display fields on reads without duplicating them in thread projections', async () => {
@@ -257,29 +313,6 @@ describe('shared background storage', () => {
     expect(await (await storage.db()).get('threads', 7)).toBeUndefined();
   });
 
-  it('selects unresolved group profiles from the thread state alone', async () => {
-    await storage.openForUser(userId);
-    await storage.mergeThreadStates([
-      threadFeedSnapshot(9, {
-        type: 'GROUP',
-        role: 'MEMBER',
-        threadFeedId: 1,
-        profileAccount: '!team',
-        publisherNamespaceId: 0,
-        profileRev: 4,
-      }),
-    ]);
-    const db = await storage.db();
-    expect(await db.get('threads', 9)).not.toHaveProperty('threadProfileRev');
-    expect(await storage.getUnresolvedGroupMetaProfiles()).toContainEqual({
-      type: 'GROUP',
-      threadId: 9,
-      account: '!team',
-      namespaceId: 0,
-      rev: 4,
-    });
-  });
-
   it('keeps the selected avatar revision only in the unified thread row', async () => {
     await storage.openForUser(userId);
     const db = await storage.db();
@@ -357,7 +390,7 @@ describe('shared background storage', () => {
     expect((await storage.readAccountState()).threadFeedCursor).toBe(1);
   });
 
-  it('deletes the unified state and its preview and roster together', async () => {
+  it('deletes the unified state and its preview and group metadata together', async () => {
     await storage.openForUser(userId);
     await storage.mergeThreadStates(
       [
@@ -386,18 +419,10 @@ describe('shared background storage', () => {
       1,
     );
     const db = await storage.db();
-    await db.put('members', {
-      threadId: 7,
-      account: 'peer',
-      namespaceId: 0,
-      profileRev: 1,
-      role: 'MEMBER',
-      left: false,
-    });
     await storage.deleteThread(7);
     expect(await db.get('threads', 7)).toBeUndefined();
     expect(await db.get('threadPreviews', 7)).toBeUndefined();
-    expect(await db.getAllFromIndex('members', 'thread', 7)).toEqual([]);
+    expect(await db.get('groupMeta', 7)).toBeUndefined();
     expect(await storage.getThreadStates()).toEqual([]);
   });
 
@@ -462,28 +487,12 @@ describe('shared background storage', () => {
 
   it('preserves feed aliases across local patches, stale replay and reopening', async () => {
     await storage.openForUser(userId);
-    const state = {
-      ...threadStructure(7, {
-        profileAccount: 'peer',
-        publisherNamespaceId: 0,
-        profileRev: 0,
-      }),
-      threadId: 7,
-      threadFeedId: 1,
-      threadProfileRev: 0,
+    const state = threadFeedSnapshot(7, {
+      profileAccount: 'peer',
+      publisherNamespaceId: 0,
+      profileRev: 0,
       alias: 'Private',
-      messageEndSeq: 0,
-      tombstoneEndSeq: 0,
-      groupMetaFeedEndId: null,
-      joinRequestEndFeedId: 0,
-      joinRequestReadFeedId: -1,
-      groupInviteEndFeedId: 0,
-      announcementReadFeedId: 0,
-      lastReadSeq: 0,
-      unreadCount: 0,
-      lastMentionSeq: null,
-      previews: [],
-    };
+    });
     await storage.mergeThreadStates([state], 1);
     await storage.patchThread(7, { muted: true });
     expect((await storage.getThreads())[0].alias).toBe('Private');

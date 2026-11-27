@@ -30,7 +30,7 @@ describe('native history interval IPC', () => {
 
   it('only forwards Rust pages and mount coordinates; no renderer HTTP or retry machine', async () => {
     const next = vi.fn();
-    const subscription = nativeHistoryInterval(1, 42, 20, 80).subscribe(next);
+    const subscription = nativeHistoryInterval(1, 42, 20, 80, 'newer').subscribe(next);
     expect(invoke).toHaveBeenCalledWith(
       'native_message_history_interval_start',
       expect.objectContaining({
@@ -38,6 +38,7 @@ describe('native history interval IPC', () => {
         threadId: 42,
         left: 20,
         right: 80,
+        direction: 'newer',
       }),
     );
     const page = { left: 70, right: 80, items: [] };
@@ -55,7 +56,7 @@ describe('native history interval IPC', () => {
 
   it('cancels a late registration after unmount and ignores late pages', async () => {
     const next = vi.fn();
-    const subscription = nativeHistoryInterval(1, 42, 20, 80).subscribe(next);
+    const subscription = nativeHistoryInterval(1, 42, 20, 80, 'older').subscribe(next);
     subscription.unsubscribe();
     emit({ state: 'page', page: { left: 70, right: 80, items: [] } });
     registered('late');
@@ -67,7 +68,7 @@ describe('native history interval IPC', () => {
   });
 
   it('pagehide cancels mounted native ownership', async () => {
-    const subscription = nativeHistoryInterval(1, 42, 20, 80).subscribe();
+    const subscription = nativeHistoryInterval(1, 42, 20, 80, 'older').subscribe();
     registered('hidden');
     await Promise.resolve();
     window.dispatchEvent(new Event('pagehide'));

@@ -46,7 +46,7 @@ export class AttachmentUploadQueueService {
     this.writeRevision++;
     const normalized = this.normalize(value);
     this._maxConcurrent.set(normalized);
-    void this.preferences.set('device', STORAGE_KEY, normalized).catch(() => {});
+    void this.preferences.set(STORAGE_KEY, normalized).catch(() => {});
     this.pump();
   }
 
@@ -72,7 +72,7 @@ export class AttachmentUploadQueueService {
 
   private async restore(): Promise<void> {
     const revision = this.writeRevision;
-    const value = await this.preferences.get<number>('device', STORAGE_KEY);
+    const value = await this.preferences.get<number>(STORAGE_KEY);
     if (revision !== this.writeRevision) return;
     if (typeof value === 'number') this._maxConcurrent.set(this.normalize(value));
   }

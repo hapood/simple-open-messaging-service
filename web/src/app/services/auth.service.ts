@@ -217,8 +217,6 @@ export class AuthService {
     );
     this.lifecycle.assertCurrent(work);
     this.nativeLoginUuid = id;
-    await this.userService.clearSessionPreferences();
-    this.lifecycle.assertCurrent(work);
     return Object.freeze({ host: 'native', id, work });
   }
 
@@ -398,11 +396,8 @@ export class AuthService {
     void this.webPush.onLogin();
   }
 
-  /** Drop the session and route to login. The kick `reason` (e.g. 'device_revoke', 'all_devices') is
-   *  accepted for call-site compatibility with the realtime transport's FORCE_LOGOUT handler but no longer
-   *  maps to a tailored login notice (the one-app-session 'app_session_replaced' notice was removed when
-   *  multiple trusted devices became allowed); the login page itself signals the session ended. */
-  redoLoginAuth(_reason?: string) {
+  /** Drop the session and route to login; the login page signals that the session ended. */
+  redoLoginAuth() {
     this.announceSessionEnding();
     if (!isTauri()) {
       void this.endBrowserSession().catch((error) =>
@@ -482,9 +477,8 @@ export class AuthService {
 
     if (isTauri() && !this.lifecycle.isCurrent(work)) return;
 
-    // Open the per-user IDB on the persisted lastUserId FIRST (awaited) so the threadlist can eager-paint
-    // the cached list before the SSE/HELLO round-trip — the DB is open before the router resolves, so the
-    // list reads it on mount. No-op on a first-ever launch (no userId persisted yet).
+    // Restore the durably active browser UUID and its fixed cache before routing.
+    // The presence cookie alone never authorizes adoption of residual local data.
     if (!isTauri()) {
       const browser = this.requireBrowserSession();
       const hint = this.sessionState.hasBrowserSessionHint();
@@ -503,7 +497,12 @@ export class AuthService {
     if (isAndroidNative()) {
       try {
         const t = window.SomsFcm!.getSessionToken(); // synchronous JNI
-        if (t) await this.restoreNativeSession(t, work);
+        const sessionUuid = window.SomsFcm!.getLoginSessionId();
+        if (t && sessionUuid) {
+          await this.restoreNativeSession({ token: t, sessionUuid }, work);
+        } else if (t) {
+          await this.discardResidualNativeToken();
+        }
       } catch {
         // SomsFcm bridge missing (shell wiring bug / renderer reclaimed before the @JavascriptInterface
         // registered). Stay logged out + canTrust false rather than reject the APP_INITIALIZER — a rejection
@@ -511,8 +510,11 @@ export class AuthService {
       }
     } else if (isTauri()) {
       try {
-        const t = await tauriInvoke<string | null>('secure_get_token');
-        if (t) await this.restoreNativeSession(t, work);
+        const login = await tauriInvoke<{
+          token: string;
+          sessionUuid: string;
+        } | null>('secure_get_login');
+        if (login) await this.restoreNativeSession(login, work);
       } catch {
         // Keyring unavailable (e.g. headless Linux without Secret Service): this desktop CANNOT be
         // trusted → the trust toggle stays hidden, so the user can't request a permanent token the client
@@ -527,12 +529,13 @@ export class AuthService {
    *  damaged cache is rebuildable state, not an authentication failure: recreate the current schema and
    *  keep the restored token. */
   private async restoreNativeSession(
-    token: string,
+    credential: { token: string; sessionUuid: string },
     work: SessionWorkScope,
   ): Promise<void> {
     this.lifecycle.assertCurrent(work);
     const uuid = await tauriInvoke<string | null>('login_session_for_token', {
-      token,
+      token: credential.token,
+      sessionUuid: credential.sessionUuid,
     });
     this.lifecycle.assertCurrent(work);
     if (!uuid) {
@@ -550,7 +553,7 @@ export class AuthService {
     this.lifecycle.assertCurrent(work);
     // Rust must admit the recovered owner before account-cache reads. The renderer remains
     // unauthenticated until those reads finish, and carries the admitted scope across them.
-    const admitted = await this.setSessionToken(token, {
+    const admitted = await this.setSessionToken(credential.token, {
       host: 'native',
       id,
       work,
@@ -641,20 +644,19 @@ export class AuthService {
     const browser = this.requireBrowserSession();
     this.clearLocalSessionState();
     this.clearPresenceCookie();
-    await this.sendOutbox.clear();
-    const ending = browser.end();
-    await Promise.all([
-      ending,
-      this.webPush.unsubscribe().catch((error) => {
+    // Browser ownership cancels work and deletes the entire pending-send cache.
+    // Row clearing here races lifecycle invalidation and is redundant with deletion.
+    await browser.end(async () => {
+      await this.webPush.unsubscribe().catch((error) => {
         console.warn('[push] logout unsubscribe failed', error);
         this.toast.warn(this.t('auth.notice.pushUnsubscribeFailed'), {
           duration: IMPORTANT_NOTICE_MS,
         });
-      }),
-      clearSessionNotifications().catch((error) =>
+      });
+      await clearSessionNotifications().catch((error) =>
         console.warn('[notification] logout cleanup failed', error),
-      ),
-    ]);
+      );
+    });
   }
 
   private browserLogout: Promise<void> | null = null;
@@ -672,7 +674,6 @@ export class AuthService {
   }
 
   private async performBrowserLogout(): Promise<void> {
-    const cleanup = this.sendOutbox.clear();
     const completion = await this.requireBrowserSession().logoutWithDecision(
       (signal) => sessionRequest(
         this.http.post<LogoutRes>(`${apiPrefix()}/auth/logout`, {}, {
@@ -683,7 +684,6 @@ export class AuthService {
       ).then(() => undefined),
       (outcome) => this.logoutDecision.decide(outcome),
       async () => {
-        await cleanup;
         await this.webPush.unsubscribe().catch((error) => {
           console.warn('[push] logout unsubscribe failed', error);
           this.toast.warn(this.t('auth.notice.pushUnsubscribeFailed'), { duration: IMPORTANT_NOTICE_MS });

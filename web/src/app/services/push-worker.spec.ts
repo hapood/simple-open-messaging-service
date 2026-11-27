@@ -8,7 +8,8 @@ import {
 } from './push-thread-sync';
 import { SOMS_NOTIF_MSG } from './sw-notif-protocol';
 import { ACTIVE_PAGE_LOCK } from './active-page';
-import { SessionStore, SESSION_STORE_KEY } from './session/session-store';
+import { SessionStore } from './session/session-store';
+import { resetTestAppState } from './session/session-store.test-helper';
 import { createSessionCacheDescriptor } from './session/session-identity';
 import { threadStructure } from './thread-feed.test-helper';
 import {
@@ -34,10 +35,11 @@ describe('Push Service Worker entry', () => {
   beforeEach(async () => {
     await resetNotificationSince();
     storage = new WebdbStorage(() => null, new SessionLifecycleService());
-    await preferences.remove('device', SESSION_STORE_KEY);
+    await resetTestAppState();
     const cache = createSessionCacheDescriptor();
-    const sessionStore = new SessionStore(preferences);
-    await sessionStore.prepare(cache);
+    const sessionStore = new SessionStore();
+    await sessionStore.initialize();
+    await sessionStore.configure({ primary: location.origin });
     await sessionStore.activate(cache.id);
     await sessionStore.bindIdentity(cache.id, {
       userId,
@@ -45,8 +47,8 @@ describe('Push Service Worker entry', () => {
     });
     storage.bindSessionCache(cache);
     await storage.openForUser(String(userId));
-    await preferences.set('device', 'soms.lastUserId', userId);
-    await preferences.set('device', 'push-registration:/api/v1', {
+    await preferences.set('soms.lastUserId', userId);
+    await preferences.set('push-registration:/api/v1', {
       sessionId,
       phase: 'prepared',
     });
@@ -71,6 +73,7 @@ describe('Push Service Worker entry', () => {
                 }),
                 threadFeedId: 1,
                 messageEndSeq: 1,
+                author: { account: 'peer', namespaceId: 1 },
                 tombstoneEndSeq: 0,
                 alias: 'peer@test',
                 profileRev: 1,
@@ -142,8 +145,8 @@ describe('Push Service Worker entry', () => {
   afterEach(async () => {
     vi.restoreAllMocks();
     await storage.closeAndDelete(String(userId));
-    await preferences.remove('device', 'soms.lastUserId');
-    await preferences.remove('device', SESSION_STORE_KEY);
+    await preferences.remove('soms.lastUserId');
+    await resetTestAppState();
   });
   async function dispatch(type: string, payload: Record<string, unknown>) {
     let pending: Promise<unknown> | undefined;
@@ -161,6 +164,7 @@ describe('Push Service Worker entry', () => {
       [
         {
           feedId: 1,
+          type: 'REQUEST_HEAD',
           body: {
             requestEndId: '90071992547409930',
             requestReadId: '90071992547409930',
@@ -183,6 +187,7 @@ describe('Push Service Worker entry', () => {
               items: [
                 {
                   feedId: 2,
+                  type: 'REQUEST_HEAD',
                   body: {
                     requestEndId: '90071992547409931',
                     requestReadId: '90071992547409930',
@@ -237,7 +242,13 @@ describe('Push Service Worker entry', () => {
 
   it('removes a personal card from the durable optimistic-read event', async () => {
     await storage.applyStateFeedPage(
-      [{ feedId: 1, body: { requestEndId: '8', requestReadId: '0' } }],
+      [
+        {
+          feedId: 1,
+          type: 'REQUEST_HEAD',
+          body: { requestEndId: '8', requestReadId: '0' },
+        },
+      ],
       1,
     );
     const close = vi.fn();
@@ -269,6 +280,7 @@ describe('Push Service Worker entry', () => {
       type: 'GROUP',
       role: 'ADMIN',
       messageEndSeq: 0,
+      author: undefined,
       unreadCount: 0,
       previews: [],
       joinRequestEndFeedId: 1,
@@ -371,7 +383,13 @@ describe('Push Service Worker entry', () => {
 
   it('lets a completed state stream remove a card while thread reconstruction is pending', async () => {
     await storage.applyStateFeedPage(
-      [{ feedId: 1, body: { requestEndId: '8', requestReadId: '0' } }],
+      [
+        {
+          feedId: 1,
+          type: 'REQUEST_HEAD',
+          body: { requestEndId: '8', requestReadId: '0' },
+        },
+      ],
       1,
     );
     const close = vi.fn();
@@ -401,7 +419,13 @@ describe('Push Service Worker entry', () => {
     });
     expect(show).toHaveBeenCalledOnce();
     await storage.applyStateFeedPage(
-      [{ feedId: 2, body: { requestEndId: '8', requestReadId: '8' } }],
+      [
+        {
+          feedId: 2,
+          type: 'REQUEST_HEAD',
+          body: { requestEndId: '8', requestReadId: '8' },
+        },
+      ],
       2,
     );
     await dispatch('message', {
@@ -453,8 +477,8 @@ describe('Push Service Worker entry', () => {
   });
 
   it('uses the login store rather than last-user and subscription identity copies', async () => {
-    await preferences.set('device', 'soms.lastUserId', 123456);
-    await preferences.remove('device', 'push-registration:/api/v1');
+    await preferences.set('soms.lastUserId', 123456);
+    await preferences.remove('push-registration:/api/v1');
     await dispatch('push', {
       data: { json: () => ({ type: 'NEW_MESSAGE', threadFeedEndId: '1' }) },
     });
@@ -470,26 +494,23 @@ describe('Push Service Worker entry', () => {
     );
   });
 
-  it('ignores background push while revocation awaits a user decision', async () => {
-    const sessionStore = new SessionStore(preferences);
+  it('ignores background push once cleanup is durably committed', async () => {
+    const sessionStore = new SessionStore();
     const saved = await sessionStore.read();
-    await sessionStore.beginRevocation(saved!.session!.id);
+    await sessionStore.beginCleaning(saved.session!.id);
     await dispatch('push', {
       data: { json: () => ({ type: 'NEW_MESSAGE', threadFeedEndId: '1' }) },
     });
     expect(show).not.toHaveBeenCalled();
     expect(fetchSpy).not.toHaveBeenCalled();
-    expect((await sessionStore.read())?.identity).toEqual({
-      userId,
-      serverSessionId: sessionId,
-    });
+    expect((await sessionStore.read()).identity).toBeNull();
   });
 
   it('ignores push work after logout while leaving the old cache on disk', async () => {
-    const sessionStore = new SessionStore(preferences);
+    const sessionStore = new SessionStore();
     const saved = await sessionStore.read();
     const cache = saved!.session!;
-    await sessionStore.end(cache.id);
+    await sessionStore.beginCleaning(cache.id);
     await dispatch('push', {
       data: { json: () => ({ type: 'NEW_MESSAGE', threadFeedEndId: '1' }) },
     });
@@ -1271,6 +1292,7 @@ describe('Push Service Worker entry', () => {
       preferences,
       copy,
     );
+    expect(first.error).toBeUndefined();
     expect(first.notifications).toHaveLength(1);
     const noRequest = vi.fn(async () => {
       throw new Error('already synchronized');
@@ -1303,7 +1325,7 @@ describe('Push Service Worker entry', () => {
         [],
       ),
     ).toEqual([]);
-    await preferences.set('device', 'notificationEnabled', false);
+    await preferences.set('notificationEnabled', false);
     try {
       expect(
         await projectNotificationReconstruction(
@@ -1315,7 +1337,7 @@ describe('Push Service Worker entry', () => {
         ),
       ).toEqual([]);
     } finally {
-      await preferences.remove('device', 'notificationEnabled');
+      await preferences.remove('notificationEnabled');
     }
   });
 
@@ -1414,9 +1436,9 @@ describe('Push Service Worker entry', () => {
         notification: { data, close: vi.fn() },
       });
     }
-    const sessionStore = new SessionStore(preferences);
+    const sessionStore = new SessionStore();
     const saved = await sessionStore.read();
-    await sessionStore.end(saved!.session!.id);
+    await sessionStore.beginCleaning(saved!.session!.id);
     await dispatch('notificationclick', {
       notification: {
         data: {

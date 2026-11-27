@@ -22,18 +22,18 @@ export function parseLoginSessionId(value: unknown): LoginSessionId {
   return value as LoginSessionId;
 }
 
-function descriptorFor(id: LoginSessionId): SessionCacheDescriptor {
+export function sessionCacheDescriptor(id: LoginSessionId): SessionCacheDescriptor {
   return Object.freeze({
     version: 1,
     id,
-    indexedDbName: `soms-session-${id}`,
-    sqliteFileName: `soms-session-${id}.sqlite`,
+    indexedDbName: 'soms-session',
+    sqliteFileName: 'soms-session.sqlite',
   });
 }
 
 /** Fresh login only. Restoration must retain the persisted identity instead. */
 export function createSessionCacheDescriptor(): SessionCacheDescriptor {
-  return descriptorFor(parseLoginSessionId(crypto.randomUUID()));
+  return sessionCacheDescriptor(parseLoginSessionId(crypto.randomUUID()));
 }
 
 /**
@@ -51,7 +51,7 @@ export function restoreSessionCacheDescriptor(
   if (saved['version'] !== 1) {
     throw new Error('Unsupported session cache descriptor version');
   }
-  const descriptor = descriptorFor(parseLoginSessionId(saved['id']));
+  const descriptor = sessionCacheDescriptor(parseLoginSessionId(saved['id']));
   if (
     saved['indexedDbName'] !== descriptor.indexedDbName ||
     saved['sqliteFileName'] !== descriptor.sqliteFileName

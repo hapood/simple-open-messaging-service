@@ -90,7 +90,7 @@ export class ThemeService implements OnDestroy {
 
   setMode(m: ThemeMode): void {
     this.mode.set(m);
-    void this.preferences.set('global', THEME_KEY, m).catch(() => {});
+    void this.preferences.set(THEME_KEY, m).catch(() => {});
   }
 
   private readonly onSystemChange = (e: MediaQueryListEvent): void => {

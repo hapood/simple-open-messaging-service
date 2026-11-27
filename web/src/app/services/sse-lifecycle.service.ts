@@ -32,7 +32,7 @@ export class SseLifecycleService {
     // Install reactions before restoration or any effect can start receiving, including cached HELLO.
     this.ws.forcedLogout$
       .pipe(takeUntilDestroyed(this.destroyRef))
-      .subscribe((reason) => this.auth.redoLoginAuth(reason));
+      .subscribe(() => this.auth.redoLoginAuth());
     this.ws.eventSubject
       .pipe(takeUntilDestroyed(this.destroyRef))
       .subscribe((message) => {

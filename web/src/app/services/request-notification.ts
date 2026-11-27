@@ -36,9 +36,9 @@ export async function requestNotificationSettings(
   language: string,
 ) {
   const [enabled, sound, mode] = await Promise.all([
-    preferences.get<boolean>('device', 'notificationEnabled'),
-    preferences.get<boolean>('device', 'notificationSound'),
-    preferences.get<string>('device', 'notificationPreviewMode'),
+    preferences.get<boolean>('notificationEnabled'),
+    preferences.get<boolean>('notificationSound'),
+    preferences.get<string>('notificationPreviewMode'),
   ]);
   return {
     enabled: enabled !== false,

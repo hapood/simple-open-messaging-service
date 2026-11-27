@@ -81,7 +81,7 @@ describe('SseLifecycleService application orchestration', () => {
     expect(ws.disconnect).toHaveBeenCalledTimes(2);
   });
 
-  it('subscribes before restoration and forwards revocation reasons and HELLO to their owners', async () => {
+  it('subscribes before restoration and routes forced logout and HELLO to their owners', async () => {
     const session = createSessionCacheDescriptor();
     browserOwner.currentSession = session;
     TestBed.inject(SessionLifecycleService).bindSession(session.id);
@@ -92,7 +92,7 @@ describe('SseLifecycleService application orchestration', () => {
     await TestBed.inject(SseLifecycleService).restoreSession();
     expect(browserOwner.bindIdentity).toHaveBeenCalledWith({ userId: 42, serverSessionId: 11 });
     expect(onEvent).toHaveBeenCalledWith('HELLO', { userId: 42, sessionId: 11 });
-    expect(auth.redoLoginAuth).toHaveBeenCalledWith('device_revoke');
+    expect(auth.redoLoginAuth).toHaveBeenCalledExactlyOnceWith();
     TestBed.resetTestingModule();
     ws.forcedLogout$.next('late');
     ws.eventSubject.next({ event: 'HELLO' });

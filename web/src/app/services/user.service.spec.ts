@@ -11,13 +11,17 @@ import {
   HttpTestingController,
   provideHttpClientTesting,
 } from '@angular/common/http/testing';
-import { firstValueFrom, of } from 'rxjs';
+import { firstValueFrom, of, Subject } from 'rxjs';
 import { CACHE_REBUILD_RELOAD, UserService } from './user.service';
 import { REQUEST_SCOPE, RequestScope } from '../request-context';
 import { LocalCacheVersionMismatchError, WebdbService } from './webdb.service';
-import { ProfileRepository } from './profile-store.service';
+import {
+  ProfileRepository,
+  type ResolvedProfile,
+} from './profile-store.service';
 import { User } from './model';
-import { PreferenceStore } from './preference-store.service';
+import { AppStateStorage } from './preference-storage';
+import { ThreadSendOutbox } from './thread-send-outbox.service';
 import { SessionLifecycleService } from './session-lifecycle.service';
 
 /** Match the POST /user/my-profile request regardless of the runtime apiOrigin (empty same-origin in
@@ -177,6 +181,10 @@ describe('UserService profile refresh', () => {
         provideHttpClient(withXhr()),
         provideHttpClientTesting(),
         UserService,
+        {
+          provide: ThreadSendOutbox,
+          useValue: { restore: vi.fn().mockResolvedValue(undefined) },
+        },
         // The constructor effect touches WebdbService (open/close on id change) + ensureProfile writes the
         // self-profile through to BOTH ProfileRepository and WebdbService.putMeta('selfProfile') — all side
         // effects irrelevant to the refresh contract, so stub them. sessionProfile is the real signal under test.
@@ -412,25 +420,6 @@ describe('UserService profile refresh', () => {
     httpMock.expectNone(isMyProfile);
   });
 
-  // Regression guard for the account-switch bug: clearSession() (logout) must wipe the user-scoped
-  // account preferences (emoji recents — no server copy) so a second account on the
-  // same browser never sees the previous one's, while leaving device-level preferences (theme, language,
-  // list-width, device_id) intact. The DB-layer in-memory caches are reset by each repo's own
-  // session-end effect (watching sessionProfile) — covered in their specs.
-  it('clearSession() clears account preferences but keeps device preferences', async () => {
-    const preferences = TestBed.inject(PreferenceStore);
-    svc.sessionProfile.set(profile({ id: 1 }).data);
-    await preferences.set('account:1', 'soms.chat.emojiRecents', ['😀']);
-    await preferences.set('device', 'theme', 'dark');
-    await svc.clearSession();
-    expect(svc.sessionProfile()).toBeUndefined();
-    expect(
-      await preferences.get('account:1', 'soms.chat.emojiRecents'),
-    ).toBeUndefined();
-    expect(await preferences.get('device', 'theme')).toBe('dark');
-    await preferences.remove('device', 'theme');
-  });
-
   it('keeps the revoke route but sends only the P2P thread id', async () => {
     const result = firstValueFrom(svc.revokeRelationship({ threadId: 12 }));
     const request = httpMock.expectOne(
@@ -542,7 +531,7 @@ describe('UserService profile refresh', () => {
   });
 });
 
-describe('UserService session lifecycle (establishSession / restoreWebdb / clearSession)', () => {
+describe('UserService session lifecycle (establishSession / restoreWebdb / resetSessionState)', () => {
   let reload: Mock;
   let svc: UserService;
   let httpMock: HttpTestingController;
@@ -552,6 +541,8 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
     recreateForUser: Mock;
     closeAndDelete: Mock;
     readAccountState: Mock;
+    readCachedSelfProfile: Mock;
+    recreateSessionCache: Mock;
     writeSelfProfile: Mock;
     writeComposerDrafts: Mock;
     advanceIntentRequestRead: Mock;
@@ -559,7 +550,6 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
 
   function accountStateBase() {
     return {
-      schemaVersion: 1,
       selfProfile: null,
       selfIdentity: null,
       composerDrafts: [],
@@ -580,6 +570,10 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
         provideHttpClient(withXhr()),
         provideHttpClientTesting(),
         UserService,
+        {
+          provide: ThreadSendOutbox,
+          useValue: { restore: vi.fn().mockResolvedValue(undefined) },
+        },
         {
           provide: WebdbService,
           useValue: {
@@ -603,7 +597,6 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
               .fn()
               .mockName('readAccountState')
               .mockResolvedValue({
-                schemaVersion: 1,
                 selfProfile: {
                   id: 1,
                   profileRev: 0,
@@ -656,30 +649,23 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
     svc = TestBed.inject(UserService);
     httpMock = TestBed.inject(HttpTestingController);
     webdb = TestBed.inject(WebdbService) as unknown as typeof webdb;
-    await TestBed.inject(PreferenceStore).remove('device', 'soms.lastUserId');
-    await TestBed.inject(PreferenceStore).remove(
-      'account:1',
-      'soms.cacheRebuild',
+    webdb.readCachedSelfProfile = vi.fn(
+      async () => (await webdb.readAccountState()).selfProfile,
     );
-    await TestBed.inject(PreferenceStore).remove(
-      'account:7',
-      'soms.cacheRebuild',
-    );
+    webdb.recreateSessionCache = vi.fn().mockResolvedValue(undefined);
+    await new AppStateStorage().remove('cacheRebuild');
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     httpMock.verify();
-    void TestBed.inject(PreferenceStore).remove('device', 'soms.lastUserId');
+    await new AppStateStorage().remove('cacheRebuild');
   });
 
-  it('establishSession opens the per-user IDB on userId + sets sessionUserId + persists lastUserId', async () => {
+  it('establishSession binds the session cache to the HELLO user and session IDs', async () => {
     await svc.establishSession(1, 0, 11);
     expect(svc.sessionId()).toBe(11);
     expect(webdb.openExistingForUser).toHaveBeenCalledWith('1');
     expect(svc.sessionUserId()).toBe(1);
-    expect(
-      await TestBed.inject(PreferenceStore).get('device', 'soms.lastUserId'),
-    ).toBe(1);
   });
 
   it('loads and caches a fresh revision-zero account after HELLO without resolving a profile', async () => {
@@ -720,7 +706,6 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
 
   it('restores the synchronized request head from the account state', async () => {
     webdb.readAccountState.mockImplementation(async () => ({
-      schemaVersion: 1,
       selfProfile: {
         id: 1,
         profileRev: 0,
@@ -869,23 +854,33 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
     expect(webdb.closeAndDelete).toHaveBeenCalledWith('1'); // previous user's DB torn down
     expect(webdb.openExistingForUser).toHaveBeenCalledWith('2'); // new user's DB opened
     expect(svc.sessionUserId()).toBe(2);
-    expect(
-      await TestBed.inject(PreferenceStore).get('device', 'soms.lastUserId'),
-    ).toBe(2);
   });
 
-  it('clearSession closes the DB + clears sessionUserId + clears lastUserId', async () => {
+  it('resetSessionState clears in-memory identity and announces completion without deleting the cache', async () => {
     await svc.establishSession(1, 0, 11);
+    await vi.waitFor(() => expect(svc.sessionProfile()).toBeDefined());
+    svc.seedStateFeedCursor(7);
+    svc.applyRelationshipRequestHead({
+      requestEndId: '12',
+      requestReadId: '9',
+    });
+    const ended = vi.fn();
+    const subscription = TestBed.inject(
+      SessionLifecycleService,
+    ).ended$.subscribe(ended);
     webdb.closeAndDelete.mockClear();
 
-    await svc.clearSession();
+    svc.resetSessionState();
+
     expect(svc.sessionId()).toBeNull();
-    expect(webdb.closeAndDelete).toHaveBeenCalledWith('1');
     expect(svc.sessionUserId()).toBeNull();
-    // clearSession awaits the preference removal before it resolves — no drain needed.
-    expect(
-      await TestBed.inject(PreferenceStore).get('device', 'soms.lastUserId'),
-    ).toBeUndefined();
+    expect(svc.sessionProfile()).toBeUndefined();
+    expect(svc.stateFeedCursor()).toBeUndefined();
+    expect(svc.relationshipRequestHead()).toBeUndefined();
+    expect(svc.friendReqBadge()).toBe(false);
+    expect(webdb.closeAndDelete).not.toHaveBeenCalled();
+    expect(ended).toHaveBeenCalledOnce();
+    subscription.unsubscribe();
   });
 
   it('invalidates old work synchronously when a fresh login replaces credentials', () => {
@@ -901,66 +896,7 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
     subscription.unsubscribe();
   });
 
-  it('announces completed cleanup even when the session ended before HELLO', async () => {
-    await TestBed.inject(PreferenceStore).set('device', 'soms.lastUserId', 1);
-    await svc.restoreWebdb();
-    expect(svc.sessionUserId()).toBeNull();
-    const ended = vi.fn();
-    const subscription = TestBed.inject(
-      SessionLifecycleService,
-    ).ended$.subscribe(ended);
-    let finishDeletion!: () => void;
-    webdb.closeAndDelete.mockImplementationOnce(
-      () =>
-        new Promise<void>((resolve) => {
-          finishDeletion = resolve;
-        }),
-    );
-
-    const previous = TestBed.inject(SessionLifecycleService).capture();
-    const clearing = svc.clearSession();
-    expect(previous.signal.aborted).toBe(true);
-    expect(ended).not.toHaveBeenCalled();
-    finishDeletion();
-    await clearing;
-
-    expect(webdb.closeAndDelete).toHaveBeenCalledWith('1');
-    expect(svc.sessionUserId()).toBeNull();
-    expect(ended).toHaveBeenCalledTimes(1);
-    await svc.clearSession();
-    expect(ended).toHaveBeenCalledTimes(2);
-    subscription.unsubscribe();
-  });
-
-  it('keeps the session retryable when durable cache deletion fails', async () => {
-    await svc.establishSession(1, 0, 11);
-    const ended = vi.fn();
-    const subscription = TestBed.inject(
-      SessionLifecycleService,
-    ).ended$.subscribe(ended);
-    webdb.closeAndDelete.mockRejectedValue(new Error('cache busy'));
-
-    const previous = TestBed.inject(SessionLifecycleService).capture();
-    await expect(svc.clearSession()).rejects.toThrowError('cache busy');
-    expect(previous.signal.aborted).toBe(true);
-    expect(svc.sessionUserId()).toBe(1);
-    expect(ended).not.toHaveBeenCalled();
-    expect(
-      await TestBed.inject(PreferenceStore).get('device', 'soms.lastUserId'),
-    ).toBe(1);
-
-    webdb.closeAndDelete.mockResolvedValue(undefined);
-    const retryScope = TestBed.inject(SessionLifecycleService).capture();
-    await svc.clearSession();
-    expect(webdb.closeAndDelete).toHaveBeenCalledTimes(2);
-    expect(retryScope.signal.aborted).toBe(true);
-    expect(svc.sessionUserId()).toBeNull();
-    expect(ended).toHaveBeenCalledTimes(1);
-    subscription.unsubscribe();
-  });
-
   it('restoreWebdb opens the DB and restores the matching self profile for offline eager paint', async () => {
-    await TestBed.inject(PreferenceStore).set('device', 'soms.lastUserId', 7);
     const cached = {
       id: 7,
       account: 'alice',
@@ -989,39 +925,176 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
     expect(svc.sessionUserId()).toBeNull();
   });
 
-  it('restoreWebdb rebuilds any invalid cache without ending the session', async () => {
-    await TestBed.inject(PreferenceStore).set('device', 'soms.lastUserId', 7);
-    webdb.openExistingForUser.mockRejectedValue(
-      new LocalCacheVersionMismatchError('soms-webdb-u7'),
-    );
-    webdb.readAccountState.mockResolvedValue(accountStateBase());
+  it('restoration and HELLO bind the same real owner without deleting its cache', async () => {
     await svc.restoreWebdb();
-    expect(webdb.recreateForUser).toHaveBeenCalledExactlyOnceWith('7');
+    expect(svc.sessionUserId()).toBeNull();
+    expect(svc.sessionId()).toBeNull();
+    expect(webdb.openExistingForUser).toHaveBeenCalledExactlyOnceWith('1');
+    await svc.establishSession(1, 0, 11);
+    expect(webdb.openExistingForUser.mock.calls).toEqual([['1'], ['1']]);
+    expect(webdb.closeAndDelete).not.toHaveBeenCalled();
+    expect(svc.sessionUserId()).toBe(1);
+    expect(svc.sessionId()).toBe(11);
+    await svc.requestCacheRebuild();
+    expect(reload).toHaveBeenCalledOnce();
+  });
+
+  it('restores native storage using only the real cached numeric owner', async () => {
+    const nativeWindow = window as unknown as {
+      __TAURI_INTERNALS__?: unknown;
+      __TAURI__?: unknown;
+    };
+    const internals = nativeWindow.__TAURI_INTERNALS__;
+    const tauri = nativeWindow.__TAURI__;
+    const invoke = vi
+      .fn()
+      .mockRejectedValue(new Error('unexpected native command'));
+    nativeWindow.__TAURI_INTERNALS__ = {};
+    nativeWindow.__TAURI__ = { core: { invoke } };
+    vi.spyOn(AppStateStorage.prototype, 'get').mockResolvedValue(undefined);
+    webdb.readCachedSelfProfile.mockResolvedValue(
+      profile({ id: 42, profileRev: 0 }).data,
+    );
+    try {
+      await svc.restoreWebdb();
+      expect(webdb.openExistingForUser).toHaveBeenCalledExactlyOnceWith('42');
+      expect(webdb.writeSelfProfile).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 42 }),
+      );
+      expect(svc.sessionProfile()?.id).toBe(42);
+      expect(svc.sessionUserId()).toBeNull();
+      expect(invoke).not.toHaveBeenCalled();
+    } finally {
+      if (internals === undefined) delete nativeWindow.__TAURI_INTERNALS__;
+      else nativeWindow.__TAURI_INTERNALS__ = internals;
+      if (tauri === undefined) delete nativeWindow.__TAURI__;
+      else nativeWindow.__TAURI__ = tauri;
+    }
+  });
+
+  it('rejects cancellation while discovering cached identity without opening or rebuilding', async () => {
+    let finish!: (value: unknown) => void;
+    webdb.readCachedSelfProfile.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const controller = new AbortController();
+    const restoring = svc.restoreWebdb(controller.signal);
+    const rejected = expect(restoring).rejects.toThrow(
+      'The local login session is no longer active',
+    );
+    await vi.waitFor(() =>
+      expect(webdb.readCachedSelfProfile).toHaveBeenCalled(),
+    );
+    controller.abort();
+    finish(profile({ id: 7 }).data);
+    await rejected;
+    expect(webdb.openExistingForUser).not.toHaveBeenCalled();
+    expect(webdb.recreateSessionCache).not.toHaveBeenCalled();
+    expect(svc.sessionProfile()).toBeUndefined();
+  });
+
+  it('does not publish or persist a restored profile resolved after cancellation', async () => {
+    const display = new Subject<ResolvedProfile>();
+    webdb.readCachedSelfProfile.mockResolvedValue(profile({ id: 7 }).data);
+    vi.mocked(TestBed.inject(ProfileRepository).resolve).mockReturnValue(
+      display,
+    );
+    const controller = new AbortController();
+    const restoring = svc.restoreWebdb(controller.signal);
+    const rejected = expect(restoring).rejects.toThrow(
+      'The local login session is no longer active',
+    );
+    await vi.waitFor(() =>
+      expect(TestBed.inject(ProfileRepository).resolve).toHaveBeenCalled(),
+    );
+    controller.abort();
+    display.next({
+      publisherNamespaceId: 0,
+      namespaceId: 0,
+      account: 'alice',
+      rev: 1,
+      name: 'Late',
+      bio: '',
+      avatarDigest: null,
+      avatarBlob: null,
+    });
+    display.complete();
+    await rejected;
+    expect(webdb.writeSelfProfile).not.toHaveBeenCalled();
+    expect(svc.sessionProfile()).toBeUndefined();
+    expect(webdb.recreateForUser).not.toHaveBeenCalled();
+    expect(TestBed.inject(ThreadSendOutbox).restore).not.toHaveBeenCalled();
+  });
+
+  it('stops restoration when the session is invalidated even without an explicit abort signal', async () => {
+    webdb.readCachedSelfProfile.mockImplementationOnce(async () => {
+      TestBed.inject(SessionLifecycleService).invalidateSession();
+      return profile({ id: 7 }).data;
+    });
+    await svc.restoreWebdb();
+    expect(webdb.openExistingForUser).not.toHaveBeenCalled();
+    expect(webdb.recreateSessionCache).not.toHaveBeenCalled();
+    expect(svc.sessionProfile()).toBeUndefined();
+  });
+
+  it('propagates failed one-shot recovery to the browser session owner', async () => {
+    await new AppStateStorage().set('cacheRebuild', 'pending');
+    webdb.recreateSessionCache.mockRejectedValue(
+      new Error('cache unavailable'),
+    );
+    await expect(
+      svc.restoreWebdb(new AbortController().signal),
+    ).rejects.toThrow('cache unavailable');
+    expect(await new AppStateStorage().get('cacheRebuild')).toBe('attempted');
+  });
+
+  it('restoreWebdb rebuilds an invalid cache without inventing an account identity', async () => {
+    webdb.readCachedSelfProfile.mockRejectedValue(
+      new LocalCacheVersionMismatchError('soms-session'),
+    );
+    await svc.restoreWebdb();
+    expect(webdb.recreateSessionCache).toHaveBeenCalledExactlyOnceWith();
+    expect(webdb.recreateForUser).not.toHaveBeenCalled();
+    expect(webdb.openExistingForUser).not.toHaveBeenCalled();
     expect(svc.sessionUserId()).toBeNull();
   });
 
   it('restoreWebdb also rebuilds a missing or unreadable cache', async () => {
-    await TestBed.inject(PreferenceStore).set('device', 'soms.lastUserId', 7);
     webdb.openExistingForUser.mockRejectedValue(new Error('unreadable cache'));
-    webdb.readAccountState.mockResolvedValue(accountStateBase());
     await svc.restoreWebdb();
-    expect(webdb.recreateForUser).toHaveBeenCalledExactlyOnceWith('7');
+    expect(webdb.recreateForUser).toHaveBeenCalledExactlyOnceWith('1');
+    expect(
+      TestBed.inject(ThreadSendOutbox).restore,
+    ).toHaveBeenCalledExactlyOnceWith(true);
     expect(svc.sessionUserId()).toBeNull();
   });
 
-  it('restoreWebdb ignores a self profile belonging to a different IDB partition owner', async () => {
-    await TestBed.inject(PreferenceStore).set('device', 'soms.lastUserId', 7);
-    webdb.readAccountState.mockResolvedValue({
-      ...accountStateBase(),
-      selfProfile: profile({ id: 8 }).data,
-    });
-    await svc.restoreWebdb();
-    expect(svc.sessionProfile()).toBeUndefined();
-  });
+  it.each([0, -1, NaN, 1.5])(
+    'restoreWebdb never binds an invalid cached numeric identity %s',
+    async (id) => {
+      webdb.readCachedSelfProfile.mockResolvedValue(profile({ id }).data);
+      await svc.restoreWebdb();
+      expect(svc.sessionProfile()).toBeUndefined();
+      expect(webdb.openExistingForUser).not.toHaveBeenCalled();
+      expect(webdb.recreateForUser).not.toHaveBeenCalled();
+      expect(webdb.recreateSessionCache).toHaveBeenCalledOnce();
+    },
+  );
 
-  it('restoreWebdb is a no-op when no userId was persisted (first-ever launch)', async () => {
+  it('restoreWebdb leaves an empty cache unbound until HELLO identifies the user', async () => {
+    webdb.readCachedSelfProfile.mockResolvedValue(null);
     await svc.restoreWebdb();
     expect(webdb.openExistingForUser).not.toHaveBeenCalled();
+    expect(webdb.recreateForUser).not.toHaveBeenCalled();
+    expect(TestBed.inject(ThreadSendOutbox).restore).not.toHaveBeenCalled();
+    expect(svc.sessionProfile()).toBeUndefined();
+    expect(svc.sessionId()).toBeNull();
+    await svc.establishSession(1, 0, 11);
+    expect(webdb.openExistingForUser).toHaveBeenCalledExactlyOnceWith('1');
+    expect(svc.sessionId()).toBe(11);
   });
 
   it('defers missing-account recovery to normal HELLO initialization', async () => {
@@ -1031,24 +1104,19 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
   });
 
   it('allows another automatic recovery only after a new login', async () => {
-    const preferences = TestBed.inject(PreferenceStore);
-    await preferences.set('account:1', 'soms.cacheRebuild', 'attempted');
+    const preferences = new AppStateStorage();
+    await preferences.set('cacheRebuild', 'attempted');
     svc.prepareFreshCache();
     await svc.establishSession(1, 0, 11);
-    expect(
-      await preferences.get('account:1', 'soms.cacheRebuild'),
-    ).toBeUndefined();
+    expect(await preferences.get('cacheRebuild')).toBeUndefined();
     await svc.requestCacheRebuild();
     expect(reload).toHaveBeenCalledOnce();
-    expect(await preferences.get('account:1', 'soms.cacheRebuild')).toBe(
-      'pending',
-    );
+    expect(await preferences.get('cacheRebuild')).toBe('pending');
   });
 
   it('does not retry a failed rebuild when HELLO arrives after startup', async () => {
-    const preferences = TestBed.inject(PreferenceStore);
-    await preferences.set('device', 'soms.lastUserId', 7);
-    await preferences.set('account:7', 'soms.cacheRebuild', 'attempted');
+    const preferences = new AppStateStorage();
+    await preferences.set('cacheRebuild', 'attempted');
     const failure = new Error('database still unavailable');
     webdb.openExistingForUser.mockRejectedValue(failure);
     await svc.restoreWebdb();
@@ -1058,8 +1126,7 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
   });
 
   it('coalesces recovery requests and rebuilds on the next boot without clearing the session', async () => {
-    const preferences = TestBed.inject(PreferenceStore);
-    await preferences.set('device', 'soms.lastUserId', 7);
+    const preferences = new AppStateStorage();
     await svc.restoreWebdb();
     const ended = vi.fn();
     const subscription = TestBed.inject(
@@ -1068,20 +1135,16 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
     await Promise.all([svc.requestCacheRebuild(), svc.requestCacheRebuild()]);
     expect(reload).toHaveBeenCalledOnce();
     expect(webdb.recreateForUser).not.toHaveBeenCalled();
-    expect(await preferences.get('account:7', 'soms.cacheRebuild')).toBe(
-      'pending',
-    );
+    expect(await preferences.get('cacheRebuild')).toBe('pending');
 
     const nextBoot = TestBed.runInInjectionContext(
       () => new UserService(TestBed.inject(HttpClient)),
     );
     await nextBoot.restoreWebdb();
-    expect(webdb.recreateForUser).toHaveBeenCalledOnce();
-    expect(webdb.recreateForUser).toHaveBeenCalledWith('7');
-    expect(await preferences.get('account:7', 'soms.cacheRebuild')).toBe(
-      'attempted',
-    );
-    expect(await preferences.get('device', 'soms.lastUserId')).toBe(7);
+    expect(webdb.recreateSessionCache).toHaveBeenCalledExactlyOnceWith();
+    expect(webdb.recreateForUser).not.toHaveBeenCalled();
+    expect(webdb.readCachedSelfProfile).toHaveBeenCalledOnce();
+    expect(await preferences.get('cacheRebuild')).toBe('attempted');
     expect(nextBoot.stateFeedCursor()).toBeUndefined();
     expect(ended).not.toHaveBeenCalled();
     await nextBoot.requestCacheRebuild();
@@ -1090,38 +1153,34 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
   });
 
   it('warns and stops if the one automatic rebuild fails', async () => {
-    const preferences = TestBed.inject(PreferenceStore);
-    await preferences.set('device', 'soms.lastUserId', 7);
-    await preferences.set('account:7', 'soms.cacheRebuild', 'pending');
+    const preferences = new AppStateStorage();
+    await preferences.set('cacheRebuild', 'pending');
     const failure = new Error('storage unavailable');
-    webdb.recreateForUser.mockRejectedValue(failure);
+    webdb.recreateSessionCache.mockRejectedValue(failure);
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     await expect(svc.restoreWebdb()).resolves.toBeUndefined();
     await svc.requestCacheRebuild();
-    expect(webdb.recreateForUser).toHaveBeenCalledOnce();
+    expect(webdb.recreateSessionCache).toHaveBeenCalledOnce();
     expect(reload).not.toHaveBeenCalled();
     expect(warn).toHaveBeenCalledWith(
       '[cache-recovery] account cache rebuild unavailable',
       failure,
     );
-    expect(await preferences.get('account:7', 'soms.cacheRebuild')).toBe(
-      'attempted',
-    );
+    expect(await preferences.get('cacheRebuild')).toBe('attempted');
   });
 
   it('rebuilds after cached profile reading fails, not only after opening fails', async () => {
-    await TestBed.inject(PreferenceStore).set('device', 'soms.lastUserId', 7);
-    webdb.readAccountState.mockRejectedValueOnce(new Error('corrupt profile'));
+    webdb.readCachedSelfProfile.mockRejectedValueOnce(
+      new Error('corrupt profile'),
+    );
     await expect(svc.restoreWebdb()).resolves.toBeUndefined();
-    expect(webdb.recreateForUser).toHaveBeenCalledOnce();
+    expect(webdb.recreateSessionCache).toHaveBeenCalledOnce();
   });
 
   it('warns without rejecting if the recovery marker cannot be saved', async () => {
-    const preferences = TestBed.inject(PreferenceStore);
-    await preferences.set('device', 'soms.lastUserId', 7);
     await svc.restoreWebdb();
     const failure = new Error('preferences unavailable');
-    vi.spyOn(preferences, 'set').mockRejectedValueOnce(failure);
+    vi.spyOn(AppStateStorage.prototype, 'set').mockRejectedValueOnce(failure);
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     await expect(svc.requestCacheRebuild()).resolves.toBeUndefined();
     expect(reload).not.toHaveBeenCalled();

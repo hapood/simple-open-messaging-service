@@ -32,10 +32,9 @@ describe('Push thread-feed synchronization', () => {
       threadId: 7,
       threadFeedId: feed,
       messageEndSeq: 7,
-      tombstoneEndSeq: 1,
+      author: { account: 'peer', namespaceId: 0 },
       alias: null,
       profileRev: 0,
-      groupMetaFeedEndId: null,
       joinRequestEndFeedId: 0,
       joinRequestReadFeedId: -1,
       groupInviteEndFeedId: 0,
@@ -99,6 +98,7 @@ describe('Push thread-feed synchronization', () => {
   it('requests three previews, keeps one in the database, and never repeats a consumed target', async () => {
     const request = vi.fn().mockResolvedValue(page());
     const result = await syncPushThreads(storage, userId, 1, request, preferences, copy);
+    expect(result.error).toBeUndefined();
     expect(request).toHaveBeenCalledWith({
       after: 0,
       through: 1,
@@ -199,6 +199,7 @@ describe('Push thread-feed synchronization', () => {
       {
         ...snapshot(1),
         messageEndSeq: 2,
+        author: { account: 'me', namespaceId: 0 },
         unreadCount: 2,
         lastMentionSeq: null,
       },
@@ -248,6 +249,53 @@ describe('Push thread-feed synchronization', () => {
     ).toMatchObject({ consumed: false, notifications: [] });
     expect(request).not.toHaveBeenCalled();
   });
+
+  it.each([
+    {
+      messageEndSeq: 7,
+      author: undefined,
+      error: 'Nonzero message head requires an author',
+    },
+    {
+      messageEndSeq: 0,
+      author: { account: 'peer', namespaceId: 0 },
+      error: 'Zero message head must omit author',
+    },
+  ])(
+    'rejects an invalid author/head pair without consuming the notification target: $error',
+    async ({ messageEndSeq, author, error }) => {
+      const invalid = { ...snapshot(), messageEndSeq, author };
+      const result = await syncPushThreads(
+        storage,
+        userId,
+        1,
+        async () => page(invalid),
+        preferences,
+        copy,
+      );
+      expect(result).toMatchObject({
+        error,
+        cursor: 0,
+        consumed: false,
+        states: [],
+        notifications: [],
+      });
+      expect((await storage.readAccountState()).threadFeedCursor).toBeNull();
+      expect(await storage.getThreadStates()).toEqual([]);
+
+      const recovered = await syncPushThreads(
+        storage,
+        userId,
+        1,
+        async () => page(),
+        preferences,
+        copy,
+      );
+      expect(recovered.error).toBeUndefined();
+      expect(recovered.cursor).toBe(1);
+      expect(recovered.notifications).toHaveLength(1);
+    },
+  );
 
   it('delivers committed pages after a later page fails without retrying', async () => {
     const request = vi

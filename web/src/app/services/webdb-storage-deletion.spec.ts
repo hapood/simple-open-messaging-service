@@ -1,5 +1,4 @@
 import { deleteDB, openDB } from 'idb';
-import { messageTomb } from '../../../../shared/message-tomb';
 import type { DeletedMessageItem, Message } from './model';
 import { SessionLifecycleService } from './session-lifecycle.service';
 import { prepareTestSessionCache } from './session/session-cache.test-helper';
@@ -8,13 +7,12 @@ import { threadFeedSnapshot } from './thread-feed.test-helper';
 import { syncTombstoneThread } from './tombstone-sync';
 import { WebdbStorage } from './webdb-storage';
 
-const snapshot = (tombstoneEndSeq: number, threadFeedId = 1) =>
+const snapshot = (threadFeedId = 1) =>
   threadFeedSnapshot(42, {
     publisherNamespaceId: 3,
     profileAccount: 'alice',
     profileRev: 1,
     messageEndSeq: 10,
-    tombstoneEndSeq,
     threadFeedId,
   });
 
@@ -60,74 +58,82 @@ describe('durable browser deletion state', () => {
     await storage.closeAndDelete(userId);
   });
 
-  it('migrates old message markers into independent facts without losing progress', async () => {
-    await storage.mergeThreadStates([snapshot(7)]);
-    const db = await storage.db();
-    const name = db.name;
-    const stores = [...db.objectStoreNames];
-    const saved = await Promise.all(
-      stores.map(async (store) => ({
-        store,
-        rows: await db.getAll(store),
-        keys: await db.getAllKeys(store),
-        keyPath: db.transaction(store).store.keyPath,
-        indexes: [...db.transaction(store).store.indexNames].map((index) => {
-          const source = db.transaction(store).store.index(index as never);
-          return { name: index, keyPath: source.keyPath };
-        }),
-      })),
-    );
+  it('explicitly recreates an obsolete cache without migrating bodies, deletion facts, or progress', async () => {
+    const name = (await storage.db()).name;
     await storage.close();
     await deleteDB(name);
-    const legacy = await openDB(name, 1, {
-      upgrade(old) {
-        for (const entry of saved) {
-          if (entry.store === 'messageDeletions') continue;
-          const store = old.createObjectStore(
-            entry.store,
-            entry.keyPath === null ? undefined : { keyPath: entry.keyPath },
-          );
-          for (const index of entry.indexes)
-            store.createIndex(index.name, index.keyPath);
-          entry.rows.forEach((row, i) =>
-            store.put(row, entry.keyPath === null ? entry.keys[i] : undefined),
-          );
-        }
+    const legacy = await openDB(name, 2, {
+      upgrade(db) {
+        db.createObjectStore('threads', { keyPath: 'threadId' });
+        db.createObjectStore('messages', { keyPath: ['threadId', 'seq'] });
+        db.createObjectStore('messageDeletions', {
+          keyPath: ['threadId', 'seq'],
+        });
       },
     });
-    await legacy.put('messages', messageTomb(message(40), 'USER_RETRACTION'));
+    await legacy.put('threads', { threadId: 42, deletedHwm: 7 });
+    await legacy.put('messages', { ...message(40), isDeleted: true });
+    await legacy.put('messageDeletions', {
+      threadId: 42,
+      seq: 40,
+      type: 'USER_RETRACTION',
+    });
     legacy.close();
-    await storage.openExistingForUser(userId);
-    expect(await storage.getDeletedHwm(42)).toBe(7);
-    expect(await storage.getTombstoneCutoff(42)).toBe(0);
-    expect(await storage.getMessageDeletions(42, [40])).toEqual([
-      { seq: 40, type: 'USER_RETRACTION' },
-    ]);
-    await storage.putCachedMessages([message(40)]);
-    expect(await storage.getMessage(42, 40)).toBeUndefined();
-    expect(await storage.getTombstoneCutoff(42)).toBe(40);
+
+    await storage.recreateForUser(userId);
+    const db = await storage.db();
+    expect([...db.objectStoreNames]).not.toContain('messageDeletions');
+    expect(await db.getAll('threads')).toEqual([]);
+    expect(await db.getAll('messages')).toEqual([]);
+    expect(await db.getAll('threadResourceSync')).toEqual([]);
+    await expect(storage.getDeletedHwm(42)).rejects.toThrow(
+      'missing required deleted-message HWM',
+    );
+    await storage.mergeThreadStates([snapshot()]);
+    expect(await storage.getDeletedHwm(42)).toBe(0);
+    expect(await storage.getMessageDeletions(42, [40])).toEqual([]);
   });
 
   it.each([0, 7])(
-    'initializes deletion progress from creation end %s only',
+    'initializes applied deletion progress at zero independently of resource target %s',
     async (end) => {
-      await storage.mergeThreadStates([snapshot(end)], 1);
-      expect(await storage.getDeletedHwm(42)).toBe(end);
+      const applyTarget = (tombstoneEndSeq: number, feedId: number) =>
+        storage.applyStateFeedPage(
+          [
+            {
+              feedId,
+              type: 'THREAD_TOMB_HEAD',
+              body: { threadId: 42, tombstoneEndSeq },
+            },
+          ],
+          feedId,
+        );
+      // Resource heads can arrive before the conversation projection.
+      await applyTarget(end, 1);
+      await storage.mergeThreadStates([snapshot()], 1);
+      expect(await storage.getDeletedHwm(42)).toBe(0);
       expect(await storage.getMessageHead(42)).toBeUndefined();
-      expect(await (await storage.db()).get('threads', 42)).toMatchObject({
-        deletedHwm: end,
+      const db = await storage.db();
+      expect(await db.get('threads', 42)).toMatchObject({
+        deletedHwm: 0,
         messageHead: null,
+      });
+      expect(await db.get('threadResourceSync', 42)).toMatchObject({
+        tombstoneEndSeq: end,
       });
       const request = vi.fn();
       expect(await syncTombstoneThread(storage, request, 42, end)).toEqual([]);
       expect(request).not.toHaveBeenCalled();
+      expect(await storage.getDeletedHwm(42)).toBe(0);
 
-      await storage.mergeThreadStates([snapshot(12, 2)], 2);
-      expect(await storage.getDeletedHwm(42)).toBe(end);
+      await applyTarget(12, 2);
+      await storage.mergeThreadStates([snapshot(2)], 2);
+      expect(await storage.getDeletedHwm(42)).toBe(0);
       await storage.applyDeletedMessages(42, [deletion()], 8);
       await storage.putMessageHead(42, 10);
-      await storage.mergeThreadStates([snapshot(15, 3)], 3);
-      await storage.mergeThreadStates([snapshot(end)], 1);
+      await applyTarget(15, 3);
+      await storage.mergeThreadStates([snapshot(3)], 3);
+      await storage.mergeThreadStates([snapshot()], 1);
       await storage.patchThread(42, { muted: true });
       await storage.advanceThreadRead(42, 5);
       await storage.putMessageHead(42, 6);
@@ -136,12 +142,18 @@ describe('durable browser deletion state', () => {
       await storage.openExistingForUser(userId);
       expect(await storage.getDeletedHwm(42)).toBe(8);
       expect(await storage.getMessageHead(42)).toBe(10);
-      expect(await (await storage.db()).get('threads', 42)).toMatchObject({
-        tombstoneEndSeq: 15,
+      const reopened = await storage.db();
+      expect(await reopened.get('threads', 42)).toMatchObject({
         deletedHwm: 8,
         messageHead: 10,
         localReadSeq: 5,
         muted: true,
+      });
+      expect(await reopened.get('threads', 42)).not.toHaveProperty(
+        'tombstoneEndSeq',
+      );
+      expect(await reopened.get('threadResourceSync', 42)).toMatchObject({
+        tombstoneEndSeq: 15,
       });
     },
   );
@@ -164,7 +176,7 @@ describe('durable browser deletion state', () => {
   });
 
   it('rejects a missing persisted HWM rather than repairing it from a later feed end', async () => {
-    await storage.mergeThreadStates([snapshot(7)], 1);
+    await storage.mergeThreadStates([snapshot()], 1);
     const db = await storage.db();
     const row = (await db.get('threads', 42))!;
     // Deliberate corruption: current rows require this field, even when it is zero.
@@ -177,9 +189,9 @@ describe('durable browser deletion state', () => {
     await expect(
       storage.applyDeletedMessages(42, [deletion()], 8),
     ).rejects.toThrow('missing required deleted-message HWM');
-    await expect(
-      storage.mergeThreadStates([snapshot(12, 2)], 2),
-    ).rejects.toThrow('missing required deleted-message HWM');
+    await expect(storage.mergeThreadStates([snapshot(2)], 2)).rejects.toThrow(
+      'missing required deleted-message HWM',
+    );
     expect(await db.get('threads', 42)).toEqual(corrupted);
     expect((await storage.readAccountState()).threadFeedCursor).toBe(1);
     expect(await storage.getMessageDeletions(42, [4])).toEqual([]);
@@ -188,16 +200,19 @@ describe('durable browser deletion state', () => {
   it.each(['thread', 'database'] as const)(
     'preserves cursors and feed/history tomb guards after %s cache eviction',
     async (kind) => {
-      await storage.mergeThreadStates([snapshot(7)], 1);
-      const historyTomb = messageTomb(message(5), 'MODERATION_REMOVAL');
+      await storage.mergeThreadStates([snapshot()], 1);
       await storage.commitBrowserMessagePage({
         threadId: 42,
         scan: { left: 3, right: 6 },
-        messages: [message(), historyTomb, message(6)],
+        messages: [message(), message(6)],
         gaps: [],
         knownNewestSeq: 10,
       });
-      await storage.applyDeletedMessages(42, [deletion()], 8);
+      await storage.applyDeletedMessages(
+        42,
+        [{ ...deletion(5, 7), type: 'MODERATION_REMOVAL' }, deletion()],
+        8,
+      );
       if (kind === 'thread') await storage.deleteMessagesByThread(42);
       else await storage.recreateMessageCache();
       expect(await storage.queryCachedMessages(42, 'asc', 10)).toEqual([]);
@@ -236,7 +251,7 @@ describe('durable browser deletion state', () => {
   it.each(['live-first', 'tomb-first'] as const)(
     'serializes %s commits across independent database owners',
     async (order) => {
-      await storage.mergeThreadStates([snapshot(0)]);
+      await storage.mergeThreadStates([snapshot()]);
       const background = new WebdbStorage(
         () => null,
         new SessionLifecycleService(),
@@ -266,8 +281,11 @@ describe('durable browser deletion state', () => {
         expect(await storage.getMessage(42, 4)).toBeUndefined();
         expect(await storage.queryCachedMessages(42, 'asc', 10)).toEqual([]);
         expect(await (await storage.db()).get('messages', [42, 4])).toEqual({
-          ...message(),
+          threadId: 42,
+          seq: 4,
+          contentType: 'TOMB',
           isDeleted: true,
+          deletionType: 'USER_RETRACTION',
         });
       } finally {
         lock.mockRestore();
@@ -277,16 +295,17 @@ describe('durable browser deletion state', () => {
   );
 
   it('skips deletion markers before ordering, anchors, limits, and unread counting', async () => {
-    await storage.mergeThreadStates([snapshot(0)]);
-    await storage.putCachedMessages([
-      messageTomb(message(2), 'USER_RETRACTION'),
-      messageTomb(
-        { ...message(4), creator: { account: 'me', namespaceId: 0 } },
-        'USER_RETRACTION',
-      ),
-      messageTomb(message(6), 'MODERATION_REMOVAL'),
-    ]);
-    await storage.applyDeletedMessages(42, [deletion(3)], 8);
+    await storage.mergeThreadStates([snapshot()]);
+    await storage.applyDeletedMessages(
+      42,
+      [
+        deletion(2, 1),
+        deletion(3, 2),
+        deletion(4, 3),
+        { ...deletion(6, 4), type: 'MODERATION_REMOVAL' },
+      ],
+      8,
+    );
     await storage.recreateMessageCache();
     await storage.putCachedMessages([message(1), message(5), message(7)]);
     expect(
@@ -320,11 +339,11 @@ describe('durable browser deletion state', () => {
   });
 
   it('skips invisible markers across multiple bounded batches without consuming take', async () => {
-    await storage.mergeThreadStates([snapshot(0)]);
-    await storage.putCachedMessages(
-      Array.from({ length: 120 }, (_, i) =>
-        messageTomb(message(i * 2 + 2), 'USER_RETRACTION'),
-      ),
+    await storage.mergeThreadStates([snapshot()]);
+    await storage.applyDeletedMessages(
+      42,
+      Array.from({ length: 120 }, (_, i) => deletion(i * 2 + 2, i + 1)),
+      250,
     );
     await storage.recreateMessageCache();
     await storage.putCachedMessages(
@@ -377,34 +396,39 @@ describe('durable browser deletion state', () => {
     ).toBe(0);
   });
 
-  it('folds repeated identities in order within a batched cache write', async () => {
-    await storage.mergeThreadStates([snapshot(0)]);
-    const messages = [
+  it('keeps the first body for repeated identities and applies deletion batches in order', async () => {
+    await storage.mergeThreadStates([snapshot()]);
+    await storage.putCachedMessages([
       message(1),
-      messageTomb(message(1), 'USER_RETRACTION'),
       { ...message(1), updatedAt: 300 },
-      messageTomb(message(1), 'MODERATION_REMOVAL'),
       message(2),
-      { ...message(2), content: 'latest body' },
-    ];
-    await storage.putCachedMessages(messages);
-    expect(await storage.queryCachedMessages(42, 'asc', 10)).toEqual([
       { ...message(2), content: 'latest body' },
     ]);
     await storage.applyDeletedMessages(
       42,
-      [deletion(2, 1), { ...deletion(2, 2), type: 'MODERATION_REMOVAL' }],
+      [deletion(1, 1), { ...deletion(1, 2), type: 'MODERATION_REMOVAL' }],
       2,
+    );
+    expect(await storage.queryCachedMessages(42, 'asc', 10)).toEqual([
+      message(2),
+    ]);
+    expect(await storage.getMessageDeletions(42, [1])).toEqual([
+      { seq: 1, type: 'MODERATION_REMOVAL' },
+    ]);
+    await storage.applyDeletedMessages(
+      42,
+      [deletion(2, 3), { ...deletion(2, 4), type: 'MODERATION_REMOVAL' }],
+      4,
     );
     await storage.recreateMessageCache();
     expect(await storage.queryCachedMessages(42, 'desc', 10)).toEqual([]);
-    expect(await storage.getDeletedHwm(42)).toBe(2);
+    expect(await storage.getDeletedHwm(42)).toBe(4);
   });
 
   it.each(['caller', 'reset', 'close'] as const)(
     'cancels a queued cross-context commit on %s without waiting for the external holder',
     async (kind) => {
-      await storage.mergeThreadStates([snapshot(0)]);
+      await storage.mergeThreadStates([snapshot()]);
       const name = `soms-message-commit-${userId}-42`;
       let release!: () => void;
       let acquired!: () => void;
@@ -446,7 +470,7 @@ describe('durable browser deletion state', () => {
   );
 
   it('revalidates cancellation inside the lock callback before any commit', async () => {
-    await storage.mergeThreadStates([snapshot(0)]);
+    await storage.mergeThreadStates([snapshot()]);
     const caller = new AbortController();
     const request = vi
       .spyOn(navigator.locks, 'request')
@@ -474,29 +498,42 @@ describe('durable browser deletion state', () => {
     }
   });
 
-  it('rolls back the stub and HWM together when a feed transaction aborts', async () => {
-    await storage.mergeThreadStates([snapshot(0)]);
-    await storage.putCachedMessages([message()]);
-    const original = IDBObjectStore.prototype.put;
-    const put = vi
-      .spyOn(IDBObjectStore.prototype, 'put')
-      .mockImplementation(function (this: IDBObjectStore, ...args) {
-        if (this.name === 'threads') throw new Error('injected HWM failure');
-        return original.apply(this, args);
-      });
-    try {
-      await expect(
-        storage.applyDeletedMessages(42, [deletion()], 8),
-      ).rejects.toThrow('injected HWM failure');
-    } finally {
-      put.mockRestore();
-    }
-    expect(await storage.getDeletedHwm(42)).toBe(0);
-    expect(await storage.getMessage(42, 4)).toEqual(message());
-  });
+  it.each(['tomb', 'HWM'] as const)(
+    'rolls back all stubs and HWM together when a %s write fails',
+    async (failure) => {
+      await storage.mergeThreadStates([snapshot()]);
+      await storage.putCachedMessages([message()]);
+      const original = IDBObjectStore.prototype.put;
+      const put = vi
+        .spyOn(IDBObjectStore.prototype, 'put')
+        .mockImplementation(function (this: IDBObjectStore, ...args) {
+          if (
+            (failure === 'HWM' && this.name === 'threads') ||
+            (failure === 'tomb' &&
+              this.name === 'messages' &&
+              args[0].seq === 5)
+          )
+            throw new Error('injected write failure');
+          return original.apply(this, args);
+        });
+      try {
+        await expect(
+          storage.applyDeletedMessages(42, [deletion(), deletion(5)], 8),
+        ).rejects.toThrow('injected write failure');
+      } finally {
+        put.mockRestore();
+      }
+      expect(await storage.getDeletedHwm(42)).toBe(0);
+      expect(await storage.getMessage(42, 4)).toEqual(message());
+      expect(
+        await (await storage.db()).get('messages', [42, 5]),
+      ).toBeUndefined();
+      expect(await storage.getMessageDeletions(42, [4, 5])).toEqual([]);
+    },
+  );
 
   it('filters current local coverage before slot reads but accepts both server gap states', async () => {
-    await storage.mergeThreadStates([snapshot(0)]);
+    await storage.mergeThreadStates([snapshot()]);
     await storage.commitBrowserMessagePage({
       threadId: 42,
       scan: { left: 0, right: 4 },
@@ -547,12 +584,10 @@ describe('durable browser deletion state', () => {
       })),
       gaps: [],
     });
-    expect(committed.messages).toEqual([
-      message(1),
-      ...[2, 3, 5].map((seq) => ({ ...message(seq), content: 'later' })),
-    ]);
+    // Filling server gaps must not rewrite bodies already inserted in those slots.
+    expect(committed.messages).toEqual([1, 2, 3, 5].map((seq) => message(seq)));
     expect((await storage.getMessage(42, 1))?.content).toBe('private body');
-    expect((await storage.getMessage(42, 3))?.content).toBe('later');
+    expect((await storage.getMessage(42, 3))?.content).toBe('private body');
     expect(await storage.getMessage(42, 4)).toBeUndefined();
     expect(await storage.getMessageRanges(42)).toEqual([
       { threadId: 42, left: 0, right: 5, state: 'LOCAL_COVERED' },
@@ -560,12 +595,12 @@ describe('durable browser deletion state', () => {
   });
 
   it('returns only persisted input message slots, not other cached rows in the scan', async () => {
-    await storage.mergeThreadStates([snapshot(0)]);
+    await storage.mergeThreadStates([snapshot()]);
     await storage.putCachedMessages([message(3), message(6)]);
     const committed = await storage.commitBrowserMessagePage({
       threadId: 42,
       scan: { left: 2, right: 7 },
-      messages: [message(7), messageTomb(message(4), 'USER_RETRACTION')],
+      messages: [message(7)],
       gaps: [],
     });
     expect(committed.messages).toEqual([message(7)]);
@@ -580,27 +615,12 @@ describe('durable browser deletion state', () => {
     ).toEqual({ messages: [], ranges: committed.ranges });
   });
 
-  it('applies wire deletion facts even when the body interval is already covered', async () => {
-    await storage.mergeThreadStates([snapshot(0)]);
-    const page = { threadId: 42, scan: { left: 3, right: 4 }, gaps: [] };
-    await storage.commitBrowserMessagePage({ ...page, messages: [message()] });
-    const result = await storage.commitBrowserMessagePage({
-      ...page,
-      messages: [messageTomb(message(), 'USER_RETRACTION')],
-    });
-    expect(result.messages).toEqual([]);
-    expect(await storage.getMessageDeletions(42, [4])).toEqual([
-      { seq: 4, type: 'USER_RETRACTION' },
-    ]);
-    expect(await storage.getTombstoneCutoff(42)).toBe(4);
-  });
-
-  it('returns zero rows for a committed tomb-only page', async () => {
-    await storage.mergeThreadStates([snapshot(0)]);
+  it('returns zero rows for an empty committed page', async () => {
+    await storage.mergeThreadStates([snapshot()]);
     const committed = await storage.commitBrowserMessagePage({
       threadId: 42,
       scan: { left: 0, right: 2 },
-      messages: [messageTomb(message(1), 'USER_RETRACTION')],
+      messages: [],
       gaps: [],
     });
     expect(committed.messages).toEqual([]);
@@ -610,7 +630,7 @@ describe('durable browser deletion state', () => {
   });
 
   it('validates raw rows before filtering and rolls back bodies, ranges, and head on failure', async () => {
-    await storage.mergeThreadStates([snapshot(0)]);
+    await storage.mergeThreadStates([snapshot()]);
     await storage.commitBrowserMessagePage({
       threadId: 42,
       scan: { left: 0, right: 4 },
@@ -657,7 +677,7 @@ describe('durable browser deletion state', () => {
   });
 
   it('returns only stored deletion coordinates and exact reasons for requested mounted slots', async () => {
-    await storage.mergeThreadStates([snapshot(0)]);
+    await storage.mergeThreadStates([snapshot()]);
     await storage.putCachedMessages([message(1), message(2), message(3)]);
     await storage.applyDeletedMessages(
       42,
@@ -681,27 +701,36 @@ describe('durable browser deletion state', () => {
     ]);
   });
 
-  it('stores absent deletion facts separately and soft-deletes existing bodies atomically', async () => {
-    await storage.mergeThreadStates([snapshot(0)]);
+  it('stores coordinate-only tombs for absent and cached bodies without reading private content', async () => {
+    await storage.mergeThreadStates([snapshot()]);
     await storage.putCachedMessages([message()]);
     const get = vi.spyOn(IDBObjectStore.prototype, 'get');
-    await storage.applyDeletedMessages(42, [deletion(), deletion(5)], 8);
-    expect(
-      get.mock.contexts.map((store) => (store as IDBObjectStore).name),
-    ).toEqual(['threads', 'messages', 'messages']);
-    get.mockRestore();
+    try {
+      await storage.applyDeletedMessages(42, [deletion(), deletion(5)], 8);
+      expect(
+        get.mock.contexts.map((store) => (store as IDBObjectStore).name),
+      ).toEqual(['threads']);
+    } finally {
+      get.mockRestore();
+    }
     expect(await storage.countCachedMessages()).toBe(0);
-    expect(await (await storage.db()).get('messages', [42, 4])).toEqual({
-      ...message(),
-      isDeleted: true,
-    });
-    expect(await (await storage.db()).get('messages', [42, 5])).toBeUndefined();
-    expect(await storage.getTombstoneCutoff(42)).toBe(4);
+    const db = await storage.db();
+    for (const seq of [4, 5]) {
+      expect(await db.get('messages', [42, seq])).toEqual({
+        threadId: 42,
+        seq,
+        contentType: 'TOMB',
+        isDeleted: true,
+        deletionType: 'USER_RETRACTION',
+      });
+    }
+    expect(await storage.getDeletedHwm(42)).toBe(8);
+    expect(await storage.getTombstoneCutoff(42)).toBe(5);
     await storage.putCachedMessages([message(20)]);
     // Neither the tuple's messageEndSeq=10 nor the deletion fact limits this maximum.
     expect(await storage.getTombstoneCutoff(42)).toBe(20);
     await storage.deleteMessagesByThread(42);
-    expect(await storage.getTombstoneCutoff(42)).toBe(0);
+    expect(await storage.getTombstoneCutoff(42)).toBe(5);
     expect(await storage.getMessageDeletions(42, [4, 5])).toHaveLength(2);
   });
 });

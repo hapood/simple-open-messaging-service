@@ -59,8 +59,9 @@ describe('pre-render theme bootstrap', () => {
         matches: systemDark,
       } as MediaQueryList);
       await prepareTheme();
-      expect(get).toHaveBeenCalledExactlyOnceWith('global', 'theme');
-      expect(close).toHaveBeenCalledOnce();
+      expect(get).toHaveBeenCalledExactlyOnceWith('theme');
+      // The connection is shared with Angular and background storage consumers.
+      expect(close).not.toHaveBeenCalled();
       expect(initialThemeMode()).toBe(mode);
       expect(document.documentElement.getAttribute('data-theme')).toBe(
         effective,

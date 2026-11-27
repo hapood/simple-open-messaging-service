@@ -1,15 +1,22 @@
 # Client group metadata, member queries, and batched membership messages
 
-Status: partially implemented. Direction recorded on 2026-11-22; member query
-and the server-side client projection reader were added on 2026-11-23.
-`POST /group/members` is implemented. `GET /user/group-meta` now pages
-`ClientGroupMetaFeed` by `clientMetaEndId` and no longer returns member facts.
-The browser page model matches the new client contract. Existing browser and
-native apply code still reads member upserts and is intentionally not compiling
-until that roster drain is removed. Count writers are not yet called from
-membership transactions.
-Full application compilation and the standard E2E runner are currently blocked
-by unrelated federation work.
+Status: partially implemented. Direction recorded on 2026-11-22; updated on
+2026-11-24:
+- `POST /group/members` is implemented; `MemberProfileRepository.queryPage` in
+  `web/` now queries `POST /group/members`.
+- `ThreadFeedState` / `ThreadFeedStateDto` no longer carries
+  `tombstoneEndSeq` or `groupMetaFeedEndId`.
+- `applyDeltaMirrorMetaPageInTx` commits one page per transaction and
+  reconciles member count once per page.
+- `GROUP_JOINED` / `GROUP_LEFT` use `{ members, totalCount }` (max 5 members,
+  no legacy singular `member` compatibility).
+- `applyFullMirrorMetaBatchInTx` emits batched `GROUP_JOINED` on initial
+  setup and diffs on subsequent full recovery.
+- `system-row.component.ts` renders batched notices on a single fixed `24px`
+  line with name ellipsis and preserved count/action suffix.
+- Remaining: native Rust `mentions.rs` / `contacts.rs` cutover to
+  `POST /group/members`, removing `group_members` from SQLite, and
+  fixing/running full backend, browser, and Rust regression suites.
 
 ## 1. Scope and ownership
 
@@ -38,8 +45,7 @@ rejected. No such snapshot endpoint is part of this plan.
 ### Related work
 
 The separate [client miscellaneous state-feed plan](../design/client-misc-state-feed-dev.md)
-changes resource-head delivery and scheduling. The executable wake slice is
-[thread resource-head fanout](./thread-resource-head-plan.md). This plan changes
+changes resource-head delivery and scheduling. This plan changes
 Group Meta payloads and roster ownership, not that scheduler's ownership.
 Use the resource-head transport once it exists; do not introduce a second
 chat-open scheduler or require heads to remain in Thread Feed.

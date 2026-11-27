@@ -300,7 +300,7 @@ export class ThreadRepository {
     // Reconnect refresh is HELLO-driven now: the SSE reconnect re-pushes HELLO → onHello re-runs
     // (cache-paint + state-feed replay). No separate reconnect→boot wiring needed.
 
-    // Session-end reset: when the session ends (sessionUserId → null, i.e. clearSession/logout), drop
+    // Session-end reset: when the session ends (sessionUserId → null after the session owner resets local state), drop
     // the in-memory list so a second account logging into the same live SPA cannot inherit this user's
     // cached list. The IDB partition is handled by WebdbService (closed on the same signal); this covers
     // the in-memory layer. Reset flips status back to LOADING so the next login's ThreadListComponent
@@ -914,6 +914,7 @@ export class ThreadRepository {
           state.threadId,
           snapshot.messageEndSeq,
           emitLive,
+          snapshot.author,
         );
         this.applyThreadContentHead(snapshot, emitLive);
         const pending = this.pendingUnknownContentHeads.get(state.threadId);

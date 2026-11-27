@@ -41,11 +41,11 @@ and client behavior.
 
 - [Consumer UI guidelines](./design/consumer-ui-guidelines.md)
 - [Client message history synchronization](./design/client-message-history-sync.md)
-- [Chat history entry and message windows](./design/chat-history-entry-and-window.md) — reviewed Web presentation design; not yet implemented
+- [Gap-driven chat message windows](./design/chat-gap-driven-message-window.md) — current target for unified gaps, entry, positioning, animation, and pre-destruction; implementation pending
+- [Chat history entry and message windows](./design/chat-history-entry-and-window.md) — superseded presentation design and implementation context
 - [Composer avoidance silhouette](./design/composer-avoidance-silhouette.md) — static gray placeholder revealed by the composer's slide-down fade on Web and Android native
 - [Canonical Group Meta and asymmetric mirrors](./design/canonical-group-meta.md)
 - [Client Group Meta, member queries, and batched notices](./development/client-group-meta-and-members-plan.md) — member query implemented; client/feed/message migration pending
-- [Thread resource-head fanout](./development/thread-resource-head-plan.md) — tomb and client Group Meta wake, not the deferred scheduler rewrite
 - [Group announcement](./design/group-announcement.md)
 - [Durable task scheduling](./design/durable-task-scheduling.md)
 - [Task responsibilities and business locks](./design/durable-task-responsibilities-and-locks.md)

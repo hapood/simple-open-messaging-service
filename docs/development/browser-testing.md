@@ -31,6 +31,8 @@ worker fixtures, not global setup, own environment preparation:
 
 - Playground starts its own server on `127.0.0.1:4301`, refuses occupied ports,
   disables HMR/live reload/watch, and terminates only its owned process group.
+  Set `SOMS_PLAYGROUND_PORT` to another local port when the default is occupied;
+  the runner still never reuses or stops the existing server.
 - Federation connects to an already prepared `dev:be` + `dev:fe` lab and checks
   current Web/Admin HMR statuses. It never starts, resets, or stops the lab.
 - Mobile Web changes Chromium viewport and touch emulation. It is not Android

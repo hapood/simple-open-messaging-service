@@ -23,10 +23,10 @@ import { ProfileRepository } from './profile-store.service';
  * errors still propagate to the caller.
  */
 describe('ThreadRepository.setOpenThread teardown tolerance', () => {
-  let drainThreadMisc: ReturnType<typeof vi.fn>;
+  let setOpenThread: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
-    drainThreadMisc = vi.fn().mockName('drainThreadMisc');
+    setOpenThread = vi.fn().mockName('setOpenThread');
     TestBed.configureTestingModule({
       providers: [
         provideZonelessChangeDetection(),
@@ -34,7 +34,7 @@ describe('ThreadRepository.setOpenThread teardown tolerance', () => {
         {
           provide: WebdbService,
           useValue: {
-            drainThreadMisc,
+            setOpenThread,
             profileWake$: new Subject(),
             profileNamespaceWake$: new Subject(),
             workerFailed$: new Subject(),
@@ -146,21 +146,21 @@ describe('ThreadRepository.setOpenThread teardown tolerance', () => {
   });
 
   it('resolves when clearing the open thread during account cache teardown', async () => {
-    drainThreadMisc.mockRejectedValue(
+    setOpenThread.mockRejectedValue(
       new Error('account cache lifetime expired'),
     );
     const repo = TestBed.inject(ThreadRepository);
     await expect(repo.setOpenThread(undefined)).resolves.toBeUndefined();
-    expect(drainThreadMisc).toHaveBeenCalledWith(null);
+    expect(setOpenThread).toHaveBeenCalledWith(null);
   });
 
   it('resolves when opening a thread during account cache teardown', async () => {
-    drainThreadMisc.mockRejectedValue(
+    setOpenThread.mockRejectedValue(
       new Error('account cache lifetime expired'),
     );
     const repo = TestBed.inject(ThreadRepository);
     await expect(repo.setOpenThread(7)).resolves.toBeUndefined();
-    expect(drainThreadMisc).toHaveBeenCalledWith(7);
+    expect(setOpenThread).toHaveBeenCalledWith(7);
   });
 
   it('does not read successor state or publish cached rows after the captured login ends', async () => {
@@ -429,147 +429,8 @@ describe('ThreadRepository.setOpenThread teardown tolerance', () => {
     }
   });
 
-  it('lands warmed cross-namespace member profiles at the roster key once', async () => {
-    const webdb = TestBed.inject(WebdbService);
-    const user = TestBed.inject(UserService);
-    user.sessionUserId.set(1);
-    Object.assign(user, { sessionProfile: signal(null) });
-    const group = createGroupConversation({
-      threadId: 9,
-      account: 'room',
-      publisherNamespaceId: 0,
-      profileRev: 0,
-      profile: { name: 'Room', bio: '', avatarDigest: null },
-      role: 'MEMBER',
-      threadFeedId: 1,
-    });
-    const reference = {
-      type: 'GROUP_MEMBER',
-      threadId: 9,
-      account: 'charlie',
-      domain: 'bravo.test',
-      namespaceId: 1,
-      rev: 1,
-    } as const;
-    const resolveProfileDemand = vi.fn().mockResolvedValue({
-      status: 'READY',
-      profile: {
-        publisherNamespaceId: 0,
-        profileNamespaceId: 1,
-        account: 'charlie',
-        profileRev: 1,
-        name: 'Charlie Bravo',
-        bio: 'bio',
-        avatarDigest: null,
-      },
-    });
-    const commitResolvedGroupMetaProfile = vi.fn().mockResolvedValue(true);
-    let discovered: unknown[] = [reference];
-    Object.assign(webdb, {
-      getThreads: vi.fn().mockResolvedValue([group]),
-      projectThreadAttention: vi.fn().mockResolvedValue(null),
-      resolveProfileDemand,
-      commitResolvedGroupMetaProfile,
-      getUnresolvedGroupMetaProfiles: vi
-        .fn()
-        .mockImplementation(() => Promise.resolve(discovered)),
-    });
-    Object.assign(TestBed.inject(MessageRepository), {
-      applyThreadContentHead: vi.fn(),
-    });
-    const repo = TestBed.inject(ThreadRepository);
-    TestBed.tick();
-    const committed = webdb.threadFeedCommitted$ as Subject<{
-      userId: number;
-      states: Array<
-        ReturnType<typeof threadFeedSnapshot> & { localReadSeq: number }
-      >;
-    }>;
-    committed.next({
-      userId: 1,
-      states: [
-        {
-          ...threadFeedSnapshot(9, {
-            type: 'GROUP',
-            publisherNamespaceId: 0,
-            profileAccount: 'room',
-            profileRev: 0,
-            threadFeedId: 2,
-            role: 'MEMBER',
-          }),
-          localReadSeq: 0,
-        },
-      ],
-    });
-    await vi.waitFor(() =>
-      expect(repo.items().some((item) => item.threadId === 9)).toBe(true),
-    );
-    const meta = webdb.groupMetaCommitted$ as Subject<{
-      userId: number;
-      threadIds: number[];
-      patches: Array<{
-        threadId: number;
-        groupMetaFeedId: string;
-        memberCount: number;
-        announcementFeedId: null;
-        announcementText: null;
-        announcementCreatedAt: null;
-        announcementOriginCreatedAt: null;
-        groupMetaRecoveryThrough: null;
-      }>;
-    }>;
-    const metaEvent = {
-      userId: 1,
-      threadIds: [9],
-      patches: [
-        {
-          threadId: 9,
-          groupMetaFeedId: '24',
-          memberCount: 3,
-          announcementFeedId: null,
-          announcementText: null,
-          announcementCreatedAt: null,
-          announcementOriginCreatedAt: null,
-          groupMetaRecoveryThrough: null,
-        },
-      ],
-    };
-    meta.next(metaEvent);
-    await vi.waitFor(() =>
-      expect(commitResolvedGroupMetaProfile).toHaveBeenCalledTimes(1),
-    );
-    expect(commitResolvedGroupMetaProfile).toHaveBeenCalledWith(
-      reference,
-      expect.objectContaining({
-        namespaceId: 1,
-        account: 'charlie',
-        rev: 1,
-        name: 'Charlie Bravo',
-        bio: 'bio',
-      }),
-    );
-    expect(resolveProfileDemand).toHaveBeenCalledTimes(1);
-    expect(resolveProfileDemand.mock.calls[0][0]).toMatchObject({
-      publisherNamespaceId: 0,
-      lookup: 'GROUP_MEMBER_PROFILE',
-      groupAccount: 'room',
-      target: { profileNamespaceId: 1, account: 'charlie', rev: 1 },
-    });
-    // Once the reference converges, repeat commits must not re-issue work.
-    discovered = [];
-    meta.next(metaEvent);
-    await vi.waitFor(() =>
-      expect(
-        (webdb.getUnresolvedGroupMetaProfiles as ReturnType<typeof vi.fn>).mock
-          .calls.length,
-      ).toBeGreaterThanOrEqual(2),
-    );
-    expect(resolveProfileDemand).toHaveBeenCalledTimes(1);
-    expect(commitResolvedGroupMetaProfile).toHaveBeenCalledTimes(1);
-  });
-
   it('propagates storage failures that are not cache teardown', async () => {
-    drainThreadMisc.mockRejectedValue(new Error('QuExceededError'));
+    setOpenThread.mockRejectedValue(new Error('QuExceededError'));
     const repo = TestBed.inject(ThreadRepository);
     await expect(repo.setOpenThread(undefined)).rejects.toThrow(
       'QuExceededError',

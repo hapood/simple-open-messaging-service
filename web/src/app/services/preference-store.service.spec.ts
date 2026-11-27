@@ -7,22 +7,24 @@ describe('PreferenceStore', () => {
     store = new PreferenceStore();
   });
 
+  afterEach(async () => {
+    await store.close();
+  });
+
   it('stores JSON values and removes them', async () => {
-    expect(await store.get('device', 'missing')).toBeUndefined();
+    expect(await store.get('missing')).toBeUndefined();
 
-    await store.set('device', 'theme', { mode: 'dark' });
-    expect(await store.get('device', 'theme')).toEqual({ mode: 'dark' });
+    await store.set('theme', { mode: 'dark' });
+    expect(await store.get('theme')).toEqual({ mode: 'dark' });
 
-    await store.remove('device', 'theme');
-    expect(await store.get('device', 'theme')).toBeUndefined();
+    await store.remove('theme');
+    expect(await store.get('theme')).toBeUndefined();
   });
 
   it('distinguishes missing lifecycle metadata from storage failure', async () => {
-    expect(
-      await store.getStrict('device', 'missing-lifecycle'),
-    ).toBeUndefined();
-    await store.set('device', 'lifecycle', { phase: 'ending' });
-    expect(await store.getStrict('device', 'lifecycle')).toEqual({
+    expect(await store.getStrict('missing-lifecycle')).toBeUndefined();
+    await store.set('lifecycle', { phase: 'ending' });
+    expect(await store.getStrict('lifecycle')).toEqual({
       phase: 'ending',
     });
   });
@@ -33,21 +35,19 @@ describe('PreferenceStore', () => {
       throw failure;
     });
     try {
-      await expect(store.getStrict('device', 'lifecycle')).rejects.toBe(
-        failure,
-      );
-      await expect(store.get('device', 'theme')).resolves.toBeUndefined();
+      await expect(store.getStrict('lifecycle')).rejects.toBe(failure);
+      await expect(store.get('theme')).resolves.toBeUndefined();
     } finally {
       open.mockRestore();
     }
   });
 
-  it('isolates identical keys by scope', async () => {
-    await store.set('global', 'setting', 'global-value');
-    await store.set('account:7', 'setting', 'account-value');
+  it('keeps distinct keys independent', async () => {
+    await store.set('setting:a', 'value-a');
+    await store.set('setting:b', 'value-b');
 
-    expect(await store.get('global', 'setting')).toBe('global-value');
-    expect(await store.get('account:7', 'setting')).toBe('account-value');
-    expect(await store.get('account:8', 'setting')).toBeUndefined();
+    expect(await store.get('setting:a')).toBe('value-a');
+    expect(await store.get('setting:b')).toBe('value-b');
+    expect(await store.get('setting:c')).toBeUndefined();
   });
 });

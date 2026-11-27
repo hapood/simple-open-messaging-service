@@ -2,7 +2,6 @@ import { DestroyRef, Injectable, InjectionToken, inject } from '@angular/core';
 import { BrowserSessionOwner } from './session/browser-session-owner';
 import { SessionStore } from './session/session-store';
 import { deleteBrowserSessionCache } from './session/browser-session-cache';
-import { PreferenceStore } from './preference-store.service';
 import { WebdbService } from './webdb.service';
 import { UserService } from './user.service';
 import { SessionLifecycleService } from './session-lifecycle.service';
@@ -19,15 +18,13 @@ export class BrowserSessionService extends BrowserSessionOwner {
   private readonly lifetime = new AbortController();
   private readonly destroyRef = inject(DestroyRef);
   constructor(
-    preferences: PreferenceStore,
     database: WebdbService,
     user: UserService,
     lifecycle: SessionLifecycleService,
     state: SessionStateService,
   ) {
-    let previousUserId: number | undefined;
     super(
-      new SessionStore(preferences),
+      new SessionStore(),
       {
         close: () => database.close(),
         initialize: async (session) => {
@@ -39,13 +36,8 @@ export class BrowserSessionService extends BrowserSessionOwner {
           await user.restoreWebdb(signal);
         },
         delete: deleteBrowserSessionCache,
-        prepareFreshCache: async () => {
-          await resetNotificationSince();
-          await user.clearSessionPreferences(previousUserId);
-          previousUserId = undefined;
-        },
+        prepareFreshCache: resetNotificationSince,
         resetState: () => {
-          previousUserId = user.sessionProfile()?.id ?? previousUserId;
           user.resetSessionState();
         },
       },
@@ -54,12 +46,20 @@ export class BrowserSessionService extends BrowserSessionOwner {
         lifecycle.invalidateSession();
       },
       (session) => lifecycle.bindSession(session.id),
+      { primary: location.origin, secondary: null },
     );
     this.destroyRef.onDestroy(() => this.lifetime.abort());
   }
 
-  protected override withRestoration<T>(restore: () => Promise<T>, signal: AbortSignal): Promise<T> {
-    return withNotificationRestoration(restore, AbortSignal.any([signal, this.lifetime.signal]), (delay, retry) => this.startup.offerRetry(delay, retry));
+  protected override withRestoration<T>(
+    restore: () => Promise<T>,
+    signal: AbortSignal,
+  ): Promise<T> {
+    return withNotificationRestoration(
+      restore,
+      AbortSignal.any([signal, this.lifetime.signal]),
+      (delay, retry) => this.startup.offerRetry(delay, retry),
+    );
   }
 }
 

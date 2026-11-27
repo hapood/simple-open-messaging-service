@@ -70,6 +70,7 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
       setSessionToken: Mock;
       discardResidualToken: Mock;
       getSessionToken: Mock;
+      getLoginSessionId: Mock;
       pickActiveOrigin: Mock;
       clearMessageNotifications: Mock;
     };
@@ -101,11 +102,19 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
             keyringToken ? '22222222-3333-4444-8555-666666666666' : null,
           );
         if (cmd === 'try_logout') return Promise.resolve({ status: 'revoked' });
-        if (cmd === 'logout_status') return Promise.resolve('awaitingRevocation');
+        if (cmd === 'logout_status')
+          return Promise.resolve('awaitingRevocation');
         if (cmd === 'begin_logout') return Promise.resolve(undefined);
-        if (cmd === 'secure_get_token')
+        if (cmd === 'secure_get_login')
           return secureGetOk
-            ? Promise.resolve(keyringToken)
+            ? Promise.resolve(
+                keyringToken
+                  ? {
+                      token: keyringToken,
+                      sessionUuid: '22222222-3333-4444-8555-666666666666',
+                    }
+                  : null,
+              )
             : Promise.reject(new Error('no secret service'));
         if (cmd === 'secure_set_token')
           return secureSetOk
@@ -181,6 +190,11 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
       setSessionToken: set,
       discardResidualToken: discard,
       getSessionToken: get,
+      getLoginSessionId: vi
+        .fn()
+        .mockReturnValue(
+          storedToken ? '22222222-3333-4444-8555-666666666666' : null,
+        ),
       pickActiveOrigin: pick,
       clearMessageNotifications: clear,
     };
@@ -218,7 +232,10 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
         provideHttpClient(withXhr()),
         provideHttpClientTesting(),
         AuthService,
-        { provide: ThreadSendOutbox, useValue: { clear: vi.fn().mockResolvedValue(undefined) } },
+        {
+          provide: ThreadSendOutbox,
+          useValue: { clear: vi.fn().mockResolvedValue(undefined) },
+        },
         // AuthService resolves i18n keys for its keyring-failure toasts; stub the translator (returns the key).
         {
           provide: TranslocoService,
@@ -269,7 +286,6 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
               .mockImplementation(() =>
                 TestBed.inject(SessionLifecycleService).invalidateSession(),
               ),
-            clearSessionPreferences: vi.fn().mockResolvedValue(undefined),
             restoreWebdb: vi
               .fn()
               .mockName('restoreWebdb')
@@ -428,6 +444,7 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
       expect(await oldOutcome).toBeInstanceOf(SessionSupersededError);
       expect(invokeSpy).not.toHaveBeenCalledWith('secure_set_token', {
         token: 'old-token',
+        sessionUuid: firstId,
       });
       expect(TestBed.inject(SessionLifecycleService).capture().sessionId).toBe(
         nextId,
@@ -455,6 +472,7 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
       await vi.waitFor(() =>
         expect(invokeSpy).toHaveBeenCalledWith('login_session_for_token', {
           token: 'stored-token',
+          sessionUuid: nextId,
         }),
       );
       await passwordLogin('next-token');
@@ -633,15 +651,20 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
       await firstValueFrom(svc.logout());
 
       expect(svc.loggedIn()).toBe(false);
-      expect(invokeSpy).not.toHaveBeenCalledWith('desktop_notifications_clear', {
-        resetNavigation: true,
-      });
+      expect(invokeSpy).not.toHaveBeenCalledWith(
+        'desktop_notifications_clear',
+        {
+          resetNavigation: true,
+        },
+      );
       const commands = invokeSpy.mock.calls.map(([command]) => command);
       expect(commands.indexOf('begin_logout')).toBeLessThan(
         commands.indexOf('finish_logout'),
       );
       expect(invokeSpy).toHaveBeenCalledWith('try_logout', undefined);
-      expect(invokeSpy).toHaveBeenCalledWith('finish_logout', { localOnly: false });
+      expect(invokeSpy).toHaveBeenCalledWith('finish_logout', {
+        localOnly: false,
+      });
       expect(invokeSpy).toHaveBeenCalledWith('begin_logout', undefined);
       httpMock.expectNone((r) => /\/auth\/logout$/.test(r.url));
     });
@@ -704,7 +727,7 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
     });
 
     it('restoreSession with an UNREACHABLE keyring sets canTrust false (toggle hidden → no orphan session)', async () => {
-      // secure_get_token rejects → the boot probe fails → this desktop can't be trusted, so the trust
+      // secure_get_login rejects → the boot probe fails → this desktop can't be trusted, so the trust
       // toggle stays hidden and the user can't request a permanent token the client then can't persist.
       desktopGlobals({ secureGetOk: false });
       await svc.restoreSession();
@@ -733,16 +756,27 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
       const { set, discard } = androidGlobals('st-revoking');
       invokeSpy.mockImplementation((cmd: string) =>
         cmd === 'login_session_for_token'
-          ? Promise.reject(new Error('native session revocation requires an explicit decision'))
+          ? Promise.reject(
+              new Error(
+                'native session revocation requires an explicit decision',
+              ),
+            )
           : Promise.resolve(undefined),
       );
       await svc.restoreSession();
       expect(discard).not.toHaveBeenCalled();
       expect(set).not.toHaveBeenCalled();
       expect(svc.loggedIn()).toBe(false);
-      expect(invokeSpy.mock.calls.some(([command]) =>
-        ['set_session_token', 'clear_session_token', 'secure_clear_token', 'secure_clear_residual_token'].includes(command),
-      )).toBe(false);
+      expect(
+        invokeSpy.mock.calls.some(([command]) =>
+          [
+            'set_session_token',
+            'clear_session_token',
+            'secure_clear_token',
+            'secure_clear_residual_token',
+          ].includes(command),
+        ),
+      ).toBe(false);
     });
 
     it('a residual credential whose login was ended locally is discarded, never restored', async () => {
@@ -764,13 +798,32 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
       ).toBe(false);
     });
 
-    it('restoreSession reads SomsFcm.getSessionToken → session restored + canTrust true', async () => {
+    it('restoreSession validates the secure token and UUID pair before restoring Android', async () => {
       const { get, clear } = androidGlobals('st-cold');
       await svc.restoreSession();
       expect(get).toHaveBeenCalledTimes(1);
+      expect(invokeSpy).toHaveBeenCalledWith('login_session_for_token', {
+        token: 'st-cold',
+        sessionUuid: '22222222-3333-4444-8555-666666666666',
+      });
       expect(clear).not.toHaveBeenCalled();
       expect(svc.loggedIn()).toBe(true);
       expect(svc.isLoggedIn()).toBe(true);
+    });
+
+    it('discards a residual Android token without its secure UUID instead of admitting it', async () => {
+      const { discard } = androidGlobals('token-without-uuid');
+      const bridge = (window as unknown as MockWindow).SomsFcm!;
+      bridge.getLoginSessionId.mockReturnValue(null);
+      await svc.restoreSession();
+      expect(discard).toHaveBeenCalledOnce();
+      expect(
+        invokeSpy.mock.calls.some(
+          ([command]) => command === 'login_session_for_token',
+        ),
+      ).toBe(false);
+      expect(TestBed.inject(UserService).restoreWebdb).not.toHaveBeenCalled();
+      expect(svc.loggedIn()).toBe(false);
     });
 
     it('restoreSession with no stored token leaves the user logged out', async () => {
@@ -820,10 +873,16 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
 
       expect(set).not.toHaveBeenCalled();
       expect(invokeSpy).toHaveBeenCalledWith('begin_logout', undefined);
-      expect(invokeSpy).toHaveBeenCalledWith('finish_logout', { localOnly: false });
+      expect(invokeSpy).toHaveBeenCalledWith('finish_logout', {
+        localOnly: false,
+      });
       const commands = invokeSpy.mock.calls.map(([command]) => command);
-      expect(commands.indexOf('begin_logout')).toBeLessThan(commands.indexOf('try_logout'));
-      expect(commands.indexOf('try_logout')).toBeLessThan(commands.indexOf('finish_logout'));
+      expect(commands.indexOf('begin_logout')).toBeLessThan(
+        commands.indexOf('try_logout'),
+      );
+      expect(commands.indexOf('try_logout')).toBeLessThan(
+        commands.indexOf('finish_logout'),
+      );
       expect(svc.loggedIn()).toBe(false);
     });
   });

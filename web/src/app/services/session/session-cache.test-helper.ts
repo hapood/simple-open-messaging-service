@@ -1,5 +1,6 @@
-import { PreferenceStorage } from '../preference-storage';
-import { SessionStore, SESSION_STORE_KEY } from './session-store';
+import { AppStateStorage, PreferenceStorage } from '../preference-storage';
+import { SessionStore } from './session-store';
+import { resetTestAppState } from './session-store.test-helper';
 import {
   createSessionCacheDescriptor,
   type SessionCacheDescriptor,
@@ -7,15 +8,16 @@ import {
 
 /** Establish an isolated, durably active browser login for storage integration tests. */
 export async function prepareTestSessionCache(): Promise<SessionCacheDescriptor> {
-  const preferences = new PreferenceStorage();
+  const appState = new AppStateStorage();
   try {
-    await preferences.remove('device', SESSION_STORE_KEY);
+    await resetTestAppState(appState);
+    const store = new SessionStore(appState);
+    await store.initialize();
+    await store.configure({ primary: location.origin });
     const cache = createSessionCacheDescriptor();
-    const sessionStore = new SessionStore(preferences);
-    await sessionStore.prepare(cache);
-    await sessionStore.activate(cache.id);
+    await store.activate(cache.id);
     return cache;
   } finally {
-    await preferences.close();
+    await new PreferenceStorage().close();
   }
 }

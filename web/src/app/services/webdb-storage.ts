@@ -1,4 +1,5 @@
 import { BusinessCode } from './biz-code';
+import { SessionStore } from './session/session-store';
 import {
   advanceThreadResourceTargets,
   type ThreadResourceTargets,
@@ -44,7 +45,6 @@ import {
   type IDBPObjectStore,
 } from 'idb';
 import {
-  parseUserIdentityKey,
   type ConversationItem,
   type LocalThreadPatch,
   type DeletedMessageItem,
@@ -101,11 +101,9 @@ import {
  * {@link openForUser} / {@link closeAndDelete}). Repositories read/write through
  * `(await webdb.db()).get/put/...`, which is per-store typed via {@link WebdbSchema}.
  *
- * Per-user partition: the database name embeds the active login-session UUID
- * (`soms-session-<uuid>`), bound before any open, so a second account
- * on the same browser can never read the first's cached peers/avatars/list/history. The session owner
- * owns the lifecycle: logout only closes handles; physical deletion happens before the next fresh
- * login (see the client session lifecycle design).
+ * The fixed `soms-session` cache belongs to exactly one admitted login UUID. The session owner
+ * closes old handles and awaits physical deletion during logout before admitting a successor.
+ * The UUID fences asynchronous work; it is not a database-name partition.
  *
  * Prerender safety: every IDB access is guarded by `typeof indexedDB !== 'undefined'` and the database
  * is opened lazily (never at construction / module load), mirroring the existing `window` guards used
@@ -186,25 +184,6 @@ export interface ProfileTomb {
   profileNamespaceId: number;
   account: string;
   createdAt: number;
-}
-
-/** One materialized roster member selecting an exact profile revision. */
-export interface MemberRecord {
-  threadId: number;
-  account: string;
-  namespaceId: number;
-  role: 'OWNER' | 'ADMIN' | 'MEMBER';
-  left: boolean;
-  /** Profile reference selected by this group's metadata. */
-  profileRev: number;
-}
-
-export interface ResolvedMemberRecord extends MemberRecord {
-  /** Presentation is joined from the selected immutable profile. */
-  resolvedProfileRev?: number;
-  profileName?: string;
-  profileBio: string;
-  user: ProfileSnapshot;
 }
 
 type CachedMessageBody = Message;
@@ -426,14 +405,6 @@ export interface WebdbSchema extends DBSchema {
     key: [number, number, string];
     value: ProfileTomb;
   };
-  members: {
-    key: [number, string, number];
-    value: MemberRecord;
-    indexes: {
-      thread: number;
-      address: [number, string, number];
-    };
-  };
   /** One record per conversation, keyed by `threadId` (the field is the keyPath). */
   threads: { key: number; value: LocalThreadState };
   threadResourceSync: { key: number; value: ThreadResourceTargets };
@@ -454,7 +425,6 @@ export interface WebdbSchema extends DBSchema {
   };
 }
 
-export const CACHE_SCHEMA_VERSION = 1;
 const IDB_FORMAT_VERSION = 2;
 
 export class LocalCacheUnavailableError extends Error {
@@ -860,6 +830,15 @@ export class WebdbStorage implements AccountStateStorage {
 
   /** Initialize UUID-owned tables before HELLO identifies the account. No user handle is published. */
   async initializeSessionCache(): Promise<void> {
+    await this.prepareSessionCache(false);
+  }
+
+  /** Explicit recovery discards even structurally valid caches with corrupt account facts. */
+  async recreateSessionCache(): Promise<void> {
+    await this.prepareSessionCache(true);
+  }
+
+  private async prepareSessionCache(recreate: boolean): Promise<void> {
     const descriptor = this.sessionCache;
     if (!descriptor || !idbAvailable()) {
       throw new Error('webdb: session cache initialization unavailable');
@@ -879,6 +858,11 @@ export class WebdbStorage implements AccountStateStorage {
     try {
       await this.waitForAccountIdle();
       await this.closeHandles();
+      if (recreate) {
+        await deleteDB(`${descriptor.indexedDbName}-pending-sends`);
+        await deleteDB(`${descriptor.indexedDbName}-download-history`);
+        await deleteDB(descriptor.indexedDbName);
+      }
       const opened = await Promise.allSettled([
         this.openValidatedOrRecreate(descriptor.indexedDbName),
       ]);
@@ -977,7 +961,7 @@ export class WebdbStorage implements AccountStateStorage {
     }
   }
 
-  /** Cold-start path: open an existing cache, preserving its data when migrating legacy deletion markers. */
+  /** Cold-start path: validate an existing cache without creating, migrating, or replacing it. */
   async openExistingForUser(
     userId: string,
   ): Promise<IDBPDatabase<WebdbSchema> | null> {
@@ -1005,7 +989,7 @@ export class WebdbStorage implements AccountStateStorage {
     }
   }
 
-  /** Fresh-login path: explicitly drop the browser account database, then initialize the current v1
+  /** Fresh-login path: explicitly drop the browser account database, then initialize the current
    * schema. Authentication remains valid; only rebuildable local data is replaced. */
   async recreateForUser(
     userId: string,
@@ -1070,24 +1054,28 @@ export class WebdbStorage implements AccountStateStorage {
   ): Promise<IDBPDatabase<WebdbSchema>> {
     if (!(await this.databaseExists(name)))
       throw new LocalCacheUnavailableError(`missing local cache: ${name}`);
-    const db = await this.openValidatedOrRecreate(name);
+    // Omitting a version preserves the physical format. Abort accidental creation
+    // if another context deleted the cache after enumeration.
+    let db: IDBPDatabase<WebdbSchema>;
+    try {
+      db = await openDB<WebdbSchema>(name, undefined, {
+        upgrade(_db, _oldVersion, _newVersion, transaction) {
+          // idb wraps the upgrade transaction separately from the open request.
+          void transaction.done.catch(() => undefined);
+          transaction.abort();
+        },
+      });
+    } catch {
+      throw new LocalCacheUnavailableError(`unreadable local cache: ${name}`);
+    }
     this.observeCacheDeletion(db);
+    if (db.version !== IDB_FORMAT_VERSION) {
+      db.close();
+      throw new LocalCacheVersionMismatchError(name);
+    }
     if (!db.objectStoreNames.contains('accountState')) {
       db.close();
       throw new LocalCacheUnavailableError(`invalid local cache: ${name}`);
-    }
-    try {
-      if (
-        (await db.get('accountState', 'account'))?.schemaVersion !==
-        CACHE_SCHEMA_VERSION
-      ) {
-        db.close();
-        throw new LocalCacheVersionMismatchError(name);
-      }
-    } catch (error) {
-      db.close();
-      if (error instanceof LocalCacheVersionMismatchError) throw error;
-      throw new LocalCacheUnavailableError(`unreadable local cache: ${name}`);
     }
     if (await this.isCurrentSchema(db)) {
       return db;
@@ -1141,7 +1129,6 @@ export class WebdbStorage implements AccountStateStorage {
       'profileTombs',
       'profiles',
       'profileAvatarBlobs',
-      'members',
       'threads',
       'threadResourceSync',
       'messages',
@@ -1156,12 +1143,10 @@ export class WebdbStorage implements AccountStateStorage {
     try {
       const state = await db.get('accountState', 'account');
       return (
-        state?.schemaVersion === CACHE_SCHEMA_VERSION &&
+        !!state &&
         Number.isSafeInteger(state.stateFeedTarget) &&
         state.stateFeedTarget >= 0 &&
         db.transaction('accountState').store.keyPath === null &&
-        db.transaction('members').store.indexNames.contains('thread') &&
-        db.transaction('members').store.indexNames.contains('address') &&
         db.transaction('messages').store.indexNames.contains('byOrigin') &&
         db
           .transaction('messageRanges')
@@ -1197,11 +1182,6 @@ export class WebdbStorage implements AccountStateStorage {
           keyPath: ['publisherNamespaceId', 'profileNamespaceId', 'account'],
         });
         db.createObjectStore('profileAvatarBlobs', { keyPath: 'digest' });
-        const members = db.createObjectStore('members', {
-          keyPath: ['threadId', 'account', 'namespaceId'],
-        });
-        members.createIndex('thread', 'threadId');
-        members.createIndex('address', ['threadId', 'account', 'namespaceId']);
         db.createObjectStore('threads', { keyPath: 'threadId' });
         db.createObjectStore('threadResourceSync', { keyPath: 'threadId' });
         const messages = db.createObjectStore('messages', {
@@ -1221,7 +1201,6 @@ export class WebdbStorage implements AccountStateStorage {
         db.createObjectStore('accountState');
         transaction.objectStore('accountState').put(
           {
-            schemaVersion: CACHE_SCHEMA_VERSION,
             selfProfile: null,
             selfIdentity: null,
             composerDrafts: [],
@@ -1434,6 +1413,13 @@ export class WebdbStorage implements AccountStateStorage {
   ): Promise<T> {
     if (this.accountMaintenance)
       throw new Error('account cache lifetime expired');
+    return this.trackAccountOperation(operation);
+  }
+
+  /** Count admitted work so close/recreation can drain it without reopening admission. */
+  private async trackAccountOperation<T>(
+    operation: () => Promise<T>,
+  ): Promise<T> {
     this.accountOperations++;
     try {
       return await operation();
@@ -1907,6 +1893,89 @@ export class WebdbStorage implements AccountStateStorage {
     });
   }
 
+  /** Discover cached self facts before binding a user. Never creates or repairs a cache. */
+  async readCachedSelfProfile(): Promise<AccountSelfProfile | null> {
+    const epoch = this.cacheEpoch;
+    const descriptor = isTauri() ? null : this.requireSessionCache();
+    // Restoration runs after close/initialization, while ordinary account admission
+    // stays shut. Only this read may enter, and never during an unfinished transition.
+    if (
+      this.cacheBindingOperations !== 0 ||
+      this.accountResetPromise ||
+      this.messageResetPromise
+    )
+      throw new Error('account cache lifetime expired');
+    const assertCurrent = async () => {
+      if (descriptor) {
+        const session = await new SessionStore().read();
+        if (
+          session.lifecycleState !== 'active' ||
+          session.session?.id !== descriptor.id ||
+          this.sessionCache?.id !== descriptor.id
+        )
+          throw new Error('webdb: cached self session expired');
+      }
+      if (epoch !== this.cacheEpoch)
+        throw new Error('account cache lifetime expired');
+    };
+    this.cacheBindingOperations++;
+    try {
+      return await this.trackAccountOperation(async () => {
+        await assertCurrent();
+        let profile: AccountSelfProfile | null = null;
+        if (!descriptor) {
+          profile = await invokeAccountState(
+            'native_db_read_cached_self_profile',
+            {},
+          );
+        } else if (!idbAvailable()) {
+          throw new LocalCacheUnavailableError('IndexedDB unavailable');
+        } else if (await this.databaseExists(descriptor.indexedDbName)) {
+          // Abort creation if deletion raced enumeration; restoration is existing-only.
+          const db = await openDB<WebdbSchema>(
+            descriptor.indexedDbName,
+            undefined,
+            {
+              upgrade(_db, _oldVersion, _newVersion, tx) {
+                void tx.done.catch(() => undefined);
+                tx.abort();
+              },
+              blocking(_currentVersion, _blockedVersion, event) {
+                (event.target as IDBDatabase).close();
+              },
+            },
+          );
+          try {
+            if (db.version !== IDB_FORMAT_VERSION)
+              throw new LocalCacheVersionMismatchError(db.name);
+            if (!(await this.isCurrentSchema(db)))
+              throw new LocalCacheUnavailableError(
+                `invalid local cache: ${db.name}`,
+              );
+            const tx = db.transaction('accountState', 'readonly');
+            const state = await tx.store.get('account');
+            await tx.done;
+            if (!state)
+              throw new LocalCacheUnavailableError(
+                `missing account state: ${db.name}`,
+              );
+            profile = state.selfProfile;
+            if (profile && state.selfIdentity?.account !== profile.account)
+              throw new Error('webdb: cached self identity mismatch');
+          } finally {
+            db.close();
+          }
+        }
+        if (profile && (!Number.isSafeInteger(profile.id) || profile.id <= 0))
+          throw new Error('webdb: invalid cached self owner');
+        await assertCurrent();
+        return profile;
+      });
+    } finally {
+      this.cacheBindingOperations--;
+    }
+  }
+
   /** Read the fixed account record, without generic key access. */
   async readAccountState(): Promise<AccountState> {
     return this.runAccountOperation(async () => {
@@ -2193,20 +2262,12 @@ export class WebdbStorage implements AccountStateStorage {
       return;
     }
     const tx = (await this.db()).transaction(
-      ['threads', 'groupMeta', 'threadPreviews', 'members'],
+      ['threads', 'groupMeta', 'threadPreviews'],
       'readwrite',
     );
     await tx.objectStore('threads').delete(threadId);
     await tx.objectStore('groupMeta').delete(threadId);
     await tx.objectStore('threadPreviews').delete(threadId);
-    let member = await tx
-      .objectStore('members')
-      .index('thread')
-      .openCursor(threadId);
-    while (member) {
-      await member.delete();
-      member = await member.continue();
-    }
     await tx.done;
     this.browserNotifications.next({
       userId: Number(this.currentUserId),
@@ -2481,24 +2542,48 @@ export class WebdbStorage implements AccountStateStorage {
         const meta = await groupMetaStore.get(update.threadId);
         if (!meta)
           throw new Error('stored group thread is missing its meta row');
+        const recovering = meta.recoveryThrough !== null;
         for (const item of update.page.items) {
           if (item.operation === 'GROUP_ANNOUNCEMENT') {
-            meta.announcementFeedId = String(item.feedId);
-            meta.announcementText = item.body.text;
-            meta.announcementCreatedAt = item.createdAt;
-            meta.announcementOriginCreatedAt = item.originCreatedAt;
-            continue;
+            if (recovering) {
+              meta.recoveryAnnouncementFeedId = String(item.feedId);
+              meta.recoveryAnnouncementText = item.body.text;
+              meta.recoveryAnnouncementCreatedAt = item.createdAt;
+              meta.recoveryAnnouncementOriginCreatedAt = item.originCreatedAt;
+            } else {
+              meta.announcementFeedId = String(item.feedId);
+              meta.announcementText = item.body.text;
+              meta.announcementCreatedAt = item.createdAt;
+              meta.announcementOriginCreatedAt = item.originCreatedAt;
+            }
+          } else if (recovering) {
+            meta.recoveryMemberCount = item.body.memberCount;
+          } else {
+            meta.memberCount = item.body.memberCount;
           }
-          meta.memberCount = item.body.memberCount;
         }
-        const finished = !update.page.hasMore;
         const next: StoredGroupMeta = {
           ...meta,
-          memberCount: meta.memberCount,
           groupMetaFeedId: update.page.scannedThrough,
         };
-        if (finished) {
+        if (
+          recovering &&
+          !update.page.hasMore &&
+          update.page.scannedThrough === meta.recoveryThrough
+        ) {
+          next.memberCount = meta.recoveryMemberCount ?? 0;
+          next.announcementFeedId = meta.recoveryAnnouncementFeedId ?? null;
+          next.announcementText = meta.recoveryAnnouncementText ?? null;
+          next.announcementCreatedAt =
+            meta.recoveryAnnouncementCreatedAt ?? null;
+          next.announcementOriginCreatedAt =
+            meta.recoveryAnnouncementOriginCreatedAt ?? null;
           next.recoveryThrough = null;
+          delete next.recoveryMemberCount;
+          delete next.recoveryAnnouncementFeedId;
+          delete next.recoveryAnnouncementText;
+          delete next.recoveryAnnouncementCreatedAt;
+          delete next.recoveryAnnouncementOriginCreatedAt;
         }
         await groupMetaStore.put(next);
         patches.push({
@@ -2962,36 +3047,6 @@ export class WebdbStorage implements AccountStateStorage {
     });
   }
 
-  private memberUser(
-    member: MemberRecord,
-    publisherNamespaceId: number,
-    snapshot?: ProfileSnapshot,
-  ): ProfileSnapshot {
-    return {
-      publisherNamespaceId,
-      account: member.account,
-      profileNamespaceId: member.namespaceId,
-      profileRev: member.profileRev,
-      name: snapshot?.name ?? member.account,
-      avatarDigest: snapshot?.avatarDigest ?? null,
-      bio: snapshot?.bio ?? '',
-    };
-  }
-
-  private resolveMember(
-    member: MemberRecord,
-    publisherNamespaceId: number,
-    snapshot?: ProfileSnapshot,
-  ): ResolvedMemberRecord {
-    return {
-      ...member,
-      user: this.memberUser(member, publisherNamespaceId, snapshot),
-      resolvedProfileRev: snapshot?.profileRev,
-      profileName: snapshot?.name,
-      profileBio: snapshot?.bio ?? '',
-    };
-  }
-
   /** Open a fixed full-recovery window and reset its durable scan cursor. */
   async beginGroupMetaRecovery(
     threadId: number,
@@ -3004,7 +3059,7 @@ export class WebdbStorage implements AccountStateStorage {
         throw new Error('Group Meta recovery is owned by the native executor');
       }
       const tx = (await this.db()).transaction(
-        ['threads', 'groupMeta', 'members'],
+        ['threads', 'groupMeta'],
         'readwrite',
       );
       const thread = await tx.objectStore('threads').get(threadId);
@@ -3012,126 +3067,20 @@ export class WebdbStorage implements AccountStateStorage {
         await tx.done;
         return;
       }
-      let member = await tx
-        .objectStore('members')
-        .index('thread')
-        .openCursor(IDBKeyRange.only(threadId));
-      while (member) {
-        await member.delete();
-        member = await member.continue();
-      }
       const previousMeta = await tx.objectStore('groupMeta').get(threadId);
       if (!previousMeta)
         throw new Error('stored group thread is missing its meta row');
       await tx.objectStore('groupMeta').put({
         ...previousMeta,
-        memberCount: 0,
         groupMetaFeedId: '0',
         recoveryThrough: through,
+        recoveryMemberCount: 0,
+        recoveryAnnouncementFeedId: null,
+        recoveryAnnouncementText: null,
+        recoveryAnnouncementCreatedAt: null,
+        recoveryAnnouncementOriginCreatedAt: null,
       });
       await tx.done;
-    });
-  }
-
-  async queryGroupMembers(params: {
-    threadId: number;
-    afterIdentity?: string;
-    take: number;
-    search?: string;
-    exclude?: { account: string; namespaceId: number };
-  }): Promise<ResolvedMemberRecord[]> {
-    return this.runAccountOperation(async () => {
-      if (isTauri() && this.currentUserId != null)
-        return tauriInvoke<ResolvedMemberRecord[]>(
-          'native_db_query_group_members',
-          {
-            userId: Number(this.currentUserId),
-            threadId: params.threadId,
-            afterIdentity: params.afterIdentity ?? '',
-            take: params.take,
-            search: params.search?.trim() ?? '',
-            excludeAccount: params.exclude?.account ?? null,
-            excludeNamespaceId: params.exclude?.namespaceId ?? null,
-          },
-        );
-      const db = await this.db();
-      const thread = await db.get('threads', params.threadId);
-      if (thread?.type !== 'GROUP') return [];
-      const publisherNamespaceId = thread.publisherNamespaceId;
-      const result: ResolvedMemberRecord[] = [];
-      const search = params.search?.trim().toLowerCase() ?? '';
-      const cursor = params.afterIdentity
-        ? parseUserIdentityKey(params.afterIdentity)
-        : null;
-      const members = (
-        await db
-          .transaction('members')
-          .store.index('thread')
-          .getAll(params.threadId)
-      )
-        .filter((member) => {
-          return (
-            !member.left &&
-            !(
-              params.exclude &&
-              member.account === params.exclude.account &&
-              member.namespaceId === params.exclude.namespaceId
-            ) &&
-            (!cursor || compareMemberIdentity(member, cursor) > 0)
-          );
-        })
-        .sort(compareMemberIdentity);
-      for (const member of members) {
-        if (result.length >= params.take) break;
-        const snapshot = await db.get('profiles', [
-          publisherNamespaceId,
-          member.namespaceId,
-          member.account,
-          member.profileRev,
-        ]);
-        const user = this.memberUser(member, publisherNamespaceId, snapshot);
-        if (
-          !search ||
-          user.name.toLowerCase().includes(search) ||
-          user.account.toLowerCase().includes(search)
-        )
-          result.push(
-            this.resolveMember(member, publisherNamespaceId, snapshot),
-          );
-      }
-      return result;
-    });
-  }
-
-  async getGroupMember(
-    threadId: number,
-    account: string,
-    namespaceId: number,
-  ): Promise<ResolvedMemberRecord | undefined> {
-    return this.runAccountOperation(async () => {
-      if (isTauri() && this.currentUserId != null)
-        return (
-          (await tauriInvoke<ResolvedMemberRecord | null>(
-            'native_db_get_group_member',
-            {
-              userId: Number(this.currentUserId),
-              threadId,
-              account,
-              namespaceId,
-            },
-          )) ?? undefined
-        );
-      const db = await this.db();
-      const member = await db.get('members', [threadId, account, namespaceId]);
-      const thread = await db.get('threads', threadId);
-      if (!member || member.left || thread?.type !== 'GROUP') return undefined;
-      const snapshot = await db.get('profiles', [
-        thread.publisherNamespaceId,
-        namespaceId,
-        account,
-        member.profileRev,
-      ]);
-      return this.resolveMember(member, thread.publisherNamespaceId, snapshot);
     });
   }
 
@@ -3861,21 +3810,21 @@ export class WebdbStorage implements AccountStateStorage {
           if (!thread)
             throw new Error('missing thread for deleted-message HWM');
           const messageStore = tx.objectStore('messages');
-          await Promise.all([
-            ...items.map((item) =>
-              messageStore.put({
-                threadId,
-                seq: item.messageSeq,
-                contentType: 'TOMB',
-                isDeleted: true,
-                deletionType: item.type,
-              }),
-            ),
-            tx.objectStore('threads').put({
-              ...thread,
-              deletedHwm: Math.max(currentHwm, hwm),
-            }),
-          ]);
+          // Observe each request before issuing the next one: a synchronous put
+          // failure must not strand pending promises when the transaction aborts.
+          for (const item of items) {
+            await messageStore.put({
+              threadId,
+              seq: item.messageSeq,
+              contentType: 'TOMB',
+              isDeleted: true,
+              deletionType: item.type,
+            });
+          }
+          await tx.objectStore('threads').put({
+            ...thread,
+            deletedHwm: Math.max(currentHwm, hwm),
+          });
           await tx.done;
         } catch (error) {
           try {
@@ -4011,24 +3960,4 @@ export class WebdbStorage implements AccountStateStorage {
     this.sessionInvalidation?.unsubscribe();
     void this.close();
   }
-}
-
-function compareMemberIdentity(
-  left: Pick<MemberRecord, 'namespaceId' | 'account'>,
-  right: Pick<MemberRecord, 'namespaceId' | 'account'>,
-): number {
-  const namespaceOrder = left.namespaceId - right.namespaceId;
-  if (namespaceOrder) return namespaceOrder;
-  // SQLite's BINARY account ordering is Unicode scalar order for valid UTF-8.
-  // Locale collation would select different pages on browser and native hosts.
-  let a = 0;
-  let b = 0;
-  while (a < left.account.length && b < right.account.length) {
-    const leftPoint = left.account.codePointAt(a)!;
-    const rightPoint = right.account.codePointAt(b)!;
-    if (leftPoint !== rightPoint) return leftPoint - rightPoint;
-    a += leftPoint > 0xffff ? 2 : 1;
-    b += rightPoint > 0xffff ? 2 : 1;
-  }
-  return left.account.length - a - (right.account.length - b);
 }

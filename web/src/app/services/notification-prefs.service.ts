@@ -11,8 +11,7 @@ const PREVIEW_MODE_KEY = 'notificationPreviewMode';
  * Two booleans, both default `true`, persisted device-level via {@link PreferenceStore} — the
  * persisted locally for the current browser profile.
  *
- * These are DEVICE-level (like theme/language): they survive logout. `UserService.clearSession()` only
- * wipes user-scoped keys such as `soms.chat.emojiRecents`, so these are preserved.
+ * These are DEVICE-level (like theme/language): session cleanup preserves them across logout.
  *
  *  - `enabled` — app-level master for posting the system notification. When `false`, no notification is
  *    created even if the browser permission is `'granted'`. The browser permission itself is terminal
@@ -43,28 +42,28 @@ export class NotificationPrefsService {
   setEnabled(enabled: boolean): void {
     this.writeRevision++;
     this._enabled.set(enabled);
-    void this.preferences.set('device', ENABLED_KEY, enabled).catch(() => {});
+    void this.preferences.set(ENABLED_KEY, enabled).catch(() => {});
   }
 
   setSound(sound: boolean): void {
     this.writeRevision++;
     this._sound.set(sound);
-    void this.preferences.set('device', SOUND_KEY, sound).catch(() => {});
+    void this.preferences.set(SOUND_KEY, sound).catch(() => {});
   }
 
   /** Set the away-notification grouping pref. The next foreground pull sends it as `grouping`. */
   setPreviewMode(mode: 'message' | 'private'): void {
     this.writeRevision++;
     this._previewMode.set(mode);
-    void this.preferences.set('device', PREVIEW_MODE_KEY, mode).catch(() => {});
+    void this.preferences.set(PREVIEW_MODE_KEY, mode).catch(() => {});
   }
 
   private async restore(): Promise<void> {
     const revision = this.writeRevision;
     const [enabled, sound, previewMode] = await Promise.all([
-      this.preferences.get<boolean>('device', ENABLED_KEY),
-      this.preferences.get<boolean>('device', SOUND_KEY),
-      this.preferences.get<'message' | 'private'>('device', PREVIEW_MODE_KEY),
+      this.preferences.get<boolean>(ENABLED_KEY),
+      this.preferences.get<boolean>(SOUND_KEY),
+      this.preferences.get<'message' | 'private'>(PREVIEW_MODE_KEY),
     ]);
     if (revision !== this.writeRevision) return;
     if (typeof enabled === 'boolean') this._enabled.set(enabled);

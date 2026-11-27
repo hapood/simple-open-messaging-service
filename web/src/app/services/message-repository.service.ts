@@ -18,9 +18,16 @@ import {
 import { UserService } from './user.service';
 import { SessionLifecycleService } from './session-lifecycle.service';
 import { Message, MediaStatus } from './model';
-import { isTauri } from './runtime';
+import { isTauri, tauriInvoke } from './runtime';
 import { nativeHistoryRequest } from './native-history';
 import { historyAnchorRequest, type HistoryAnchor } from './history-anchor';
+import type { ThreadAuthor } from '../../../../shared/thread-author';
+import {
+  evaluateEntrySeam,
+  projectBoundedLocalInterval,
+  type EntrySeamEvaluation,
+  type ProjectedWindowItem,
+} from '../lib/chat-box/local-gap-projection';
 
 export interface MessageHistoryTarget {
   namespaceId: number;
@@ -129,6 +136,7 @@ export class MessageRepository {
   private readonly historyHeadSignal = new Subject<{
     threadId: number;
     seq: number;
+    author?: ThreadAuthor;
   }>();
   readonly historyHead$ = this.historyHeadSignal.asObservable();
   private readonly deletedSignal$ = new Subject<{
@@ -414,6 +422,108 @@ export class MessageRepository {
     }
   }
 
+  /** Unified local-only bounded interval projection (Tauri SQLite or Browser IndexedDB). */
+  async projectLocalInterval(
+    threadId: number,
+    left: number,
+    right: number,
+    signal?: AbortSignal,
+  ): Promise<ProjectedWindowItem<Message>[]> {
+    if (isTauri()) {
+      const userId = this.userService.sessionUserId();
+      if (userId === null) throw new Error('missing session user id');
+      signal?.throwIfAborted();
+      const result = await tauriInvoke<ProjectedWindowItem<Message>[]>(
+        'native_project_local_interval',
+        { userId, threadId, left, right },
+      );
+      signal?.throwIfAborted();
+      return result;
+    }
+    return this.projectBrowserLocalInterval(threadId, left, right, signal);
+  }
+
+  /** Strictly local-only bounded interval projection. Never performs HTTP or bootstraps bounds. */
+  async projectBrowserLocalInterval(
+    threadId: number,
+    left: number,
+    right: number,
+    signal?: AbortSignal,
+  ): Promise<ProjectedWindowItem<Message>[]> {
+    if (isTauri())
+      throw new Error('browser message history requested inside Tauri');
+    if (
+      !Number.isSafeInteger(left) ||
+      !Number.isSafeInteger(right) ||
+      left < 0 ||
+      right <= left ||
+      right - left > 500
+    )
+      throw new Error('invalid local projection bounds');
+    const scope = new CancellationScope(
+      this.webdb.captureMessageLifetime(),
+      signal,
+    );
+    try {
+      scope.signal.throwIfAborted();
+      const [ranges, cached] = await Promise.all([
+        this.webdb.getMessageRanges(threadId),
+        this.webdb.queryCachedMessages(threadId, 'asc', right - left, left),
+      ]);
+      scope.signal.throwIfAborted();
+      const messages = cached.filter((m) => m.seq > left && m.seq <= right);
+      return projectBoundedLocalInterval({ left, right, ranges, messages });
+    } finally {
+      scope.dispose();
+    }
+  }
+
+  /** Unified local-only entry seam readiness check (Tauri SQLite or Browser IndexedDB). */
+  async evaluateEntrySeam(
+    threadId: number,
+    readSeq: number,
+    knownEndSeq: number | null,
+    signal?: AbortSignal,
+  ): Promise<EntrySeamEvaluation> {
+    if (isTauri()) {
+      const userId = this.userService.sessionUserId();
+      if (userId === null) throw new Error('missing session user id');
+      signal?.throwIfAborted();
+      const result = await tauriInvoke<EntrySeamEvaluation>(
+        'native_evaluate_entry_seam',
+        { userId, threadId, readSeq, knownEndSeq },
+      );
+      signal?.throwIfAborted();
+      return result;
+    }
+    return this.evaluateBrowserEntrySeam(threadId, readSeq, knownEndSeq, signal);
+  }
+
+  /** Strictly local-only entry seam readiness check against persisted coverage ranges. */
+  async evaluateBrowserEntrySeam(
+    threadId: number,
+    readSeq: number,
+    knownEndSeq: number | null,
+    signal?: AbortSignal,
+  ): Promise<EntrySeamEvaluation> {
+    if (isTauri())
+      throw new Error('browser message history requested inside Tauri');
+    if (!Number.isSafeInteger(readSeq) || readSeq < 0)
+      throw new Error('invalid entry read coordinate');
+    const scope = new CancellationScope(
+      this.webdb.captureMessageLifetime(),
+      signal,
+    );
+    try {
+      scope.signal.throwIfAborted();
+      const ranges = await this.webdb.getMessageRanges(threadId);
+      scope.signal.throwIfAborted();
+      return evaluateEntrySeam({ readSeq, knownEndSeq, ranges });
+    } finally {
+      scope.dispose();
+    }
+  }
+
   /** Mount-scoped interval observation. Notifications carry coordinates, never bodies.
    * This deliberately bypasses the ordinary walker: SERVER_PENDING is exactly
    * the coverage that a committed server interval notification must refresh. */
@@ -421,6 +531,7 @@ export class MessageRepository {
     threadId: number,
     left: number,
     right: number,
+    direction: HistoryDirection = 'older',
   ): Observable<MessageHistoryIntervalPage> {
     return new Observable((subscriber) => {
       if (
@@ -457,6 +568,7 @@ export class MessageRepository {
           threadId,
           left,
           right,
+          direction,
         ).subscribe({
           next: (page) => {
             if (!signal.aborted && this.sessionLifecycle.isCurrent(session))
@@ -493,6 +605,7 @@ export class MessageRepository {
               const page = await this.refreshBrowserHistoryInterval(
                 threadId,
                 interval,
+                direction,
                 signal,
               );
               signal.throwIfAborted();
@@ -586,15 +699,25 @@ export class MessageRepository {
   private async refreshBrowserHistoryInterval(
     threadId: number,
     interval: { left: number; right: number },
+    direction: HistoryDirection,
     signal: AbortSignal,
   ): Promise<MessageHistoryIntervalPage | null> {
+    const request: MessageHistoryBackendRequest =
+      direction === 'newer'
+        ? {
+            threadId,
+            after: interval.left,
+            through: interval.right,
+            take: 50,
+          }
+        : {
+            threadId,
+            before: interval.right + 1,
+            through: interval.left + 1,
+            take: 50,
+          };
     const response = await firstValueFromAbortable(
-      this.msg.queryMessageHistoryPage({
-        threadId,
-        before: interval.right + 1,
-        through: interval.left + 1,
-        take: 50,
-      }),
+      this.msg.queryMessageHistoryPage(request),
       signal,
     );
     signal.throwIfAborted();
@@ -603,8 +726,8 @@ export class MessageRepository {
       throw new Error('history interval query failed');
     const page = response.data;
     const scan = this.historyScan(
-      'older',
-      interval.right + 1,
+      direction,
+      direction === 'newer' ? interval.left : interval.right + 1,
       page.scannedThrough,
     );
     if (!scan) return null;
@@ -1048,6 +1171,7 @@ export class MessageRepository {
     threadId: number,
     messageEndSeq: number,
     emitLiveSignal: boolean,
+    author?: ThreadAuthor,
   ): void {
     if (
       !Number.isSafeInteger(threadId) ||
@@ -1056,7 +1180,7 @@ export class MessageRepository {
       messageEndSeq < 0
     )
       return;
-    if (!this.advanceCeiling(threadId, messageEndSeq)) return;
+    if (!this.advanceCeiling(threadId, messageEndSeq, true, author)) return;
     if (emitLiveSignal) this.signal$.next({ threadId, seq: messageEndSeq });
   }
 
@@ -1075,6 +1199,7 @@ export class MessageRepository {
     threadId: number,
     seq: number,
     persist = true,
+    author?: ThreadAuthor,
   ): boolean {
     const truncateSeq = this.newerTruncateSeq.get(threadId) ?? -1;
     if (seq > truncateSeq) this.newerTruncateSeq.set(threadId, seq);
@@ -1082,7 +1207,11 @@ export class MessageRepository {
     if (seq <= cur) return false;
     this.maxSeenSeq.set(threadId, seq);
     if (persist) void this.webdb.putMessageHead(threadId, seq);
-    this.historyHeadSignal.next({ threadId, seq });
+    this.historyHeadSignal.next({
+      threadId,
+      seq,
+      ...(author ? { author } : {}),
+    });
     return true;
   }
 

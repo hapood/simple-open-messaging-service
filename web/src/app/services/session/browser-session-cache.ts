@@ -1,24 +1,16 @@
-import {
-  restoreSessionCacheDescriptor,
-  type SessionCacheDescriptor,
-} from './session-identity';
-
-/** A blocked request may finish later, but its ended UUID is never reused. */
+/** Deletion cannot be cancelled. A blocked request must settle before reuse of the fixed name. */
 function deleteDatabase(name: string): Promise<void> {
   return new Promise((resolve, reject) => {
     const request = indexedDB.deleteDatabase(name);
     request.onsuccess = () => resolve();
     request.onerror = () =>
       reject(request.error ?? new Error('Cache deletion failed'));
-    request.onblocked = () =>
-      reject(new Error('Close other cache connections and retry'));
+    // In particular, do not reject onblocked: that would permit a retry/new login
+    // while this outstanding request can still delete its identically named cache.
   });
 }
 
-export async function deleteBrowserSessionCache(
-  value: SessionCacheDescriptor,
-): Promise<void> {
-  const descriptor = restoreSessionCacheDescriptor(value);
-  await deleteDatabase(`${descriptor.indexedDbName}-pending-sends`);
-  await deleteDatabase(descriptor.indexedDbName);
+export async function deleteBrowserSessionCache(): Promise<void> {
+  await deleteDatabase('soms-session-pending-sends');
+  await deleteDatabase('soms-session');
 }

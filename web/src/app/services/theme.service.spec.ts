@@ -44,7 +44,7 @@ describe('ThemeService startup handoff', () => {
           .filter(([name]) => name === 'data-theme')
           .every(([, value]) => value === mode),
       ).toBe(true);
-      expect(get).toHaveBeenCalledExactlyOnceWith('global', 'theme');
+      expect(get).toHaveBeenCalledExactlyOnceWith('theme');
     },
   );
 
@@ -71,7 +71,7 @@ describe('ThemeService startup handoff', () => {
     service.setMode('light');
     onChange({ matches: true } as MediaQueryListEvent);
     expect(service.effective()).toBe('light');
-    expect(set).toHaveBeenCalledExactlyOnceWith('global', 'theme', 'light');
+    expect(set).toHaveBeenCalledExactlyOnceWith('theme', 'light');
     expect(get).toHaveBeenCalledTimes(1);
   });
 });

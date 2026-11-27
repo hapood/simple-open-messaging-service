@@ -176,9 +176,9 @@ async function projectNotificationThreads(
   const [rows, self, enabled, sound, mode] = await Promise.all([
     storage.getThreads(),
     storage.readAccountState().then((state) => state.selfProfile),
-    preferences.get<boolean>('device', 'notificationEnabled'),
-    preferences.get<boolean>('device', 'notificationSound'),
-    preferences.get<string>('device', 'notificationPreviewMode'),
+    preferences.get<boolean>('notificationEnabled'),
+    preferences.get<boolean>('notificationSound'),
+    preferences.get<string>('notificationPreviewMode'),
   ]);
   const owner = self;
   for (const state of states) {

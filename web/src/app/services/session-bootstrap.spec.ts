@@ -40,7 +40,6 @@ describe.each(['browser', 'desktop', 'android'] as const)(
             if (command === 'is_origin_configured') return false;
             if (command === 'native_db_read_account_state') {
               return {
-                schemaVersion: 1,
                 selfProfile: null,
                 selfIdentity: null,
                 composerDrafts: [],

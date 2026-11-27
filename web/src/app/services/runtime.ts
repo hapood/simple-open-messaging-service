@@ -125,6 +125,9 @@ declare global {
        *  re-establish the session on a cold start with NO plaintext copy in JS storage. Returns null when
        *  no token is stored (logged out / first run). Android-only. */
       getSessionToken: () => string | null;
+      /** Synchronous read of the login UUID saved beside the session token. Rust admits a restored
+       *  login only while this UUID still matches its lifecycle record. Android-only. */
+      getLoginSessionId: () => string | null;
       /** Synchronous read of the RealtimeService's last-pushed connection state
        *  ('connecting'|'open'|'reconnecting'|'closed'), so a freshly-booted WebView can seed its
        *  connection-state signal before the next state transition. Android-only. */

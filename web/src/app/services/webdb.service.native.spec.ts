@@ -68,18 +68,38 @@ describe('WebdbService native SQLite routing', () => {
   });
 
   it('routes pending intents through SQLite with original attachment identities and MIME', async () => {
-    const task = { clientMessageId: 'cid', threadId: 7, item: {
-      type: 'FILE' as const, file: { path: 'file.bin', name: 'file.bin', partId: 'part', mimeType: 'application/x-custom', size: 4 },
-    } };
+    const task = {
+      clientMessageId: 'cid',
+      threadId: 7,
+      item: {
+        type: 'FILE' as const,
+        file: {
+          path: 'file.bin',
+          name: 'file.bin',
+          partId: 'part',
+          mimeType: 'application/x-custom',
+          size: 4,
+        },
+      },
+    };
     await service.enqueuePendingSend(task);
-    expect(calls).toContainEqual({ cmd: 'native_send_enqueue', args: { task } });
+    expect(calls).toContainEqual({
+      cmd: 'native_send_enqueue',
+      args: { task },
+    });
     responses.set('native_send_get', task);
     expect(await service.pendingSend('cid')).toEqual(task);
-    expect(calls).toContainEqual({ cmd: 'native_send_get', args: { clientMessageId: 'cid' } });
+    expect(calls).toContainEqual({
+      cmd: 'native_send_get',
+      args: { clientMessageId: 'cid' },
+    });
     responses.set('native_send_list', [task]);
     expect(await service.pendingSends()).toEqual([task]);
     await service.removePendingSend('cid');
-    expect(calls).toContainEqual({ cmd: 'native_send_remove', args: { clientMessageId: 'cid' } });
+    expect(calls).toContainEqual({
+      cmd: 'native_send_remove',
+      args: { clientMessageId: 'cid' },
+    });
     await service.clearPendingSends();
     expect(calls).toContainEqual({ cmd: 'native_send_clear', args: undefined });
     responses.delete('native_send_get');
@@ -93,10 +113,16 @@ describe('WebdbService native SQLite routing', () => {
     await expect(service.pendingSend('cid')).rejects.toThrow();
     await expect(service.removePendingSend('cid')).rejects.toThrow();
     await expect(service.clearPendingSends()).rejects.toThrow();
-    await expect(service.enqueuePendingSend({ clientMessageId: 'cid', threadId: 7,
-      item: { type: 'PURE_TEXT', content: 'hello' },
-    })).rejects.toThrow();
-    expect(calls.filter(call => call.cmd.startsWith('native_send_'))).toEqual([]);
+    await expect(
+      service.enqueuePendingSend({
+        clientMessageId: 'cid',
+        threadId: 7,
+        item: { type: 'PURE_TEXT', content: 'hello' },
+      }),
+    ).rejects.toThrow();
+    expect(calls.filter((call) => call.cmd.startsWith('native_send_'))).toEqual(
+      [],
+    );
   });
 
   it('rejects browser attachment bytes before invoking native pending storage', async () => {
@@ -108,13 +134,23 @@ describe('WebdbService native SQLite routing', () => {
       size: 5,
       blob: new Blob(['image']),
     };
-    await expect(service.enqueuePendingSend({ clientMessageId: 'file', threadId: 7,
-      item: { type: 'IMAGE', file },
-    })).rejects.toThrow('not file bytes');
-    await expect(service.enqueuePendingSend({ clientMessageId: 'gallery', threadId: 7,
-      item: { type: 'GALLERY', files: [{ ...file, intent: 'IMAGE' }] },
-    })).rejects.toThrow('not file bytes');
-    expect(calls.some(call => call.cmd === 'native_send_enqueue')).toBe(false);
+    await expect(
+      service.enqueuePendingSend({
+        clientMessageId: 'file',
+        threadId: 7,
+        item: { type: 'IMAGE', file },
+      }),
+    ).rejects.toThrow('not file bytes');
+    await expect(
+      service.enqueuePendingSend({
+        clientMessageId: 'gallery',
+        threadId: 7,
+        item: { type: 'GALLERY', files: [{ ...file, intent: 'IMAGE' }] },
+      }),
+    ).rejects.toThrow('not file bytes');
+    expect(calls.some((call) => call.cmd === 'native_send_enqueue')).toBe(
+      false,
+    );
   });
 
   it('initializes the native account record before opening reads without inventing sync cursors', async () => {
@@ -124,8 +160,12 @@ describe('WebdbService native SQLite routing', () => {
     });
     responses.set('native_db_read_account_state', accountState());
     await expect(service.readAccountState()).resolves.toEqual(accountState());
-    const initialization = calls.findIndex((call) => call.cmd === 'native_db_initialize_account_state');
-    const read = calls.findIndex((call) => call.cmd === 'native_db_read_account_state');
+    const initialization = calls.findIndex(
+      (call) => call.cmd === 'native_db_initialize_account_state',
+    );
+    const read = calls.findIndex(
+      (call) => call.cmd === 'native_db_read_account_state',
+    );
     expect(initialization).toBeLessThan(read);
   });
 
@@ -139,19 +179,20 @@ describe('WebdbService native SQLite routing', () => {
       await service[open]('43');
       await expect(service.getThreads()).resolves.toEqual([]);
       await expect(service.readAccountState()).resolves.toEqual(accountState());
-      await expect(service.drainThreadMisc(9)).resolves.toBeUndefined();
       expect(calls).toContainEqual(
         expect.objectContaining({
           cmd: 'native_db_threads',
           args: { userId: 43 },
         }),
       );
-      expect(calls).toContainEqual(
-        expect.objectContaining({
-          cmd: 'native_db_drain_thread_misc',
-          args: expect.objectContaining({ userId: 43, threadId: 9 }),
-        }),
-      );
+      expect(calls).toContainEqual({
+        cmd: 'native_db_read_account_state',
+        args: { userId: 43 },
+      });
+      // Rust owns resource scheduling; reopening renderer reads must not start a drain.
+      expect(
+        calls.some((call) => call.cmd === 'native_db_drain_thread_misc'),
+      ).toBe(false);
     },
   );
 
@@ -211,7 +252,7 @@ describe('WebdbService native SQLite routing', () => {
   });
 
   it('does not allow a renderer to submit native state-feed pages', async () => {
-    await expect(service.applyStateFeedPage([], 81, true)).rejects.toThrow(
+    await expect(service.applyStateFeedPage([], 81, 81)).rejects.toThrow(
       'Rust SSE executor',
     );
     expect(calls).not.toContainEqual(
@@ -248,56 +289,6 @@ describe('WebdbService native SQLite routing', () => {
             lookup: 'ACCOUNT_PROFILE',
             target: { profileNamespaceId: 0, account: 'alice', rev: 6 },
           },
-        },
-      }),
-    );
-  });
-
-  it('queries a paginated group roster through native SQLite', async () => {
-    const member = {
-      threadId: 9,
-      account: 'alice',
-      domain: 'home.example',
-      namespaceId: 12,
-      profileRev: 6,
-      profileBio: '',
-      role: 'MEMBER',
-      left: false,
-      user: {
-        account: 'alice',
-        domain: 'home.example',
-        namespaceId: 12,
-        name: 'Alice',
-        avatar: '/a.webp',
-        bio: '',
-        availability: 'AVAILABLE',
-        profileRev: 6,
-        createdAt: 0,
-        updatedAt: 0,
-      },
-    };
-    responses.set('native_db_query_group_members', [member]);
-
-    expect(
-      await service.queryGroupMembers({
-        threadId: 9,
-        afterIdentity: JSON.stringify([12, 'aaron']),
-        take: 20,
-        search: 'ali',
-        exclude: { namespaceId: 0, account: 'self' },
-      }),
-    ).toEqual([member]);
-    expect(calls).toContainEqual(
-      expect.objectContaining({
-        cmd: 'native_db_query_group_members',
-        args: {
-          userId: 42,
-          threadId: 9,
-          afterIdentity: JSON.stringify([12, 'aaron']),
-          take: 20,
-          search: 'ali',
-          excludeAccount: 'self',
-          excludeNamespaceId: 0,
         },
       }),
     );

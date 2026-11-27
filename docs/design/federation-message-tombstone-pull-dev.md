@@ -60,7 +60,7 @@ below; those older descriptions are not acceptance criteria for the next edits.
 - [x] Unify `DeletedMessage` and `FederatedMessageTombstone` into
   `MessageTombstone` (`LOCAL` vs `FEDERATED` provenance, retained `consumed`
   state) in `src/database/schema.ts` and
-  `database/migrations/0001_federated_message_tombstone_consumed.sql`. Update
+  `database/migrations/0000_base.sql`. Update
   obsolete row-deletion assertions and verify unconsumed logical gaps in client
   and peer queries. Insertion marks `consumed = true` without allocating a
   local `deletionSeq`.
@@ -102,11 +102,10 @@ Validation checkpoint (Phase A backend complete; Phase B remains deferred):
   `federation-forward-quotes`, `federation-group-media-authorization`,
   `federation-thread-parent-lock`, `first-message-after-friend`,
   `message-visibility`, `message-search-pagination`, `mark-read`) passed.
-- Note: `src/database/schema.spec.ts` and `test/federation-feed-head-receipt.e2e-spec.ts`
-  still assert that `0000_base.sql` is the sole migration until unreleased
-  migrations (`0001_federated_message_tombstone_consumed.sql` and unrelated WIP
-  `0002_client_group_meta_projection.sql`) are squashed into `0000_base.sql`.
-  Unrelated WIP failures in `group-meta-*`, `thread-attention`,
+- The unreleased tombstone and client group-meta projection migrations are
+  consolidated into `0000_base.sql`. `src/database/schema.spec.ts` and
+  `test/federation-feed-head-receipt.e2e-spec.ts` assert this sole baseline.
+  At this checkpoint, unrelated WIP failures in `group-meta-*`, `thread-attention`,
   `departure-system-message` (mirror meta), and `federation.e2e-spec.ts`
   (`storeFederationQuote` / `metaRecoveryThroughId`) were left untouched.
 

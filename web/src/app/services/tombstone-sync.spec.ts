@@ -11,13 +11,19 @@ describe('tombstone synchronization progress validation', () => {
   });
 
   it('uses last applied facts, rereads actual cutoff every page, and stops an exhausted cutoff', async () => {
+    // The persisted HWM advances to the last applied fact, as the real store does.
+    let persistedHwm = 0;
     const storage = {
-      getDeletedHwm: vi.fn().mockResolvedValue(0),
+      getDeletedHwm: vi.fn(async () => persistedHwm),
       getTombstoneCutoff: vi
         .fn()
         .mockResolvedValueOnce(5)
         .mockResolvedValue(20),
-      applyDeletedMessages: vi.fn(),
+      applyDeletedMessages: vi.fn(
+        async (_threadId: number, _items: unknown[], hwm: number) => {
+          persistedHwm = hwm;
+        },
+      ),
     };
     const request = vi
       .fn()
@@ -99,15 +105,7 @@ describe('tombstone synchronization progress validation', () => {
       .mockRejectedValueOnce(new Error('network'));
     const notify = vi.fn();
     await expect(
-      syncTombstoneThread(
-        storage,
-        request,
-        42,
-        10,
-        undefined,
-        undefined,
-        notify,
-      ),
+      syncTombstoneThread(storage, request, 42, 10, undefined, notify),
     ).rejects.toThrow('network');
     expect(notify).toHaveBeenCalledExactlyOnceWith([fact(2, 4)]);
   });

@@ -52,7 +52,7 @@ export class DebugToolsService {
   disable(): void {
     this.writeRevision++;
     this.persisted = false;
-    void this.preferences.remove('device', STORAGE_KEY).catch(() => {});
+    void this.preferences.remove(STORAGE_KEY).catch(() => {});
     this.enabled.set(false);
     this.applyLogging(false);
   }
@@ -75,8 +75,8 @@ export class DebugToolsService {
     this.writeRevision++;
     this.persisted = on;
     const write = on
-      ? this.preferences.set('device', STORAGE_KEY, true)
-      : this.preferences.remove('device', STORAGE_KEY);
+      ? this.preferences.set(STORAGE_KEY, true)
+      : this.preferences.remove(STORAGE_KEY);
     void write.catch(() => {});
     this.enabled.set(on);
     this.applyLogging(this.enabled());
@@ -93,7 +93,7 @@ export class DebugToolsService {
 
   private async restore(): Promise<void> {
     const revision = this.writeRevision;
-    const stored = await this.preferences.get<boolean>('device', STORAGE_KEY);
+    const stored = await this.preferences.get<boolean>(STORAGE_KEY);
     if (revision !== this.writeRevision || stored !== true) return;
     this.persisted = true;
     this.enabled.set(true);

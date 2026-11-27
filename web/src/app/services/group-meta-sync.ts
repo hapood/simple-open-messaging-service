@@ -1,6 +1,7 @@
 import type { ConversationItem } from './model';
 import type {
   ClientGroupMetaApply,
+  ClientGroupMetaFact,
   ClientGroupMetaFeedPage,
   GroupMetaCommitPatch,
 } from './group-meta-model';

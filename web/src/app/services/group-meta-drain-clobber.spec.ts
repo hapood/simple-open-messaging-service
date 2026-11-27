@@ -46,43 +46,25 @@ describe('group-meta drain vs renderer local patches', () => {
         profileAccount: '!four-one-alpha',
         publisherNamespaceId: 0,
         profileRev: 1,
-        groupMetaFeedEndId: '3',
       }),
     ]);
 
     // Capture renderer state before the worker commits its Meta page.
     const inMemory = (await webdb.getThreads())[0];
 
-    // 3) The database worker drains the Group Meta page (creator OWNER upsert).
+    // 3) The database worker drains the Group Meta page (the group's count).
     await webdb.applyGroupMetaPage({
       threadId: 15,
       namespaceId: 0,
       page: {
         account: '!four-one-alpha',
-        mode: 'full',
         items: [
           {
-            feedId: '2',
-            createdAt: 1_000,
-            originCreatedAt: null,
-            operation: 'GROUP_PROFILE',
-            body: {
-              account: '!four-one-alpha',
-              namespaceId: 0,
-              profileRev: 1,
-            },
-          },
-          {
-            feedId: '3',
+            feedId: 3,
             createdAt: 1_100,
             originCreatedAt: null,
-            operation: 'MEMBER_UPSERT',
-            body: {
-              account: 'alice.w1007',
-              namespaceId: 0,
-              role: 'OWNER',
-              profileRev: 1,
-            },
+            operation: 'GROUP_MEMBER_COUNT',
+            body: { memberCount: 1 },
           },
         ],
         hasMore: false,
@@ -98,9 +80,6 @@ describe('group-meta drain vs renderer local patches', () => {
       type: 'GROUP',
       meta: { memberCount: 1, groupMetaFeedId: '3' },
     });
-    expect(
-      await webdb.queryGroupMembers({ threadId: 15, take: 20 }),
-    ).toHaveLength(1);
 
     // The local operation writes only its owned field, not the stale read model.
     await webdb.patchThread(inMemory.threadId, { muted: !inMemory.muted });
@@ -113,8 +92,5 @@ describe('group-meta drain vs renderer local patches', () => {
       profile: { name: '!four-one-alpha' },
       meta: { memberCount: 1, groupMetaFeedId: '3' },
     });
-    expect(
-      await webdb.queryGroupMembers({ threadId: 15, take: 20 }),
-    ).toHaveLength(1);
   });
 });

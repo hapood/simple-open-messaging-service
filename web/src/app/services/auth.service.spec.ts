@@ -24,7 +24,7 @@ import {
   STATE_FEED_WORKER_FACTORY,
 } from './webdb.service';
 import { PreferenceStore } from './preference-store.service';
-import { SESSION_STORE_KEY } from './session/session-store';
+import { resetTestAppState } from './session/session-store.test-helper';
 import { prepareTestSessionCache } from './session/session-cache.test-helper';
 import { deleteDB } from 'idb';
 
@@ -108,11 +108,9 @@ describe('AuthService (session-token contract, browser path)', () => {
         {
           provide: UserService,
           useValue: {
-            clearSession: vi.fn().mockName('clearSession'),
             prepareFreshCache: vi.fn().mockName('prepareFreshCache'),
             sessionProfile: () => undefined,
             resetSessionState: vi.fn(),
-            clearSessionPreferences: vi.fn().mockResolvedValue(undefined),
             restoreWebdb: vi
               .fn()
               .mockName('restoreWebdb')
@@ -121,21 +119,27 @@ describe('AuthService (session-token contract, browser path)', () => {
         },
       ],
     });
-    await TestBed.inject(PreferenceStore).remove('device', SESSION_STORE_KEY);
+    await resetTestAppState();
     svc = TestBed.inject(AuthService);
     httpMock = TestBed.inject(HttpTestingController);
   });
   afterEach(async () => {
-    await TestBed.inject(WebdbService).close();
-    for (const { name } of await indexedDB.databases()) {
-      if (name?.startsWith('soms-session-')) await deleteDB(name);
+    try {
+      await TestBed.inject(WebdbService).close();
+      for (const { name } of await indexedDB.databases()) {
+        if (name?.startsWith('soms-session')) await deleteDB(name);
+      }
+      await resetTestAppState();
+    } finally {
+      try {
+        await TestBed.inject(PreferenceStore).close();
+      } finally {
+        TestBed.resetTestingModule();
+        vi.restoreAllMocks();
+        // Clear any presence cookie a test set (document.cookie survives resetTestingModule).
+        document.cookie = 'logged_in=; Max-Age=0; Path=/; SameSite=Strict';
+      }
     }
-    await TestBed.inject(PreferenceStore).remove('device', SESSION_STORE_KEY);
-    await TestBed.inject(PreferenceStore).close();
-    TestBed.resetTestingModule();
-    vi.restoreAllMocks();
-    // Clear any presence cookie a test set (document.cookie survives resetTestingModule).
-    document.cookie = 'logged_in=; Max-Age=0; Path=/; SameSite=Strict';
   });
 
   it('login() sends client:web + a friendly device label; on the pure-httpOnly browser path no token is held in JS', async () => {
@@ -240,16 +244,13 @@ describe('AuthService (session-token contract, browser path)', () => {
     expect(document.cookie).not.toContain('logged_in=1');
   });
 
-  it('invalidates immediately, releases handles, and never invokes legacy cache deletion', async () => {
+  it('waits for local handles to close before remote logout', async () => {
     document.cookie = 'logged_in=1; Path=/';
     await TestBed.inject(BROWSER_SESSION)!.authenticate((signal) => TestBed.inject(BROWSER_SESSION)!.activate(signal));
     let finishCacheClear!: () => void;
     const cacheClear = new Promise<void>((resolve) => {
       finishCacheClear = resolve;
     });
-    const user = TestBed.inject(UserService) as unknown as {
-      clearSession: Mock;
-    };
     vi.spyOn(TestBed.inject(WebdbService), 'close').mockReturnValueOnce(
       cacheClear,
     );
@@ -267,7 +268,6 @@ describe('AuthService (session-token contract, browser path)', () => {
     request.flush({ code: 0, message: 'ok' });
     await vi.waitFor(() => expect(exited).toHaveBeenCalledTimes(1));
     expect(svc.isLoggedIn()).toBe(false);
-    expect(user.clearSession).not.toHaveBeenCalled();
   });
 
   it('stays signed out and reports local resource release failure', async () => {
@@ -292,13 +292,11 @@ describe('AuthService (session-token contract, browser path)', () => {
     document.cookie = 'logged_in=1; Path=/';
     const user = TestBed.inject(UserService) as unknown as {
       restoreWebdb: Mock;
-      clearSession: Mock;
     };
     user.restoreWebdb.mockRejectedValue(new Error('missing cache'));
 
     await svc.restoreSession();
 
-    expect(user.clearSession).not.toHaveBeenCalled();
     expect(TestBed.inject(RouteService).redirect).not.toHaveBeenCalled();
     httpMock.expectNone((request) => /\/auth\/logout$/.test(request.url));
     expect(TestBed.inject(ToastService).warn).toHaveBeenCalledWith(
