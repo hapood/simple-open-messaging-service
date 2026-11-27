@@ -36,18 +36,22 @@ function leaseImage(profile: ResolvedProfile): {
     entry = { url: URL.createObjectURL(profile.avatarBlob), users: 0 };
     images.set(digest, entry);
   }
+  return { url: entry.url, release: retainImageEntry(digest, entry) };
+}
+
+function retainImageEntry(
+  digest: string,
+  entry: { url: string; users: number },
+): () => void {
   entry.users++;
   let released = false;
-  return {
-    url: entry.url,
-    release() {
-      if (released) return;
-      released = true;
-      if (--entry.users === 0) {
-        images.delete(digest);
-        URL.revokeObjectURL(entry.url);
-      }
-    },
+  return () => {
+    if (released) return;
+    released = true;
+    if (--entry.users === 0) {
+      images.delete(digest);
+      URL.revokeObjectURL(entry.url);
+    }
   };
 }
 
@@ -83,6 +87,18 @@ export function initialAvatarView(source: AvatarSource): AvatarView {
 export class AvatarPresentationService {
   private readonly injector = inject(Injector);
   private readonly active = new Map<string, Observable<AvatarView>>();
+
+  /** A retiring painter can stop observing while retaining its current bytes.
+   * Only URLs owned by this service receive a lease; external/snapshot URLs
+   * remain owned by their original provider. Call while the view is still live. */
+  retainImage(view: Pick<AvatarView, 'imageUrl'>): () => void {
+    if (view.imageUrl) {
+      for (const [digest, entry] of images) {
+        if (entry.url === view.imageUrl) return retainImageEntry(digest, entry);
+      }
+    }
+    return () => {};
+  }
 
   resolve(source: AvatarSource): Observable<AvatarView> {
     // Forward resource selection belongs to its domain; it exposes no author identity.

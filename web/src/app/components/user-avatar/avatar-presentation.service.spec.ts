@@ -124,6 +124,26 @@ describe('AvatarPresentationService', () => {
     expect(updates.observed).toBe(false);
   });
 
+  it('retains only current image bytes while an exiting painter stops its live subscription', () => {
+    let view!: AvatarView;
+    const subscription = service.resolve(demand).subscribe(value => view = value);
+    updates.next(profile);
+    const release = service.retainImage(view);
+    subscription.unsubscribe();
+    expect(updates.observed).toBe(false);
+    expect(URL.revokeObjectURL).not.toHaveBeenCalled();
+    expect(URL.createObjectURL).toHaveBeenCalledOnce();
+    release();
+    release();
+    expect(URL.revokeObjectURL).toHaveBeenCalledExactlyOnceWith('blob:avatar');
+  });
+
+  it('does not acquire ownership of snapshot URLs when retaining a view', () => {
+    const release = service.retainImage({ imageUrl: 'blob:external-owner' });
+    release();
+    expect(URL.revokeObjectURL).not.toHaveBeenCalled();
+  });
+
   it('leases a shared digest across distinct subjects and never evicts an in-use image', () => {
     const first = service.resolve(demand).subscribe();
     const second = service

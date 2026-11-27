@@ -6,6 +6,8 @@ import {
   inject,
   input,
   signal,
+  ElementRef,
+  afterRenderEffect,
 } from '@angular/core';
 import { MatIconModule } from '@angular/material/icon';
 import { FileIconComponent } from '../file-icon.component';
@@ -19,6 +21,7 @@ import { formatDuration } from '../file-meta.util';
 import { AudioPlayerComponent } from '../audio-player/audio-player.component';
 import { MediaDownloadOverlayComponent } from './media-download-overlay.component';
 import { MediaThumbnailComponent } from './media-thumbnail.component';
+import { onCbItemPredestory } from '../../../lib/chat-box/cb-item-activity';
 
 const KIND_ICONS = {
   image: 'image',
@@ -154,9 +157,7 @@ const PENDING: MediaFileProgress = {
     '[class.positioned]': '!!rect()',
     '[attr.data-media-message-id]': 'media().msgId',
     '[style.left.%]': 'rect()?.xPct',
-    '[style.top.px]': 'rect()?.yPx',
     '[style.width.%]': 'rect()?.wPct',
-    '[style.height.px]': 'rect()?.hPx',
   },
 })
 export class AlbumMediaCellComponent {
@@ -180,7 +181,64 @@ export class AlbumMediaCellComponent {
   readonly formatDuration = formatDuration;
 
   constructor() {
-    effect((onCleanup) => {
+    const host = inject(ElementRef<HTMLElement>).nativeElement;
+    const preference = matchMedia('(prefers-reduced-motion: reduce)');
+    let frame: number | undefined;
+    let current: { top: number; height: number } | undefined;
+    let target: { top: number; height: number } | undefined;
+    const cancel = () => {
+      if (frame !== undefined) cancelAnimationFrame(frame);
+      frame = undefined;
+    };
+    const paint = (value: { top: number; height: number }) => {
+      current = value;
+      host.style.top = `${value.top}px`;
+      host.style.height = `${value.height}px`;
+    };
+    const settle = () => {
+      cancel();
+      if (target) paint(target);
+    };
+    preference.addEventListener('change', settle);
+    // The parent commits final album allocation before paint. Only internal cell
+    // coordinates interpolate; vertical CSS lengths must be integers every frame.
+    const geometry = afterRenderEffect(() => {
+      const rect = this.rect();
+      cancel();
+      if (!rect) {
+        current = target = undefined;
+        host.style.removeProperty('top');
+        host.style.removeProperty('height');
+        return;
+      }
+      target = { top: Math.round(rect.yPx), height: Math.round(rect.hPx) };
+      if (!current || preference.matches) {
+        paint(target);
+        return;
+      }
+      const from = current;
+      const to = target;
+      if (from.top === to.top && from.height === to.height) return;
+      const start = performance.now();
+      const tick = (now: number) => {
+        const progress = Math.min(1, Math.max(0, (now - start) / 180));
+        const eased = 1 - (1 - progress) ** 3;
+        paint({
+          top: Math.round(from.top + (to.top - from.top) * eased),
+          height: Math.round(from.height + (to.height - from.height) * eased),
+        });
+        if (progress < 1) frame = requestAnimationFrame(tick);
+        else frame = undefined;
+      };
+      frame = requestAnimationFrame(tick);
+    });
+    onCbItemPredestory(() => {
+      geometry.destroy();
+      cancel();
+      for (const animation of host.getAnimations()) animation.cancel();
+      preference.removeEventListener('change', settle);
+    });
+    const observation = effect((onCleanup) => {
       const media = this.media();
       this.state.set(PENDING);
       const subscription = this.files.observe(media).subscribe({
@@ -195,5 +253,6 @@ export class AlbumMediaCellComponent {
       });
       onCleanup(() => subscription.unsubscribe());
     });
+    onCbItemPredestory(() => observation.destroy());
   }
 }

@@ -185,7 +185,13 @@
 
     <!-- Compact roster preview; the complete searchable roster lives in the role-aware member list. -->
     @if (loading() && !readOnly()) {
-      <div class="muted center">{{ 'common.loading' | transloco }}</div>
+      <div
+        class="roster-loading-dots"
+        role="status"
+        [attr.aria-label]="'common.loading' | transloco"
+      >
+        <span></span><span></span><span></span>
+      </div>
     } @else if (!readOnly()) {
       <mat-card appearance="outlined" class="member-overview-card">
         <button
@@ -501,8 +507,12 @@
           (loadMore)="loadMoreMembers()"
         />
         @if (loading() || loadingMore()) {
-          <div class="muted center" role="status">
-            {{ 'common.loading' | transloco }}
+          <div
+            class="roster-loading-spinner"
+            role="status"
+            [attr.aria-label]="'common.loading' | transloco"
+          >
+            <mat-progress-spinner mode="indeterminate" diameter="24" />
           </div>
         }
         @if (rosterError()) {

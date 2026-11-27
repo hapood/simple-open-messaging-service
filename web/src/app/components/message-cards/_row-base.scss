@@ -91,10 +91,8 @@
   --msg-highlight-top: var(--chat-timeline-gap-compact);
 }
 
-// Enter/exit animations are owned by the kernel host classes (.cb-enter / .cb-leave in lib/chat-box/_cb.scss),
-// added to the host after .cb-pending is dropped. .cb-pending uses visibility:hidden to hold layout for one frame while
-// the real offsetHeight is measured, then is removed instantly (no fade) so scroll-mounted rows never flash.
-// The previous .pg-msg-new fade-in rule (opacity:0 + double-RAF removal) was dead code and is removed.
+// .cb-pending preserves layout while the kernel measures offsetHeight, then is
+// removed synchronously. Messages have no host-level entry or exit effect.
 
 // Avatar slot (40px industry standard; appears on group-start, self right / other left).
 // It owns layout only — the size/alignment/col-margin contract is fixed (so virtual-scroll height measurement stays

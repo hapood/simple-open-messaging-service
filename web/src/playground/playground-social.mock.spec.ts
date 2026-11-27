@@ -368,13 +368,16 @@ describe('playground social contracts', () => {
   });
 
   it('paginates roster identities and publishes role, kick, transfer and leave changes', async () => {
-    const first = await members.queryPage(2, { take: 2 });
-    const second = await members.queryPage(2, {
+    const first = await members.queryRosterPage(2, { take: 2 });
+    expect(first.nextCursor).not.toBeNull();
+    const second = await members.queryRosterPage(2, {
       take: 50,
-      afterIdentity: first.at(-1)!.identityKey,
+      cursor: first.nextCursor,
     });
+    expect(second.nextCursor).toBeNull();
     expect(
-      new Set([...first, ...second].map((item) => item.identityKey)).size,
+      new Set([...first.items, ...second.items].map((item) => item.identityKey))
+        .size,
     ).toBe(5);
     await firstValueFrom(
       groups.setRole({

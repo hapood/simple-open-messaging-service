@@ -32,6 +32,7 @@ import { MatCardModule } from '@angular/material/card';
 import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatInputModule } from '@angular/material/input';
 import { MatMenuModule } from '@angular/material/menu';
+import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
 import { FormsModule } from '@angular/forms';
 import { TranslocoService, TranslocoPipe } from '@jsverse/transloco';
 import { GroupService } from '../../services/group.service';
@@ -91,6 +92,7 @@ type Role = 'OWNER' | 'ADMIN' | 'MEMBER';
     MatFormFieldModule,
     MatInputModule,
     MatMenuModule,
+    MatProgressSpinnerModule,
     FormsModule,
     DemandAvatarComponent,
     SnapshotAvatarComponent,
@@ -373,25 +375,28 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
   }
 
   private rosterRequest = 0;
+  private rosterCursor: string | null = null;
 
   async loadMembers() {
     const request = ++this.rosterRequest;
     const threadId = this.threadId();
     if (threadId === undefined || this.readOnly()) return;
     this.roster.set([]);
+    this.rosterCursor = null;
     this.rosterHasMore.set(false);
     this.rosterError.set(false);
     this.rosterReset.update((value) => value + 1);
     this.loadingMore.set(false);
     this.loading.set(true);
     try {
-      const resolved = await this.memberProfiles.queryPage(threadId, {
+      const page = await this.memberProfiles.queryRosterPage(threadId, {
         take: 50,
         search: this.memberQuery(),
       });
       if (request !== this.rosterRequest) return;
-      this.roster.set(resolved);
-      this.rosterHasMore.set(resolved.length === 50);
+      this.roster.set(page.items);
+      this.rosterCursor = page.nextCursor;
+      this.rosterHasMore.set(page.nextCursor !== null);
     } catch {
       if (request === this.rosterRequest) {
         this.rosterError.set(true);
@@ -418,14 +423,15 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
     this.loadingMore.set(true);
     this.rosterError.set(false);
     try {
-      const page = await this.memberProfiles.queryPage(threadId, {
-        afterIdentity: current.at(-1)!.identityKey,
+      const page = await this.memberProfiles.queryRosterPage(threadId, {
+        cursor: this.rosterCursor,
         take: 50,
         search: this.memberQuery(),
       });
       if (request !== this.rosterRequest) return;
-      this.roster.update((members) => [...members, ...page]);
-      this.rosterHasMore.set(page.length === 50);
+      this.roster.update((members) => [...members, ...page.items]);
+      this.rosterCursor = page.nextCursor;
+      this.rosterHasMore.set(page.nextCursor !== null);
     } catch {
       if (request === this.rosterRequest) {
         this.rosterError.set(true);

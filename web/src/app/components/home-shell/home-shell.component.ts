@@ -309,7 +309,7 @@ export class HomeShellComponent {
   }
   private async restoreListWidth(): Promise<void> {
     const revision = this.widthWriteRevision;
-    const value = await this.preferences.get<number>('device', LIST_WIDTH_KEY);
+    const value = await this.preferences.get<number>(LIST_WIDTH_KEY);
     if (revision !== this.widthWriteRevision) return;
     if (typeof value === 'number' && Number.isFinite(value)) {
       this.listWidth.set(this.clampListWidth(value));
@@ -320,6 +320,6 @@ export class HomeShellComponent {
   }
   private saveListWidth(w: number) {
     this.widthWriteRevision++;
-    void this.preferences.set('device', LIST_WIDTH_KEY, w).catch(() => {});
+    void this.preferences.set(LIST_WIDTH_KEY, w).catch(() => {});
   }
 }

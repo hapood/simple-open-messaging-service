@@ -29,7 +29,33 @@ function systemMessage(id: number): CbItem<ChatMsgData> {
 describe('MessageInteractionController', () => {
   it('owns whole-message and album-member selection transitions', () => {
     const controller = new MessageInteractionController();
-    const album = message(10, [10, 11]);
+    const album: CbItem<ChatMsgData> = {
+      ...message(10, [10, 11]),
+      data: {
+        type: 'msg',
+        msgId: 10,
+        creator: 'alice',
+        isSelf: false,
+        name: 'Alice',
+        text: '',
+        time: '12:30',
+        createdAtMs: 1234,
+        contentType: 'IMAGE',
+        file: null,
+        images: [10, 11].map((msgId) => ({
+          msgId,
+          kind: 'image',
+          src: `/${msgId}`,
+          w: 10,
+          h: 10,
+          size: 100,
+          name: `${msgId}.png`,
+          mimeType: 'image/png',
+          senderName: 'Alice',
+          sentAt: 1234,
+        })),
+      },
+    };
 
     controller.toggle(album);
     expect(controller.selectionMode()).toBe(true);
@@ -38,6 +64,10 @@ describe('MessageInteractionController', () => {
     controller.toggle(album, 11);
     expect(controller.selectedMessageIds()).toEqual(new Set([10]));
     expect(controller.selectedItems().map((item) => item.id)).toEqual([10]);
+    expect(controller.selectedItems()[0].data.images).toEqual([
+      album.data.images![0],
+    ]);
+    expect(controller.selectedItems()[0].ids).toBeUndefined();
 
     controller.resetSelection();
     expect(controller.selectionMode()).toBe(false);
@@ -109,6 +139,7 @@ describe('MessageInteractionController', () => {
   it('consumes a quote exactly once', () => {
     const controller = new MessageInteractionController();
     const quote = {
+      kind: 'jumpable',
       seq: 7,
       author: 'Ada',
       body: 'hello',

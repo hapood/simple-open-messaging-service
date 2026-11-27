@@ -10,6 +10,7 @@ import { CspSafeIcuTranspiler } from '../../i18n/csp-safe-icu.transpiler';
 import { InlineTranslocoLoader } from '../../i18n/transloco.loader';
 import { provideHttpClient, withXhr } from '@angular/common/http';
 import { MessageHeaderComponent } from './message-header.component';
+import { SendingTaskPresentation } from '../../services/sending-task-presentation.service';
 import { ConversationListService } from '../../services/conversation-list.service';
 import { NavStateMachineService } from '../../services/nav-state.service';
 import { LayoutService } from '../../services/layout.service';
@@ -96,6 +97,7 @@ describe('MessageHeaderComponent — back-button unread badge', () => {
             mode: signal<'compact' | 'medium' | 'expanded'>('compact'),
           },
         },
+        { provide: SendingTaskPresentation, useValue: { forThread: vi.fn() } },
         { provide: MsgService, useValue: {} },
         {
           provide: UserService,

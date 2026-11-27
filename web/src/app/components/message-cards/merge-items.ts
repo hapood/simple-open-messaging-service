@@ -35,11 +35,8 @@ function isAlbumMedia(
 /** Collect the member msgIds of an album's images (for kernel jump resolution + the dev badge / viewer). Undefined when
  *  the album has fewer than 2 (a lone image is identified by its own id). Shared by both merge paths so the ids contract
  *  is identical. */
-function albumMemberIds(images: { msgId?: number }[]): number[] | undefined {
-  const ids = images
-    .map((im) => im.msgId)
-    .filter((x: number | undefined): x is number => typeof x === 'number');
-  return ids.length > 1 ? ids : undefined;
+function albumMemberIds(images: { msgId: number }[]): number[] | undefined {
+  return images.length > 1 ? images.map((im) => im.msgId) : undefined;
 }
 
 /** Union the clientMessageIds of the given items into a deduplicated list — the set of in-flight optimistic sends an

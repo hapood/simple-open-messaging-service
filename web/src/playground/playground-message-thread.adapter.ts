@@ -1,4 +1,5 @@
 import { inject, Injectable, signal } from '@angular/core';
+import { MessageRepository } from '../app/services/message-repository.service';
 import { of, Subject } from 'rxjs';
 import type { MessageDeletionFact } from '../app/components/message-thread/mounted-message-deletion';
 import type {
@@ -19,6 +20,7 @@ import {
 import {
   MessageThreadAdapter,
   type MessageThreadSource,
+  type MessageThreadLiveCallbacks,
   type ForwardMessagesRequest,
   type SearchMessagesRequest,
   type StageMediaRequest,
@@ -89,6 +91,7 @@ export class PlaygroundMessageThreadAdapter extends MessageThreadAdapter {
   private readonly sources = new Map<number, MockItemSource>();
   private readonly groupSources = new WeakSet<MessageThreadSource>();
   private readonly state = inject(PlaygroundSocialState);
+  private readonly messageRepo = inject(MessageRepository);
 
   constructor() {
     super();
@@ -102,6 +105,7 @@ export class PlaygroundMessageThreadAdapter extends MessageThreadAdapter {
   override createSource(
     conversation: ConversationItem,
     entryReadSeq: number,
+    callbacks?: MessageThreadLiveCallbacks,
   ): MessageThreadSource {
     const isGroupConversation = conversation.type === 'GROUP';
     const source = new MockItemSource(
@@ -112,6 +116,24 @@ export class PlaygroundMessageThreadAdapter extends MessageThreadAdapter {
       1,
       isGroupConversation,
       this.groupSenderCount(),
+      {
+        onHistoryIntervalStarted: () => {
+          const committed = callbacks?.onHistoryIntervalStarted?.();
+          return (left, right) => {
+            if (this.sources.get(conversation.threadId) === source)
+              committed?.(left, right);
+          };
+        },
+        onHead: (seq, author) => {
+          if (this.sources.get(conversation.threadId) !== source) return;
+          this.messageRepo.applyThreadContentHead(
+            conversation.threadId,
+            seq,
+            false,
+            author,
+          );
+        },
+      },
     );
     if (isGroupConversation) this.groupSources.add(source);
     for (const seq of this.deletions.get(conversation.threadId)?.keys() ?? []) {
@@ -121,9 +143,11 @@ export class PlaygroundMessageThreadAdapter extends MessageThreadAdapter {
     return source;
   }
 
-  override async sendIntent(
-    request: { clientMessageId: string; threadId: number; item: import('../app/services/send-outbox-storage').StoredNonMediaSendContent },
-  ): Promise<StandardResponse<unknown>> {
+  override async sendIntent(request: {
+    clientMessageId: string;
+    threadId: number;
+    item: import('../app/services/send-outbox-storage').StoredNonMediaSendContent;
+  }): Promise<StandardResponse<unknown>> {
     await wait(this.confirmDelay());
     if (this.sendError()) return { code: -1, message: 'Mock send failed' };
 
@@ -131,11 +155,21 @@ export class PlaygroundMessageThreadAdapter extends MessageThreadAdapter {
     if (!source) throw new Error('Mock conversation is not open');
     const isGroupConversation = this.groupSources.has(source);
     const intent = request.item;
-    const content = intent.type === 'PURE_TEXT' ? intent.content
-      : intent.type === 'LINK' ? JSON.stringify({ generationId: intent.generationId })
-      : intent.type === 'CONTACT_CARD' ? JSON.stringify(intent.target)
-      : JSON.stringify({ sourceMessages: intent.sourceMessages, mode: intent.mode });
-    const body = intent.type === 'PURE_TEXT' ? (parseTextMessageContent(content)?.text ?? '') : content;
+    const content =
+      intent.type === 'PURE_TEXT'
+        ? intent.content
+        : intent.type === 'LINK'
+          ? JSON.stringify({ generationId: intent.generationId })
+          : intent.type === 'CONTACT_CARD'
+            ? JSON.stringify(intent.target)
+            : JSON.stringify({
+                sourceMessages: intent.sourceMessages,
+                mode: intent.mode,
+              });
+    const body =
+      intent.type === 'PURE_TEXT'
+        ? (parseTextMessageContent(content)?.text ?? '')
+        : content;
     const now = new Date();
     const sentId = source.allocateMsgId();
     const sent: CbItem<ChatItemData> = {

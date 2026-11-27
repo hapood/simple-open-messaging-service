@@ -24,7 +24,7 @@ interface MediaResourceBase {
   senderName: string | null;
   sentAt: number | null;
   /** Owning message coordinate, independent of the resource's intrinsic metadata. */
-  msgId?: number;
+  msgId: number;
 }
 
 export type ImageMedia = MediaResourceBase & {
@@ -57,7 +57,6 @@ export interface FileInfo {
   size: number;
   /** Validated mimetype (drives the file-type icon). */
   mimeType: string;
-  thumbnail?: string;
 }
 
 /**
@@ -67,13 +66,33 @@ export interface FileInfo {
  * time against the previous message (classifyGroupFlags), so appending a new message never
  * changes the old tail item's height (zero reflow).
  */
+export interface QuotePresentation {
+  author?: string;
+  body?: string;
+  contentType?: ChatMsgData['contentType'];
+  image?: string;
+  imageLabel?: string;
+  imageIdentity?: string;
+  imageSize?: number;
+  imageShape?: 'thumbnail' | 'avatar';
+}
+
+export type MessageQuote =
+  | {
+      kind: 'unavailable';
+      status: 'PENDING' | 'NOT_FOUND';
+      seq?: number;
+    }
+  | ({
+      kind: 'jumpable';
+      anchor?: import('../../services/history-anchor').HistoryAnchor;
+      seq?: number;
+    } & QuotePresentation)
+  | ({
+      kind: 'snapshot';
+    } & QuotePresentation);
+
 interface ChatMessageBase {
-  /** Present only on the transient timeline projection of a persisted server history gap. */
-  serverGap?: {
-    left: number;
-    right: number;
-    state: 'SERVER_PENDING' | 'SERVER_UNAVAILABLE';
-  };
   /** = Message.id (virtual-scroll track key + WS/pagination dedup). */
   msgId: number;
   threadId?: number;
@@ -91,21 +110,7 @@ interface ChatMessageBase {
   avatarIdentityId?: string;
   /** PURE_TEXT body / fallback text for unsupported types. */
   text: string;
-  quote?: {
-    /** Federated media localize status; NOT_FOUND renders the not-found fallback. */
-    status?: 'PENDING' | 'NOT_FOUND';
-    anchor?: import('../../services/history-anchor').HistoryAnchor;
-    /** Jump target in the current message source; absent for a display-only snapshot. */
-    seq?: number;
-    author?: string;
-    body?: string;
-    contentType?: ChatMsgData['contentType'];
-    image?: string;
-    imageLabel?: string;
-    imageIdentity?: string;
-    imageSize?: number;
-    imageShape?: 'thumbnail' | 'avatar';
-  };
+  quote?: MessageQuote;
   /** HH:mm (the date context is handled by the date separator row). */
   time: string;
   /** Raw epoch milliseconds (drives date-separator decisions). */
@@ -218,13 +223,18 @@ export interface SystemMessageItem extends ChatMessageBase {
   deletionType?: 'USER_RETRACTION' | 'MODERATION_REMOVAL';
 }
 
+export interface ServerGapItem {
+  type: 'serverGap';
+  msgId: number;
+  left: number;
+  right: number;
+  state: 'SERVER_PENDING' | 'SERVER_UNAVAILABLE';
+}
+
 export type ChatMsgData = AuthoredMessageItem | SystemMessageItem;
 
-/** A row bound to a real server seq. Optimistic sends carry synthetic negative
- *  placeholder ids (see ThreadSendOutboxService.allocatePlaceholderId) until the
- *  server echo replaces them, so every seq-dependent capability (quote, direct
- *  forward, multi-select/history-forward, withdraw, report) must gate on this.
- *  Copy stays available on pending rows: it needs only local data. */
+/** A row bound to a real server seq. Every seq-dependent capability (quote, direct
+ *  forward, multi-select/history-forward, withdraw, report) must gate on this. */
 export function isConfirmedMessage(message: ChatMsgData): boolean {
   return message.msgId >= 0;
 }
@@ -243,4 +253,4 @@ type ChatTextSegment =
  * ChatMsgData; persisted deletion stubs are excluded. Date separators detect day boundaries between
  * adjacent items (see date-format.ts). The ChatItemData alias is kept for interface stability.
  */
-export type ChatItemData = ChatMsgData;
+export type ChatItemData = ChatMsgData | ServerGapItem;

@@ -18,13 +18,32 @@ import { ThreadScrollController } from './thread-scroll.controller';
 import { BusinessCode } from '../../services/biz-code';
 
 describe('MessageThreadComponent binding lifecycle', () => {
+  it('selects the kernel tail host without consuming message or album seqs', () => {
+    const component = Object.create(MessageThreadComponent.prototype);
+    const sync = vi.fn(() => false);
+    Object.assign(component, {
+      tailCues: new Map([[document.createElement('div'), { sync, contains: (id: number) => id === 10 }]]),
+      // Advancing the advertised head must not hide the pending gap's row.
+      nav: { chatOpening: () => ({ latestSeq: 99 }) },
+    });
+    component.syncTailCue({ id: 10, ids: [10, 11] });
+    expect(sync).toHaveBeenLastCalledWith(true);
+    component.syncTailCue(null);
+    expect(sync).toHaveBeenLastCalledWith(false);
+  });
+
   it('scopes task actions to the opening binding, including reopening the same thread', async () => {
     const component = Object.create(MessageThreadComponent.prototype);
     const lifecycle = new ChatSurfaceLifecycle();
     const popupDlg = vi.fn();
     const cancelPending = vi.fn(async () => {});
     const retrySend = vi.fn(async () => {});
-    Object.assign(component, { lifecycle, route: { popupDlg }, cancelPending, retrySend });
+    Object.assign(component, {
+      lifecycle,
+      route: { popupDlg },
+      cancelPending,
+      retrySend,
+    });
     component.openUploadDetails();
     expect(popupDlg).not.toHaveBeenCalled();
     lifecycle.bind(6);
@@ -162,32 +181,45 @@ describe('MessageThreadComponent binding lifecycle', () => {
       openMessageWindow: vi.fn(),
       reload: vi.fn(),
     });
-    component.scroller.mutateItem = vi.fn((id, mutate) => {
-      const index = mounted.findIndex(
-        (item) => item.id === id || item.ids?.includes(id),
-      );
-      if (index < 0) return false;
-      const replacement = mutate(mounted[index]);
-      mounted.splice(
-        index,
-        1,
-        ...(Array.isArray(replacement) ? replacement : [replacement]),
-      );
-      return true;
-    });
+    // Mounted mutation is exercised through the real kernel below.
     component.bind();
     delete component.initScroller;
     component.initScroller(component.userMsgTrd());
-    const rendered = {
-      el: document.createElement('div'),
-      update: vi.fn(),
-      destroy: vi.fn(),
-    };
-    component.scroller.getMountedGeometry = (seq: number) =>
-      mounted.some((item) => item.id === seq || item.ids?.includes(seq))
-        ? { el: rendered.el }
-        : null;
-    component.bindMessageDeletion(rendered, mounted[0]);
+    const viewport = document.createElement('div');
+    const content = document.createElement('div');
+    viewport.appendChild(content);
+    document.body.appendChild(viewport);
+    Object.defineProperty(viewport, 'clientHeight', { get: () => 600 });
+    const kernel = new ChatBoxScroller<ChatItemData>({
+      viewport,
+      content,
+      config: { followBottom: false },
+      hooks: {
+        messageSeqs: (item) => item.ids ?? [item.id],
+        createItem: () => {
+          const el = document.createElement('div');
+          Object.defineProperty(el, 'offsetHeight', { get: () => 24 });
+          return { el, update: vi.fn(), predestory: vi.fn(), destroy: vi.fn() };
+        },
+      },
+      committedTombs$: deletedLive$,
+      onMountedTomb: ({ seq, type }) =>
+        component.replaceMountedDeletedMessage(seq, type),
+    });
+    component.scroller = kernel;
+    vi.spyOn(kernel, 'mutateItem');
+    kernel.bind(
+      {
+        loadWindow: async () => mounted,
+        requestOlder: () => of({ kind: 'boundary' as const }),
+        requestNewer: () => NEVER,
+        requestMessagesForEmptyWindow: () => NEVER,
+        pushLive: () => {},
+        destroy: () => {},
+      },
+      { chatId: 6 },
+    );
+    await kernel.openWindow({ kind: 'latest' });
     deletedLive$.next({
       threadId: 99,
       deletions: [{ seq: 11, type: 'MODERATION_REMOVAL' }],
@@ -197,8 +229,8 @@ describe('MessageThreadComponent binding lifecycle', () => {
       threadId: 6,
       deletions: [{ seq: 11, type: 'MODERATION_REMOVAL' }],
     });
-    // Cleanup is synchronous, but only the mounted observer may mutate the row.
-    expect(component.scroller.mutateItem).not.toHaveBeenCalled();
+    // The kernel owns mounted tomb application; the thread only cleans surfaces.
+    expect(component.scroller.mutateItem).toHaveBeenCalledTimes(1);
     expect(
       component.galleryViewer.closeIfDeleted,
     ).toHaveBeenCalledExactlyOnceWith(6, 11);
@@ -208,6 +240,7 @@ describe('MessageThreadComponent binding lifecycle', () => {
     await Promise.resolve();
     await Promise.resolve();
     expect(component.scroller.mutateItem).toHaveBeenCalledTimes(1);
+    mounted = [10, 11, 12].map((seq) => kernel.getMountedGeometry(seq)!.item);
     expect(mounted.map((item) => item.id)).toEqual([10, 11, 12]);
     expect(mounted[1].data).toMatchObject({
       type: 'system',
@@ -221,7 +254,7 @@ describe('MessageThreadComponent binding lifecycle', () => {
     expect(mounted[0].boundary).toBe('oldest');
     expect(mounted[2].boundary).toBe('newest');
     expect(component.reload).not.toHaveBeenCalled();
-    rendered.destroy();
+    kernel.unbind();
     mounted = [];
     component.scroller.mutateItem.mockClear();
     component.galleryViewer.closeIfDeleted.mockClear();
@@ -242,6 +275,8 @@ describe('MessageThreadComponent binding lifecycle', () => {
     ).toHaveBeenCalledExactlyOnceWith(12);
     component.deletionSurfaceSubscription.unsubscribe();
     expect(deletedLive$.observed).toBe(false);
+    kernel.destroy();
+    viewport.remove();
   });
 
   it('does not run a second deletion path from a withdrawal HTTP acknowledgement', () => {
@@ -261,7 +296,7 @@ describe('MessageThreadComponent binding lifecycle', () => {
     expect(component.closeDeletedMessageSurfaces).not.toHaveBeenCalled();
   });
 
-  it('rechecks after real scroller mounting when deletion raced an earlier body read', async () => {
+  it('applies a committed tomb after mounting when deletion raced an earlier body read', async () => {
     const { component } = pane();
     component.bind();
     const deletedLive$ = new Subject<{
@@ -286,14 +321,12 @@ describe('MessageThreadComponent binding lifecycle', () => {
     viewport.appendChild(content);
     document.body.appendChild(viewport);
     Object.defineProperty(viewport, 'clientHeight', { get: () => 600 });
-    const getMessageDeletions = vi.fn(async () => {
+    const onMountedTomb = vi.fn(({ seq, type }) => {
       expect(scroller.getMountedGeometry(10)?.el.parentNode).toBe(content);
-      // A duplicate event racing the durable result must not revive or reapply the body.
-      deletedLive$.next({ threadId: 6, deletions: [fact] });
-      return [fact];
+      component.replaceMountedDeletedMessage(seq, type);
     });
     Object.assign(component, {
-      threadAdapter: { deletedLive$, getMessageDeletions },
+      threadAdapter: { deletedLive$ },
       galleryViewer: { closeIfDeleted: vi.fn() },
       messageInteraction: { removeMessage: vi.fn() },
     });
@@ -308,12 +341,13 @@ describe('MessageThreadComponent binding lifecycle', () => {
           return {
             el,
             update: () => {},
+            predestory: () => {},
             destroy: () => {},
           };
         },
       },
-      onItemMounted: (item, element) =>
-        component.bindMessageDeletion(element, item),
+      committedTombs$: deletedLive$,
+      onMountedTomb,
     });
     component.scroller = scroller;
     let firstRead = true;
@@ -332,11 +366,13 @@ describe('MessageThreadComponent binding lifecycle', () => {
       destroy: () => {},
     });
     try {
-      scroller.bind(source());
+      scroller.bind(source(), { chatId: 6 });
       await scroller.openWindow({ kind: 'latest' });
       await Promise.resolve();
       await Promise.resolve();
-      expect(getMessageDeletions).toHaveBeenCalledExactlyOnceWith(6, [10]);
+      expect(onMountedTomb).toHaveBeenCalledExactlyOnceWith(fact);
+      deletedLive$.next({ threadId: 6, deletions: [fact] });
+      expect(onMountedTomb).toHaveBeenCalledOnce();
       expect(scroller.getMountedGeometry(10)?.item.data).toMatchObject({
         type: 'system',
         deletionType: 'MODERATION_REMOVAL',
@@ -347,9 +383,11 @@ describe('MessageThreadComponent binding lifecycle', () => {
       // The mounted observer owns only the row, not detached UI surfaces.
       expect(component.messageInteraction.removeMessage).not.toHaveBeenCalled();
       scroller.unbind();
-      scroller.bind(source());
+      scroller.bind(source(), { chatId: 6 });
       await scroller.openWindow({ kind: 'latest' });
       expect(scroller.getInfo().mounted).toBe(0);
+      expect(deletedLive$.observed).toBe(true);
+      scroller.unbind();
       expect(deletedLive$.observed).toBe(false);
     } finally {
       scroller.destroy();
@@ -357,65 +395,78 @@ describe('MessageThreadComponent binding lifecycle', () => {
     }
   });
 
-  it('rechecks the mounted body and rejects a stale result after DOM ownership changes', async () => {
+  it('rejects late body results and clears tomb ownership after a same-thread rebind', async () => {
     const { component } = pane();
-    component.bind();
-    const deletedLive$ = new Subject();
-    let resolve!: (value: unknown) => void;
-    component.threadAdapter = {
-      deletedLive$,
-      getMessageDeletions: vi.fn(
-        () =>
-          new Promise((done) => {
-            resolve = done;
-          }),
-      ),
-    };
-    component.replaceMountedDeletedMessage = vi.fn();
-    const rendered = {
-      el: document.createElement('div'),
-      update: vi.fn(),
+    const deletedLive$ = new Subject<{
+      threadId: number;
+      deletions: { seq: number; type: 'MODERATION_REMOVAL' }[];
+    }>();
+    const viewport = document.createElement('div');
+    const content = document.createElement('div');
+    viewport.appendChild(content);
+    document.body.appendChild(viewport);
+    Object.defineProperty(viewport, 'clientHeight', { get: () => 600 });
+    const onMountedTomb = vi.fn();
+    const kernel = new ChatBoxScroller<ChatItemData>({
+      viewport,
+      content,
+      config: { followBottom: false },
+      hooks: {
+        createItem: () => {
+          const el = document.createElement('div');
+          Object.defineProperty(el, 'offsetHeight', { get: () => 24 });
+          return { el, update: vi.fn(), predestory: vi.fn(), destroy: vi.fn() };
+        },
+      },
+      committedTombs$: deletedLive$,
+      onMountedTomb,
+    });
+    component.scroller = kernel;
+    const item = {
+      id: 10,
+      data: { type: 'msg', msgId: 10 },
+    } as CbItem<ChatItemData>;
+    let resolve!: (items: CbItem<ChatItemData>[]) => void;
+    const source = (loadWindow: () => Promise<CbItem<ChatItemData>[]>) => ({
+      loadWindow,
+      requestOlder: () => of({ kind: 'boundary' as const }),
+      requestNewer: () => NEVER,
+      requestMessagesForEmptyWindow: () => NEVER,
+      pushLive: () => {},
       destroy: vi.fn(),
-    };
-    const item = { id: 10, data: { type: 'msg' } };
-    let mountedEl = rendered.el;
-    component.scroller.getMountedGeometry = () => ({ el: mountedEl });
-    component.bindMessageDeletion(rendered, item);
-    resolve([{ seq: 10, type: 'MODERATION_REMOVAL' }]);
-    await Promise.resolve();
-    await Promise.resolve();
-    expect(
-      component.replaceMountedDeletedMessage,
-    ).toHaveBeenCalledExactlyOnceWith(10, 'MODERATION_REMOVAL');
-    rendered.destroy();
-    component.replaceMountedDeletedMessage.mockClear();
-    const replacement = {
-      el: document.createElement('div'),
-      update: vi.fn(),
-      destroy: vi.fn(),
-    };
-    mountedEl = replacement.el;
-    component.bindMessageDeletion(replacement, item);
-    const staleResolve = resolve;
-    replacement.destroy();
-    const successor = {
-      el: document.createElement('div'),
-      update: vi.fn(),
-      destroy: vi.fn(),
-    };
-    mountedEl = successor.el;
-    component.bindMessageDeletion(successor, item);
-    staleResolve([{ seq: 10, type: 'MODERATION_REMOVAL' }]);
-    await Promise.resolve();
-    await Promise.resolve();
-    expect(component.replaceMountedDeletedMessage).not.toHaveBeenCalled();
-    resolve([{ seq: 10, type: 'USER_RETRACTION' }]);
-    await Promise.resolve();
-    await Promise.resolve();
-    expect(
-      component.replaceMountedDeletedMessage,
-    ).toHaveBeenCalledExactlyOnceWith(10, 'USER_RETRACTION');
-    successor.destroy();
+    });
+    try {
+      kernel.bind(
+        source(
+          () =>
+            new Promise((done) => {
+              resolve = done;
+            }),
+        ),
+        { chatId: 6 },
+      );
+      const opening = kernel.openWindow({ kind: 'latest' });
+      await vi.waitFor(() => expect(resolve).toBeDefined());
+      deletedLive$.next({
+        threadId: 6,
+        deletions: [{ seq: 10, type: 'MODERATION_REMOVAL' }],
+      });
+      kernel.unbind();
+      expect(deletedLive$.observed).toBe(false);
+      kernel.bind(
+        source(async () => [item]),
+        { chatId: 6 },
+      );
+      await kernel.openWindow({ kind: 'latest' });
+      const successor = kernel.getMountedGeometry(10)?.el;
+      resolve([item]);
+      await opening;
+      expect(kernel.getMountedGeometry(10)?.el).toBe(successor);
+      expect(onMountedTomb).not.toHaveBeenCalled();
+    } finally {
+      kernel.destroy();
+      viewport.remove();
+    }
     expect(deletedLive$.observed).toBe(false);
   });
 
@@ -753,16 +804,25 @@ describe('MessageThreadComponent binding lifecycle', () => {
     component.bind();
     const binding = lifecycle.binding;
     component.synchronizeForeground();
-    expect(lifecycle.state()).toMatchObject({ phase: 'bound', foreground: false });
+    expect(lifecycle.state()).toMatchObject({
+      phase: 'bound',
+      foreground: false,
+    });
     foreground.set(true);
     component.synchronizeForeground();
     expect(component.presentation()).toBe('loading');
-    expect(lifecycle.state()).toMatchObject({ phase: 'bound', foreground: true });
+    expect(lifecycle.state()).toMatchObject({
+      phase: 'bound',
+      foreground: true,
+    });
     expect(component.kernelReady).toBe(false);
     expect(component.unreadDividerReady()).toBe(false);
     openThreadId.set(7);
     component.synchronizeForeground();
-    expect(lifecycle.state()).toMatchObject({ phase: 'bound', foreground: false });
+    expect(lifecycle.state()).toMatchObject({
+      phase: 'bound',
+      foreground: false,
+    });
     expect(lifecycle.binding).toBe(binding);
   });
 
@@ -879,7 +939,11 @@ describe('MessageThreadComponent binding lifecycle', () => {
   });
 
   it.each([
-    { cached: true, read: 80, expected: { kind: 'message', messageId: 80, anchor: 'center' } },
+    {
+      cached: true,
+      read: 80,
+      expected: { kind: 'message', messageId: 80, anchor: 'center' },
+    },
     { cached: true, read: 0, expected: { kind: 'start' } },
     { cached: false, read: 0, expected: { kind: 'start' } },
     {
@@ -892,13 +956,11 @@ describe('MessageThreadComponent binding lifecycle', () => {
     async ({ cached, read, expected }) => {
       const { component } = pane();
       const source = {
-        prepareEntry: vi
-          .fn()
-          .mockResolvedValue({
-            lastReadSeq: read,
-            hasCachedMessages: cached,
-            hasCachedHead: cached,
-          }),
+        prepareEntry: vi.fn().mockResolvedValue({
+          lastReadSeq: read,
+          hasCachedMessages: cached,
+          hasCachedHead: cached,
+        }),
       };
       const scroller = { openWindow: vi.fn().mockResolvedValue(undefined) };
       await firstValueFrom(

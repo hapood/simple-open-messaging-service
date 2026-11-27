@@ -119,6 +119,7 @@ describe('message copy', () => {
               mimeType: 'video/mp4',
               senderName: null,
               sentAt: null,
+              msgId: 1,
             },
           ],
         }),

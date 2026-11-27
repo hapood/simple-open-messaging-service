@@ -31,6 +31,7 @@ import type { HistoryAnchor } from '../../services/history-anchor';
 import type { PreparedMessageEntry } from './message-entry';
 
 export interface MessageThreadLiveCallbacks {
+  onHistoryIntervalStarted?: () => (left: number, right: number) => void;
   onQuoteDeleted?: (replySeq: number, targetSeq: number) => void;
   onQuoteUpdated?: (
     replySeq: number,

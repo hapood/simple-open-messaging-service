@@ -1,9 +1,18 @@
 # Tail sending cue
 
-The tail sending cue is extra presentation rendered with the newest mounted
-server message. It is not its own mounted item, historical message, or optimistic
-copy. The newest server row remains the history identity. Ordinary server
-messages still enter through query and realtime delivery.
+> Scoped supersession: [Gap-driven chat message windows](chat-gap-driven-message-window.md)
+> now owns history arrival presentation and positioning: immediate new messages,
+> independent scroll animation, spinner-owned fade and canvas-relative movement
+> of existing messages, follow-state rules, and `predestory()` lifecycle. The 70%
+> large-arrival exception remains. The self-side sending 3dot now shares its
+> appearance animation with incoming self/peer activity on one special row.
+> Disappearance is immediate. Task ownership and the cue's non-history identity
+> are unchanged; the old per-message cue attachment is superseded.
+
+The sending cue is part of one special live-tail activity row, with self-side
+and peer-side 3dots and avatars on the same horizontal line. It is not a historical
+message, optimistic copy, or read target. Ordinary server messages still enter
+through queries; sender preview metadata does not mount bodies.
 
 This revises the shared task-indicator presentation in
 [chat-window-loading-and-sending-tasks.md](chat-window-loading-and-sending-tasks.md).
@@ -12,15 +21,14 @@ history do not change.
 
 ## Placement
 
-When the mounted row is the newest server message known to the client, its
-renderer also paints the cue below that message, inside the same measured host.
-No other row paints it. If that newest message is not mounted, or the thread has
-no server message, the cue is absent and the header task face covers the state.
+Render the special row at the eligible live tail, not independently inside every
+message renderer. Both sides share one measured height. The row has presentation
+identity but no message seq or history-cursor identity. Preserve existing empty-
+thread/header fallback until the live-tail eligibility rules are satisfied.
 
-The cue does not get a kernel identity. Its avatar follows the self-avatar
-setting and the row grouping policy in
-[create-item.ts](../../web/src/app/components/message-cards/create-item.ts),
-applied locally to this host with the cue treated as a plain-text presentation:
+Each side applies the normal sender grouping policy from
+[create-item.ts](../../web/src/app/components/message-cards/create-item.ts).
+For the self side:
 
 - The newest message is a group-compatible plain-text message from the local
   sender: the cue is a continuation. Hide its avatar and name, and hug the
@@ -30,17 +38,38 @@ applied locally to this host with the cue treated as a plain-text presentation:
   because their creator is the local user.
 - Do not show a self name.
 
-Showing or hiding the cue changes that host's measured height through the normal
-height callback. It does not insert, reorder, or trim a history item. Jumping to
-the newest message includes the cue because it belongs to that host. Horizontal
-width may animate fractionally; both the message body and the cue keep integer
-pixel heights.
+For peers, the oldest observed unconsumed sender supplies the normal grouped
+avatar. Other observed group senders overlap to the right of peer 3dot, at most
+three actual avatars plus `…`; never display an unreliable `+N` count. Components
+own avatar fades. Both avatar positions remain on the same row.
+
+Appearance commits the row's real height and uses the shared cross-message rAF
+batch. Removal is immediate. Neither operation creates a historical message.
+Bottom-pin contact includes this row, not just the newest message's bottom.
+Horizontal widths may be fractional; all height-contributing values are integer
+CSS pixels.
 
 ## Cue contents
 
-The typing bubble is three dots whose scale pulses while at least one send is
-active. It disappears immediately, without a fade, when no send remains active.
-A failure does not freeze the dots.
+Self-side dots remain while sending is active or observed self-authored messages
+are awaiting kernel consumption. Peer-side dots reflect pending peer messages,
+not remote typing. Head `author` (account/namespaceId) is required for a nonzero
+message head and omitted for zero. It reuses the outer message coordinate and
+existing frontend profile/avatar pipeline. System
+accounts are ignored for sender presentation, not history loading. Author facts
+and their bounded cache follow the
+[window contract](chat-gap-driven-message-window.md#53-head-author-and-bounded-ownership).
+Do not hide incoming activity merely because local sends finished.
+
+Both sides share appearance: existing messages move upward relative to the canvas
+while 3dots fade in. That finite cross-message batch prohibits balance. Removal
+has no fade, spring, or reverse movement animation. After removal, correct only
+actual viewport bottom blank space, including when messages merged into an album.
+Do not hide remaining failure presentation merely because dots disappear.
+
+New visibility waits behind an active appearance batch; the repeating dot pulse
+never holds the gate. Scroll remains independent and interruptible. Component-
+local effects and task projection are not controlled by the kernel timer.
 
 To the right of the dots, reuse the independent `OutboxIndicatorComponent`.
 It owns task icons, count animations, and the task-panel event, with no biography
@@ -53,11 +82,10 @@ biography flip.
 - One active task: dots only. Hide the task face.
 - More than one active task, or a visible failure group: show the task face beside
   the dots. It opens the same conversation task panel.
-- While this tail cluster is fully visible, hide the header task face and keep the
-  biography. When the cluster is absent or not fully visible, show the task face
-  in the header. Use a small visibility hysteresis so edge scrolling does not
-  flicker. Exact contact with the viewport bottom counts as fully visible; the
-  two-pixel tolerance applies only when leaving the visible state.
+- While valid `pinToBottom` is held, suppress the header task face even when the
+  3dots are hidden. Preserve biography according to the other composer/header
+  rules. Otherwise retain the tail-visible suppression rule with visibility
+  hysteresis; tail visibility alone is not the pin predicate.
 - The thread list keeps its own non-interactive indicator. It does not follow this
   viewport move.
 
@@ -93,42 +121,21 @@ still uses the composer's activation state, not raw focus.
 
 ## Arrival
 
-The dots and the arriving message are independent animations.
+New messages and new album cells appear immediately, independently of the dots.
+Do not identify an outbox or pending row to select an entry effect, and do not
+reuse legacy row enter classes.
 
-Do not identify an outbox or pending row. After a delivery is measured, fade a
-message only when both are true: it was sent by the local user, and this delivery
-keeps the viewport pinned to the bottom. Fade and scale the new content from
-opacity 0 and `scale(0.98)` to its normal appearance. Use a centered transform
-origin. Do not translate it. Transform must not affect measured height.
+Positioning and measured bottom following use the
+[gap-driven window contract](chat-gap-driven-message-window.md#6-bottom-follow-state-and-the-large-arrival-exception).
+Preserve the 70%-of-viewport growth limit and 120ms burst aggregation. Count new
+message/album height, not cue or reserve churn. Scroll remains interruptible;
+both tail 3dots use the shared appearance batch with coordinated canvas-relative
+movement of existing messages. Pic internal size and selection transitions belong
+to their components, without kernel animation locks.
 
-Initial positioning and a delivery that preserves the reading position do not
-fade. If the returned image is absorbed into an existing album, animate only the
-new cell, and only under the same two conditions. Existing cells and the album
-row do not replay the animation. The cell transform must not change the album
-row's measured height.
-
-Capture attachment and the original edge anchor immediately before mounting.
-Top additions preserve the original top message's top; bottom additions preserve
-the original bottom message's bottom, excluding the independently measured tail
-cue. Replacements preserve the real message nearest the viewport midpoint.
-
-After synchronous rendering and measurement, restore the anchor first. If the
-viewport was following the bottom and positive message-height growth does not
-exceed 70% of the viewport, start interruptible smooth scrolling to the content
-bottom (including the cue and reserve). The same growth gate applies to
-replacements. An unfinished bottom-follow animation retains attachment for the
-next delivery; an ordinary message jump does not. User input cancels follow
-ownership. A batch above the limit cancels the old follow and preserves reading.
-This 70% rule replaces the older three-message rule in
-[chat-history-entry-and-window.md](chat-history-entry-and-window.md). The kernel
-selects following after measuring the delivery and exposes a paint callback only
-for batches that actually follow.
-
-Do not reuse the kernel row enter classes. Those include vertical travel and mean
-a new mounted row, not an outbox arrival or an absorbed cell.
-
-If active sends remain after the arrival, the dots stay. If none remain, remove
-the dots immediately. The message fade continues either way.
+Hide a side only after its relevant tasks and incoming seqs are consumed; removal
+is immediate when admitted. A pending incoming side keeps the row present even
+when all local sends have finished.
 
 ## External reflow
 
@@ -142,4 +149,3 @@ Author labels remain single-line with ellipsis and do not enter this reflow path
 Height-neutral cache URL, progress, and icon updates remain local paint updates;
 they do not rebuild message bodies or trigger anchor correction. Tail task state
 is passed as an explicit renderer input, not subscribed to by the cue itself.
-

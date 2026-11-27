@@ -5,6 +5,8 @@
  * positive seq), ascending order, and boundary. latency=0 makes init/getOlder/getNewer resolve in the same frame.
  * Mirrors production semantics (raw single-image msgs; album merging is the kernel's mergeItems job).
  */
+import { firstValueFrom } from 'rxjs';
+import { vi } from 'vitest';
 import {
   MockItemSource,
   MockUserService,
@@ -37,17 +39,187 @@ function msg(msgId: number, isSelf = true): CbItem<ChatItemData> {
 }
 
 describe('MockItemSource (cursor contract)', () => {
+  function intervalSource(total = 100) {
+    const committed = vi.fn();
+    const started = vi.fn(() => committed);
+    const source = new MockItemSource(
+      total,
+      0,
+      0,
+      new MockUserService(),
+      1,
+      false,
+      1,
+      { onHistoryIntervalStarted: started },
+    );
+    return { source, committed, started };
+  }
+
+  it('commits actual bounded scan coverage, including a deleted newest coordinate', async () => {
+    const { source, committed } = intervalSource();
+    source.withdraw(100);
+    await source.getNewer(0, 10);
+    expect(committed).toHaveBeenLastCalledWith(0, 10);
+    await source.getNewer(95, 10);
+    expect(committed).toHaveBeenLastCalledWith(95, 100);
+    source.destroy();
+  });
+
+  it('reports start/read-seam windows only for their scanned range', async () => {
+    const { source, committed } = intervalSource();
+    expect(
+      (await source.loadWindow({ kind: 'start', count: 10 })).map(
+        (item) => item.id,
+      ),
+    ).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+    expect(committed).toHaveBeenLastCalledWith(0, 10);
+    source.withdraw(50);
+    expect(
+      (
+        await source.loadWindow({
+          kind: 'around',
+          messageId: 50,
+          olderCount: 2,
+          newerCount: 2,
+        })
+      ).map((item) => item.id),
+    ).toEqual([48, 49, 51, 52]);
+    expect(committed).toHaveBeenLastCalledWith(47, 52);
+    source.destroy();
+  });
+
+  it('captures a page endpoint before latency, not a head that advances during the fetch', async () => {
+    const { source, committed } = intervalSource();
+    let release!: () => void;
+    source.beforeHistoryScan = () =>
+      new Promise<void>((resolve) => {
+        release = resolve;
+      });
+    source.pushLive([msg(101)]);
+    const page = source.getNewer(100, 50);
+    source.advanceDeletedHead(103);
+    release();
+    expect((await page).map((item) => item.id)).toEqual([101]);
+    expect(committed).toHaveBeenCalledExactlyOnceWith(100, 101);
+    source.beforeHistoryScan = undefined;
+    expect(await source.getNewer(101, 50)).toEqual([]);
+    expect(committed).toHaveBeenLastCalledWith(101, 103);
+    source.destroy();
+  });
+
+  it('keeps an empty live consumer and commits later deleted-only coverage without inventing messages', async () => {
+    const { source, committed, started } = intervalSource();
+    const delivered = vi.fn();
+    const subscription = source.requestNewer(100, 50).subscribe(delivered);
+    source.advanceDeletedHead(102);
+    await vi.waitFor(() =>
+      expect(committed).toHaveBeenCalledExactlyOnceWith(100, 102),
+    );
+    expect(delivered).not.toHaveBeenCalled();
+    expect(started).toHaveBeenCalledTimes(1);
+    source.pushLive([msg(103)]);
+    await vi.waitFor(() => expect(delivered).toHaveBeenCalledTimes(1));
+    expect(committed).toHaveBeenLastCalledWith(102, 103);
+    subscription.unsubscribe();
+    source.destroy();
+  });
+
+  it('does not complete a range on history failure; a fresh consumer can retry', async () => {
+    const { source, committed } = intervalSource();
+    const error = new Error('Mock history failed');
+    source.beforeHistoryScan = async () => {
+      throw error;
+    };
+    expect(await firstValueFrom(source.requestNewer(90, 50))).toEqual({
+      kind: 'error',
+      error,
+    });
+    expect(committed).not.toHaveBeenCalled();
+    source.beforeHistoryScan = undefined;
+    expect((await firstValueFrom(source.requestNewer(90, 50))).kind).toBe(
+      'items',
+    );
+    expect(committed).toHaveBeenCalledExactlyOnceWith(90, 100);
+    source.destroy();
+  });
+
+  for (const action of ['unsubscribe', 'destroy'] as const) {
+    it(`does not publish delayed scan evidence after ${action}`, async () => {
+      const { source, committed } = intervalSource();
+      let release!: () => void;
+      let signal!: AbortSignal;
+      source.beforeHistoryScan = (_range, current) => {
+        signal = current;
+        return new Promise<void>((resolve) => {
+          release = resolve;
+        });
+      };
+      const delivered = vi.fn();
+      const subscription = source.requestNewer(90, 50).subscribe(delivered);
+      if (action === 'destroy') source.destroy();
+      else subscription.unsubscribe();
+      expect(signal.aborted).toBe(true);
+      release();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(committed).not.toHaveBeenCalled();
+      expect(delivered).not.toHaveBeenCalled();
+      source.destroy();
+    });
+  }
+
+  it('cancels an older consumer without reporting coverage after its transport resolves', async () => {
+    const { source, committed } = intervalSource();
+    let release!: () => void;
+    source.beforeHistoryScan = () =>
+      new Promise<void>((resolve) => {
+        release = resolve;
+      });
+    const delivered = vi.fn();
+    const subscription = source.requestOlder(90, 50).subscribe(delivered);
+    subscription.unsubscribe();
+    release();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(committed).not.toHaveBeenCalled();
+    expect(delivered).not.toHaveBeenCalled();
+    source.destroy();
+  });
+
+  it('honors a cancelled window binding without publishing its range', async () => {
+    const { source, committed } = intervalSource();
+    let release!: () => void;
+    source.beforeHistoryScan = () =>
+      new Promise<void>((resolve) => {
+        release = resolve;
+      });
+    const controller = new AbortController();
+    const page = source.loadWindow(
+      { kind: 'latest', count: 50 },
+      { signal: controller.signal },
+    );
+    controller.abort();
+    release();
+    await expect(page).rejects.toMatchObject({ name: 'AbortError' });
+    expect(committed).not.toHaveBeenCalled();
+    source.destroy();
+  });
+
   it('around an absent cursor retains surrounding history', async () => {
     const source = new MockItemSource(100, 0, 0, new MockUserService(), 1);
     source.withdraw(50);
     const aroundHole = await source.loadWindow({
-      kind: 'around', messageId: 50, olderCount: 2, newerCount: 2,
+      kind: 'around',
+      messageId: 50,
+      olderCount: 2,
+      newerCount: 2,
     });
-    expect(aroundHole.map(item => item.id)).toEqual([48, 49, 51, 52]);
+    expect(aroundHole.map((item) => item.id)).toEqual([48, 49, 51, 52]);
     const beyondTail = await source.loadWindow({
-      kind: 'around', messageId: 101, olderCount: 2, newerCount: 2,
+      kind: 'around',
+      messageId: 101,
+      olderCount: 2,
+      newerCount: 2,
     });
-    expect(beyondTail.map(item => item.id)).toEqual([99, 100]);
+    expect(beyondTail.map((item) => item.id)).toEqual([99, 100]);
     source.destroy();
   });
 
@@ -187,15 +359,22 @@ describe('MockItemSource (cursor contract)', () => {
     const s = new MockItemSource(2000, 0, 0, new MockUserService(), 1);
     const items = await s.loadWindow({ kind: 'latest', count: 2000 });
     expect(items.every((i) => i.data.type === 'msg')).toBe(true);
-    expect(items.some((i) => i.data.contentType === 'IMAGE')).toBe(true);
-    const ms = items.map((i) => i.data.createdAtMs);
+    const msgs = items.filter(
+      (i): i is typeof i & { data: Extract<typeof i.data, { type: 'msg' }> } =>
+        i.data.type === 'msg',
+    );
+    expect(msgs.some((i) => i.data.contentType === 'IMAGE')).toBe(true);
+    const ms = msgs.map((i) => i.data.createdAtMs);
     expect(Math.max(...ms) - Math.min(...ms)).toBeGreaterThan(86400000);
   });
 
   it('mirrors production: every IMAGE is a single image (consecutive same-creator merged by kernel mergeItems)', async () => {
     const s = new MockItemSource(2000, 0, 0, new MockUserService(), 1);
     const items = await s.loadWindow({ kind: 'latest', count: 2000 });
-    const albums = items.filter((i) => i.data.contentType === 'IMAGE');
+    const albums = items.filter(
+      (i): i is typeof i & { data: Extract<typeof i.data, { type: 'msg' }> } =>
+        i.data.type === 'msg' && i.data.contentType === 'IMAGE',
+    );
     expect(albums.length).toBeGreaterThan(0);
     expect(albums.every((a) => a.data.images?.length === 1)).toBe(true); // single image; merging is in mergeItems
   });
@@ -204,12 +383,12 @@ describe('MockItemSource (cursor contract)', () => {
     const s = new MockItemSource(500, 0, 0, new MockUserService(), 1);
     const items = await s.loadWindow({ kind: 'latest', count: 100 });
     const self = items.find(
-      (i) =>
+      (i): i is typeof i & { data: Extract<typeof i.data, { type: 'msg' }> } =>
         i.data.type === 'msg' &&
         i.data.creator === JSON.stringify([0, 'user-1']),
     )!;
     const other = items.find(
-      (i) =>
+      (i): i is typeof i & { data: Extract<typeof i.data, { type: 'msg' }> } =>
         i.data.type === 'msg' &&
         i.data.creator === JSON.stringify([0, 'user-2']),
     )!;
@@ -220,5 +399,4 @@ describe('MockItemSource (cursor contract)', () => {
     expect(other.data.isSelf).toBe(false);
     expect(other.data.avatarIdentityId).toBe(JSON.stringify([0, 'user-2']));
   });
-
 });

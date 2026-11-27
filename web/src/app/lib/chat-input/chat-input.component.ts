@@ -1097,12 +1097,12 @@ export class ChatInputComponent implements OnDestroy {
     );
     this.recents.set(next);
     this.recentsWriteRevision++;
-    void this.preferences.set('device', RECENTS_KEY, next).catch(() => {});
+    void this.preferences.set(RECENTS_KEY, next).catch(() => {});
   }
 
   private async restoreRecents(): Promise<void> {
     const revision = this.recentsWriteRevision;
-    const stored = await this.preferences.get<unknown>('device', RECENTS_KEY);
+    const stored = await this.preferences.get<unknown>(RECENTS_KEY);
     if (revision !== this.recentsWriteRevision) return;
     if (!Array.isArray(stored)) return;
     const values = stored.filter(

@@ -7,8 +7,8 @@ import { Injectable } from '@angular/core';
  *
  * Players pass a stable `pause` callback (their own `() => el.pause()`); `begin` pauses the previously-active
  * callback (if different) and records the new one. Pausing an already-ended/already-paused element is a no-op,
- * so a stale active slot is harmless — no explicit unregister is needed. Identity comparison on the callback
- * detects "this player is already active" (re-tap) and avoids pausing oneself.
+ * and `release` forgets only the retiring player, never a newer active player. Identity comparison on the
+ * callback detects "this player is already active" (re-tap) and avoids pausing oneself.
  */
 @Injectable({ providedIn: 'root' })
 export class AudioPlaybackCoordinator {
@@ -17,5 +17,9 @@ export class AudioPlaybackCoordinator {
   begin(pause: () => void): void {
     if (this.active && this.active !== pause) this.active();
     this.active = pause;
+  }
+
+  release(pause: () => void): void {
+    if (this.active === pause) this.active = null;
   }
 }

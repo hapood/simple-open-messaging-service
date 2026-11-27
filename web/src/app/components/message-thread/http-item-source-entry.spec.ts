@@ -57,6 +57,7 @@ function setup(readSeq = 100) {
     retainNewestSeq: vi.fn(),
     queryBrowserMessageHistory: query,
     queryNativeMessageHistory: query,
+    getMessageDeletions: vi.fn(async () => []),
     watchHistoryInterval,
   };
   const users = {
@@ -109,16 +110,17 @@ function mountKernel(source: HttpItemSource, height = 200) {
     config: { edge: 1, thresholdFloor: 20000 },
     hooks: {
       messageSeqs: (item) =>
-        item.data.serverGap ? [] : (item.ids ?? [item.id]),
+        item.data.type === 'serverGap' ? [] : (item.ids ?? [item.id]),
       createItem: (item, _previous, presentation) => {
         const el = document.createElement('div');
         el.style.height = '40px';
         el.dataset['presentation'] = presentation.kind;
-        el.dataset['kind'] = item.data.serverGap ? 'gap' : 'message';
-        if (item.data.serverGap) el.textContent = item.data.serverGap.state;
+        el.dataset['kind'] = item.data.type === 'serverGap' ? 'gap' : 'message';
+        if (item.data.type === 'serverGap') el.textContent = item.data.state;
         return {
           el,
           update: () => {},
+          predestory: () => {},
           destroy: () => el.remove(),
         };
       },
@@ -355,7 +357,8 @@ describe('HttpItemSource entry cache', () => {
       pages.next({ left: 100, right: 110, items: [{ kind: 'message', message: message(110) }] });
       const result = await load;
       expect(result).toHaveLength(2);
-      expect(result[0].data.serverGap).toEqual({
+      expect(result[0].data).toMatchObject({
+        type: 'serverGap',
         left: 90,
         right: 100,
         state: 'SERVER_PENDING',

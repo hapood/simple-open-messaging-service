@@ -1,6 +1,7 @@
 import { ChangeDetectionStrategy, ChangeDetectorRef, Component, computed, ElementRef, inject, input, signal, viewChild } from '@angular/core';
 import { formatDuration } from '../file-meta.util';
 import { AudioPlaybackCoordinator } from './audio-playback-coordinator.service';
+import { onCbItemPredestory } from '../../../lib/chat-box/cb-item-activity';
 
 /**
  * Flat progress-bar voice player, rendered inside an AUDIO cell of {@link MediaRowComponent}.
@@ -50,8 +51,23 @@ export class AudioPlayerComponent {
   readonly durLabel = computed(() => formatDuration(this.duration()));
   readonly played = signal(false);
   readonly rate = signal(1);
+  private retired = false;
+
+  constructor() {
+    onCbItemPredestory(() => {
+      this.retired = true;
+      this.cdr.detach();
+      this.coordinator.release(this.pauseFn);
+      const audio = this.audioRef()?.nativeElement;
+      if (!audio) return;
+      audio.pause();
+      audio.removeAttribute('src');
+      audio.load(); // Cancel native media I/O; the visible controls stay frozen.
+    });
+  }
 
   toggle(): void {
+    if (this.retired) return;
     const el = this.audioRef()?.nativeElement;
     if (!el || this.failed()) return;
     if (this.playing()) {
@@ -63,12 +79,14 @@ export class AudioPlayerComponent {
     // el.play() resolves on success (the 'play' event then sets `playing`); it rejects when the browser
     // blocks it (rare for a user-gesture-initiated play) or the source is unplayable → mark failed.
     void el.play().catch(() => {
+      if (this.retired) return;
       this.failed.set(true);
       this.render();
     });
   }
 
   onTimeUpdate(): void {
+    if (this.retired) return;
     const el = this.audioRef()?.nativeElement;
     if (!el) return;
     // Prefer the element's real duration once known; fall back to the recorded duration input.
@@ -78,6 +96,7 @@ export class AudioPlayerComponent {
   }
 
   seek(event: MouseEvent): void {
+    if (this.retired) return;
     const el = this.audioRef()?.nativeElement;
     const target = event.currentTarget as HTMLElement | null;
     if (!el || !target || this.failed()) return;
@@ -92,6 +111,7 @@ export class AudioPlayerComponent {
   }
 
   cycleRate(): void {
+    if (this.retired) return;
     const next = this.rate() === 1 ? 1.5 : this.rate() === 1.5 ? 2 : 1;
     this.rate.set(next);
     const el = this.audioRef()?.nativeElement;
@@ -100,15 +120,18 @@ export class AudioPlayerComponent {
   }
 
   onPlay(): void {
+    if (this.retired) return;
     this.played.set(true);
     this.playing.set(true);
     this.render();
   }
   onPause(): void {
+    if (this.retired) return;
     this.playing.set(false);
     this.render();
   }
   onEnded(): void {
+    if (this.retired) return;
     this.playing.set(false);
     this.progress.set(0);
     const el = this.audioRef()?.nativeElement;
@@ -116,12 +139,13 @@ export class AudioPlayerComponent {
     this.render();
   }
   onError(): void {
+    if (this.retired) return;
     this.failed.set(true);
     this.playing.set(false);
     this.render();
   }
 
   private render(): void {
-    this.cdr.detectChanges();
+    if (!this.retired) this.cdr.detectChanges();
   }
 }

@@ -26,7 +26,12 @@ describe('message selection', () => {
     expect(messageMemberIds(item)).toEqual([10, 11]);
     expect(messageSelectionState(item, new Set([11]))).toBe('some');
     expect(messageSelectionState(item, new Set([10, 11]))).toBe('all');
-    expect(albumMemberItem(item, 11).data.images?.map((x) => x.msgId)).toEqual([
+    expect(
+      (
+        albumMemberItem(item, 11)
+          .data as import('../message-cards/chat-item').ChatMsgData
+      ).images?.map((x) => x.msgId),
+    ).toEqual([
       11,
     ]);
   });

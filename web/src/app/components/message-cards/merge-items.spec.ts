@@ -5,7 +5,9 @@ import {
   ALBUM_MAX,
 } from './merge-items';
 import type { CbItem } from '../../lib/chat-box/chat-box-scroller';
-import type { AlbumMedia, ChatItemData } from './chat-item';
+import type { AlbumMedia, ChatItemData, ChatMsgData } from './chat-item';
+const msgData = (item: CbItem<ChatItemData>): ChatMsgData =>
+  item.data as ChatMsgData;
 
 const creatorKey = (creator: number): string =>
   JSON.stringify([0, 'local', `user-${creator}`]);
@@ -39,7 +41,7 @@ describe('mergeAlbumItems', () => {
     id: number,
     clientMessageId?: string,
     creator = 1,
-  ): CbItem<ChatItemData> => ({
+  ): CbItem<ChatMsgData> => ({
     id,
     clientMessageId,
     data: {
@@ -61,6 +63,7 @@ describe('mergeAlbumItems', () => {
     const before = imageItem(1);
     const reply = imageItem(2);
     reply.data.quote = {
+      kind: 'jumpable',
       anchor: { kind: 'origin', namespaceId: 3, originSeq: 4 },
     };
     const after = imageItem(3);
@@ -120,7 +123,7 @@ describe('mergeAlbumItems', () => {
     expect(out.length).toBe(1);
     expect(out[0].id).toBe(0); // head id
     expect(out[0].ids).toEqual([0, 1, 2]); // every member msgId (jump-to-image resolution)
-    expect(out[0].data.images?.map((i) => i.msgId)).toEqual([0, 1, 2]); // concatenated
+    expect(msgData(out[0]).images?.map((i) => i.msgId)).toEqual([0, 1, 2]); // concatenated
   });
 
   it('merges a same-batch self-sent burst (each IMAGE real carries a cid): unions ALL clientMessageIds', () => {
@@ -197,8 +200,8 @@ describe('mergeAlbumItems', () => {
     for (let i = 0; i < n; i++) batch.push(imageItem(i));
     const out = mergeAlbumItems(batch);
     expect(out.length).toBe(2); // ALBUM_MAX + 3
-    expect(out[0].data.images!.length).toBe(ALBUM_MAX);
-    expect(out[1].data.images!.length).toBe(3);
+    expect(msgData(out[0]).images!.length).toBe(ALBUM_MAX);
+    expect(msgData(out[1]).images!.length).toBe(3);
   });
 
   it('does not merge a same-sender media run across the unread divider host', () => {
@@ -261,7 +264,7 @@ describe('absorbAlbumTail (cross-batch absorb hook)', () => {
     const merged = absorbAlbumTail(imageItem(1), imageItem(2));
     expect(merged).not.toBeNull();
     expect(merged!.id).toBe(1); // head id preserved
-    expect(merged!.data.images!.map((i) => i.msgId)).toEqual([1, 2]); // concatenated
+    expect(msgData(merged!).images!.map((i) => i.msgId)).toEqual([1, 2]); // concatenated
     expect(merged!.ids).toEqual([1, 2]); // unioned for jump resolution
   });
 
@@ -324,6 +327,6 @@ describe('absorbAlbumTail (cross-batch absorb hook)', () => {
   it('absorbs exactly up to the cap: (cap - 1) + 1 = cap', () => {
     const merged = absorbAlbumTail(imageItem(1, ALBUM_MAX - 1), imageItem(2));
     expect(merged).not.toBeNull();
-    expect(merged!.data.images!.length).toBe(ALBUM_MAX);
+    expect(msgData(merged!).images!.length).toBe(ALBUM_MAX);
   });
 });

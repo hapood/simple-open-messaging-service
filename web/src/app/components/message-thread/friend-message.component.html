@@ -370,43 +370,49 @@
         [threadId]="threadId()"
         (send)="onSendIntent($event)"
       >
-        @if (composingQuote(); as quote) {
-          <div composer-prefix class="msg-compose-quote">
-            @if (quote.imageShape === 'avatar') {
-              <app-snapshot-avatar
-                class="msg-compose-quote-avatar"
-                [type]="quoteAvatarType(quote.imageIdentity)"
-                [name]="quote.imageLabel"
-                [account]="quote.imageIdentity"
-                [src]="quote.image"
-              />
-            } @else if (quote.image) {
-              <img
-                class="msg-compose-quote-image"
-                [src]="assetUrl(quote.image)"
-                alt=""
-              />
+        <!-- Keep the projection selector on a static root: nested control-flow
+             blocks do not themselves match the composer's selected content slot. -->
+        <ng-container composer-prefix>
+          @if (composingQuote(); as quote) {
+            @if (quote.kind !== 'unavailable') {
+              <div class="msg-compose-quote">
+                @if (quote.imageShape === 'avatar') {
+                  <app-snapshot-avatar
+                    class="msg-compose-quote-avatar"
+                    [type]="quoteAvatarType(quote.imageIdentity)"
+                    [name]="quote.imageLabel"
+                    [account]="quote.imageIdentity"
+                    [src]="quote.image"
+                  />
+                } @else if (quote.image) {
+                  <img
+                    class="msg-compose-quote-image"
+                    [src]="assetUrl(quote.image)"
+                    alt=""
+                  />
+                }
+                <span class="msg-compose-quote-copy">
+                  @if (quote.author) {
+                    <strong>{{ quote.author }}</strong>
+                  }
+                  <span>{{ quote.body }}</span>
+                </span>
+                <button
+                  type="button"
+                  class="msg-compose-quote-close"
+                  (click)="cancelQuote()"
+                  [attr.aria-label]="'common.cancel' | transloco"
+                >
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path
+                      d="M18.3 5.7 12 12l6.3 6.3-1.4 1.4-6.3-6.3-6.3 6.3-1.4-1.4L9.2 12 2.9 5.7l1.4-1.4 6.3 6.3 6.3-6.3z"
+                    />
+                  </svg>
+                </button>
+              </div>
             }
-            <span class="msg-compose-quote-copy">
-              @if (quote.author) {
-                <strong>{{ quote.author }}</strong>
-              }
-              <span>{{ quote.body }}</span>
-            </span>
-            <button
-              type="button"
-              class="msg-compose-quote-close"
-              (click)="cancelQuote()"
-              [attr.aria-label]="'common.cancel' | transloco"
-            >
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <path
-                  d="M18.3 5.7 12 12l6.3 6.3-1.4 1.4-6.3-6.3-6.3 6.3-1.4-1.4L9.2 12 2.9 5.7l1.4-1.4 6.3 6.3 6.3-6.3z"
-                />
-              </svg>
-            </button>
-          </div>
-        }
+          }
+        </ng-container>
       </app-chat-input>
     }
 

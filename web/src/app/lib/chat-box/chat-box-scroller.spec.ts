@@ -113,6 +113,7 @@ function controllableHooks(itemHeight = 100): {
         return {
           el,
           update: () => {},
+          predestory: () => {},
           destroy: () => {},
         };
       },
@@ -159,6 +160,7 @@ function skeletonHooks(
             ? makeEl('cb-ghost-loading', ghostHeight)
             : makeEl('real', itemHeight),
         update: () => {},
+        predestory: () => {},
         destroy: () => {},
       }),
     },
@@ -194,6 +196,7 @@ function recordingHooks(itemHeight = 100): {
         return {
           el,
           update: () => {},
+          predestory: () => {},
           destroy: () => {},
         };
       },
@@ -238,6 +241,7 @@ function trackingHooks(itemHeight = 100): {
             updates++;
             dataMap.set(id, next.data);
           },
+          predestory: () => {},
           destroy: () => {},
         };
       },
@@ -1001,6 +1005,143 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
     expect(scroller.getInfo().mounted).toBe(0);
   });
 
+  it('pre-destroys a gap and cancels its interval before immediate final disposal', async () => {
+    const { hooks } = controllableHooks(100);
+    const create = hooks.createItem;
+    let gapEl: HTMLElement | undefined;
+    const order: string[] = [];
+    const predestory = vi.fn(() => {
+      order.push('predestory');
+      expect(changes.observed).toBe(false);
+      expect(scroller!.getMountedGeometry(-1)).toBeNull();
+      expect(gapEl?.parentNode).toBe(content);
+    });
+    const destroy = vi.fn(() => { order.push('destroy'); });
+    hooks.createItem = (item, prev) => ({
+      ...create(item, prev),
+      predestory: item.id === -1 ? predestory : () => {},
+      destroy: item.id === -1 ? destroy : () => {},
+    });
+    const source = fakeSource(100);
+    source.loadWindow = async () => [
+      { id: -1, data: -1, displayInterval: { left: 0, right: 49 }, boundary: 'oldest' },
+      { id: 50, data: 50, boundary: 'newest' },
+    ];
+    source.requestNewer = () => NEVER;
+    const changes = new Subject<CbItem<number>[]>();
+    source.watchInterval = () => changes;
+    scroller = createKernel({ viewport, content, hooks, source });
+    await scroller.openWindow({ kind: 'cached' });
+    await flush();
+    const el = gapEl = scroller.getMountedGeometry(-1)!.el;
+    expect(changes.observed).toBe(true);
+    scroller.removeItem(-1);
+    expect(predestory).toHaveBeenCalledOnce();
+    expect(changes.observed).toBe(false);
+    expect(destroy).toHaveBeenCalledOnce();
+    expect(order).toEqual(['predestory', 'destroy']);
+    expect(el.parentNode).toBeNull();
+    expect(scroller.mutateItem(-1, item => item)).toBe(false);
+    expect(scroller.updateItemData(-1, 3)).toBe(false);
+    changes.next([{ id: 49, data: 49 }]);
+    expect(scroller.getMountedGeometry(49)).toBeNull();
+    el.dispatchEvent(new Event('animationend'));
+    expect(destroy).toHaveBeenCalledOnce();
+    expect(el.parentNode).toBeNull();
+  });
+
+  it('does not create a queued interval subscription after pre-destruction', async () => {
+    const { hooks } = controllableHooks(100);
+    const create = hooks.createItem;
+    const predestory = vi.fn();
+    hooks.createItem = (item, prev) => ({ ...create(item, prev), predestory });
+    const source = fakeSource(100);
+    source.loadWindow = async () => [
+      { id: -1, data: -1, displayInterval: { left: 0, right: 49 }, boundary: 'oldest' },
+      { id: 50, data: 50, boundary: 'newest' },
+    ];
+    source.requestNewer = () => NEVER;
+    source.watchInterval = vi.fn(() => NEVER);
+    scroller = createKernel({
+      viewport, content, hooks, source,
+      onScroll: () => { scroller?.removeItem(-1); },
+    });
+    await scroller.openWindow({ kind: 'cached' });
+    await flush();
+    expect(predestory).toHaveBeenCalledOnce();
+    expect(source.watchInterval).not.toHaveBeenCalled();
+  });
+
+  it('finishes sibling removals and DOM disposal even when pre-destruction throws', async () => {
+    const { hooks } = controllableHooks();
+    const create = hooks.createItem;
+    const destroyed: number[] = [];
+    hooks.createItem = (item, prev) => ({
+      ...create(item, prev),
+      predestory: () => { if (item.id === 450) throw new Error('activity'); },
+      destroy: () => { destroyed.push(item.id); },
+    });
+    scroller = createKernel({ viewport, content, hooks, source: fakeSource(500) });
+    await scroller.openWindow({ kind: 'latest' });
+    destroyed.length = 0;
+    expect(() => scroller!.removeItem([450, 451])).toThrow(AggregateError);
+    expect(destroyed).toEqual([450, 451]);
+    expect(scroller.getMountedGeometry(450)).toBeNull();
+    expect(scroller.getMountedGeometry(451)).toBeNull();
+    expect(content.querySelector('[data-cb-id="450"], [data-cb-id="451"]')).toBeNull();
+    expect(scroller.removeItem([450, 451])).toBe(0);
+  });
+
+  it('does not double-dispose or reposition a window rebound during pre-destruction', async () => {
+    const { hooks } = controllableHooks();
+    const create = hooks.createItem;
+    const destroyed = vi.fn();
+    let replaced = false;
+    hooks.createItem = (item, prev) => ({
+      ...create(item, prev),
+      predestory: () => {
+        if (item.id !== 450 || replaced) return;
+        replaced = true;
+        expect(scroller!.getMountedGeometry(450)).toBeNull();
+        scroller!.unbind();
+        scroller!.bind(fakeSource(20));
+        viewport.scrollTop = 123;
+      },
+      destroy: () => { if (item.id === 450) destroyed(); },
+    });
+    scroller = createKernel({ viewport, content, hooks, source: fakeSource(500) });
+    await scroller.openWindow({ kind: 'latest' });
+    expect(scroller.removeItem([450, 451])).toBe(1);
+    expect(destroyed).toHaveBeenCalledOnce();
+    expect(viewport.scrollTop).toBe(123);
+    expect(scroller.getInfo().mounted).toBe(0);
+  });
+
+  it('releases the source and other rows when unbind cleanup fails', async () => {
+    const { hooks } = controllableHooks();
+    const create = hooks.createItem;
+    const disposed: number[] = [];
+    let fail = false;
+    hooks.createItem = (item, prev) => ({
+      ...create(item, prev),
+      predestory: () => { if (fail && item.id === 450) throw new Error('activity'); },
+      destroy: () => { disposed.push(item.id); },
+    });
+    const source = fakeSource(500);
+    source.destroy = vi.fn();
+    scroller = createKernel({ viewport, content, hooks, source });
+    await scroller.openWindow({ kind: 'latest' });
+    disposed.length = 0;
+    const count = scroller.getInfo().mounted;
+    fail = true;
+    expect(() => scroller!.unbind()).toThrow(AggregateError);
+    expect(disposed).toHaveLength(count);
+    expect(content.querySelector('[data-cb-id]')).toBeNull();
+    expect(source.destroy).toHaveBeenCalledOnce();
+    expect(scroller.lifecycleState).toBe('ready');
+    expect(() => scroller!.bind(fakeSource(20))).not.toThrow();
+  });
+
   it('an interval transport error retains history and remount creates a fresh consumer', async () => {
     const { hooks } = controllableHooks(100);
     const source = fakeSource(100);
@@ -1487,11 +1628,54 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
     },
   );
 
+  it('keeps bottom animation through its asynchronous scroll events and a second page, but yields to user input', async () => {
+    const { hooks } = controllableHooks(100);
+    const source = pushedSource(fakeSource(100));
+    scroller = createKernel({ viewport, content, hooks, source,
+      config: { thresholdFloor: 20000 } });
+    await scroller.openWindow({ kind: 'latest' });
+    await flush();
+    const frames = new Map<number, FrameRequestCallback>();
+    let frameId = 0;
+    rafSpy.mockImplementation((callback: FrameRequestCallback) => {
+      frames.set(++frameId, callback);
+      return frameId;
+    });
+    vi.spyOn(window, 'cancelAnimationFrame').mockImplementation(id => { frames.delete(id); });
+    const kernel = scroller as unknown as {
+      setScrollTopProgrammatic(top: number): void;
+      isFollowingBottom(): boolean;
+      commitNewerDelivery(result: CbDemandResult<number>): void;
+      animator: { isRunning: boolean };
+    };
+    viewport.scrollTop -= 100;
+    scroller.smoothScrollToBottom();
+    kernel.setScrollTopProgrammatic(viewport.scrollTop + 20);
+    viewport.dispatchEvent(new Event('scroll'));
+    expect(kernel.animator.isRunning).toBe(true);
+    expect(kernel.isFollowingBottom()).toBe(true);
+    kernel.commitNewerDelivery({ kind: 'items', items: [{ id: 100, data: 100, boundary: 'newest' }] });
+    let now = performance.now();
+    for (let frame = 0; frame < 100 && kernel.animator.isRunning; frame++) {
+      now += 16;
+      const pending = [...frames.values()];
+      frames.clear();
+      for (const callback of pending) callback(now);
+      viewport.dispatchEvent(new Event('scroll'));
+    }
+    expect(kernel.animator.isRunning).toBe(false);
+    expect(scroller.isPinnedToBottom()).toBe(true);
+    viewport.scrollTop -= 100;
+    scroller.smoothScrollToBottom();
+    viewport.dispatchEvent(new WheelEvent('wheel', { deltaY: -100 }));
+    expect(kernel.animator.isRunning).toBe(false);
+    expect(kernel.isFollowingBottom()).toBe(false);
+  });
+
   it.each([420, 421])('uses measured batch height %s at the seventy-percent boundary', async (height) => {
     const { hooks, setHeight } = controllableHooks();
-    const onArrivalPinned = vi.fn();
     const source = pushedSource(fakeSource(100));
-    scroller = createKernel({ viewport, content, hooks: { ...hooks, onArrivalPinned }, source,
+    scroller = createKernel({ viewport, content, hooks, source,
       config: { thresholdFloor: 20000 } });
     await scroller.openWindow({ kind: 'latest' });
     await flush();
@@ -1502,8 +1686,10 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
     await new Promise((r) => setTimeout(r, 250));
     await flush();
     expect(viewport.scrollTop).toBe(before + (height === 420 ? height : 0));
-    expect(onArrivalPinned).toHaveBeenCalledTimes(height === 420 ? 1 : 0);
-    if (height === 420) expect(onArrivalPinned.mock.calls[0][2]).toEqual([100]);
+    const arrival = content.querySelector<HTMLElement>('[data-cb-id="100"]')!;
+    expect(arrival).not.toBeNull();
+    expect(arrival.matches('.cb-pending, .cb-enter, .cb-enter-above')).toBe(false);
+    expect(arrival.getAnimations({ subtree: true })).toEqual([]);
   });
 
   it('measures tail presentation migration in the arrival transaction', async () => {
@@ -1868,8 +2054,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
   // Root cause: a live/newer item's real height settles AFTER positionAtBottom already ran — the create-item height path
   // is a ResizeObserver that fires post-render (image/data/font settle), so the kernel measured a placeholder height
   // at mount, pinned to that (shorter) bottom, then the late growth extended the content below the fold with no
-  // re-pin. Retry worsens the timing (its cb-move/cb-enter holds animating>0, deferring the no-op balance), but the
-  // gap is the missing tail re-pin in onElHeight. Verifies the fix: a below-viewport item growing while pinned re-pins.
+  // re-pin. A below-viewport item growing while pinned must preserve tail attachment.
   it('onElHeight re-pins to bottom when a tail item grows after pin (async height settle — retry+new-message pin failure)', async () => {
     const source = liveSource(10);
     const { hooks, setHeight } = controllableHooks(100); // 100px real items
@@ -3026,10 +3211,6 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
     const ok = scroller.insertAfter(tailId, { id: -1, data: -1 });
     expect(ok).toBe(true);
     expect(scroller.getInfo().newestId).toBe(-1); // transient is now the tail
-    // drain the cb-enter so the checkpoint is not deferred when scrolling to the bottom edge
-    content
-      .querySelector<HTMLElement>('[data-cb-id="-1"]')
-      ?.dispatchEvent(new Event('animationend'));
     // scroll down to the bottom edge → demand triggers loadNewer; cursor must skip the transient
     viewport.scrollTop = content.scrollHeight - 600;
     viewport.dispatchEvent(new Event('scroll'));
@@ -3047,16 +3228,9 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
     expect(precedingRealId).toBeGreaterThan(tailId);
   });
 
-  // ── Phase A/B/C: enter animation, transient-safe trim, settle (optimistic→confirmed), removeItem (exit animation) ──
+  // ── Immediate rendering, transient-safe trim, confirmation, and removal ──
 
-  /** Dispatch animationend on a host (drain cb-enter/cb-leave synchronously in tests; the real browser fires it at the
-   *  CSS duration, but tests don't wait). */
-  function animEnd(id: string): void {
-    const el = content.querySelector<HTMLElement>(`[data-cb-id="${id}"]`);
-    el?.dispatchEvent(new Event('animationend'));
-  }
-
-  it('Phase A: init/loadOlder mounts do NOT get cb-enter (only inserts + live arrivals animate)', async () => {
+  it('init and older history mounts have no entry animation', async () => {
     const { hooks } = controllableHooks();
     scroller = createKernel<number>({
       viewport,
@@ -3072,7 +3246,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
     expect(content.querySelectorAll('.cb-enter').length).toBe(0); // scroll-loaded history does not animate either
   });
 
-  it('Phase A: insertAfter plays cb-enter on the new row; animationend removes it', async () => {
+  it('insertAfter reveals the measured row immediately without an entry animation', async () => {
     const { hooks } = controllableHooks();
     scroller = createKernel<number>({
       viewport,
@@ -3083,12 +3257,12 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
     await scroller.openWindow({ kind: 'latest' });
     scroller.insertAfter(450, { id: -1, data: -1 });
     const el = content.querySelector<HTMLElement>('[data-cb-id="-1"]');
-    expect(el?.classList.contains('cb-enter')).toBe(true);
-    animEnd('-1');
-    expect(el?.classList.contains('cb-enter')).toBe(false);
+    expect(el).not.toBeNull();
+    expect(el!.matches('.cb-pending, .cb-enter, .cb-enter-above')).toBe(false);
+    expect(el!.getAnimations({ subtree: true })).toEqual([]);
   });
 
-  it('source arrivals do not play the legacy translating row animation', async () => {
+  it('source arrivals render without translating row animations', async () => {
     const { hooks } = controllableHooks();
     const src = pushedSource(fakeSource(500));
     scroller = createKernel<number>({
@@ -3107,7 +3281,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
     ).toBe(false);
   });
 
-  it('Phase A: source demand remains active while cb-enter balance work is deferred', async () => {
+  it('an immediate insertion does not suspend subsequent source demand', async () => {
     const { hooks } = controllableHooks();
     const src = fakeSource(500);
     scroller = createKernel<number>({
@@ -3118,14 +3292,12 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
     });
     await scroller.openWindow({ kind: 'latest' });
     const getsBefore = src.gets();
-    scroller.insertAfter(400, { id: -1, data: -1 }); // cb-enter, animating=1
+    scroller.insertAfter(400, { id: -1, data: -1 });
     viewport.scrollTop = 0; // top edge → loadOlder would fire if balance ran
     viewport.dispatchEvent(new Event('scroll'));
     await flush();
-    expect(src.gets()).toBeGreaterThan(getsBefore); // subscription is independent from the animation gate
-    animEnd('-1');
-    await flush();
     expect(src.gets()).toBeGreaterThan(getsBefore);
+    expect(content.querySelector('.cb-enter, .cb-enter-above')).toBeNull();
   });
 
   // The user's called-out bug: many transient fakes at the tail must not be eaten by trimNewer when loadOlder fires at
@@ -3140,7 +3312,6 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
     });
     await scroller.openWindow({ kind: 'latest' }); // m-400..m-499
     scroller.insertAfter(499, { id: -1, data: -1 }); // transient at the tail
-    animEnd('-1'); // drain cb-enter so balance can run
     await flush();
     viewport.scrollTop = 0; // scroll to top → loadOlder + trimNewer
     viewport.dispatchEvent(new Event('scroll'));
@@ -3163,7 +3334,6 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
     const mountedBefore = scroller.getInfo().mounted;
     scroller.insertAfter(499, { id: -1, data: -1 }, { optimistic: true }); // optimistic at tail
     expect(scroller.getInfo().mounted).toBe(mountedBefore + 1);
-    animEnd('-1'); // drain its enter animation
     src.pushLive([{ id: -1, data: 777 }]);
     await flush();
     expect(scroller.getInfo().mounted).toBe(mountedBefore + 1); // no duplicate
@@ -3193,7 +3363,6 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
       { id: -1, data: -1, clientMessageId: 'cid-0' },
       { optimistic: true },
     ); // optimistic bubble at the tail (tracked by cid-0)
-    animEnd('-1'); // drain its cb-enter
     expect(scroller.getInfo().mounted).toBe(mountedBefore + 1);
     src.pushLive([
       {
@@ -3235,7 +3404,6 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
       { id: -1, data: -1, clientMessageId: 'cid-0' },
       { optimistic: true },
     );
-    animEnd('-1');
     await scroller.goToLatest();
     const firstAnchorBottom = scroller.getMountedGeometry(499)!.bottom;
     src.pushLive([
@@ -3251,7 +3419,6 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
       { id: -1, data: -1, clientMessageId: 'cid-1' },
       { optimistic: true },
     );
-    animEnd('-1');
     await scroller.goToLatest();
     const secondAnchorBottom = scroller.getMountedGeometry(600)!.bottom;
     src.pushLive([
@@ -3264,12 +3431,9 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
 
   // Regression (overlap race, the user-reported "opponent msg inserts between pending / a msg sinks under viewport"):
   // two signals landing in the same microtask window (two onSignal callbacks back-to-back).
-  // The bug: the source-demand path had no single-flight guard, so the second pull bailed on the active demand (the
-  // in-flight first call owned it) → the second live item never mounted until the NEXT signal (orphaned), AND both calls'
-  // flipMove overlapped on the surviving optimistic tail (moveTimer overwritten → animating leaked; the shove double-played
-  // and a deferred balance never drained). Source flavor under test: a caching source whose getNewer SPLICES the live
-  // cache synchronously (the playground mock's model) — the kernel must coalesce regardless of how the source holds data.
-  it('overlapping source notifications coalesce and drain both items without leaking animation state', async () => {
+  // A second delivery must not be stranded behind a still-active demand. The source
+  // drains its live cache synchronously; both messages must render without animation locks.
+  it('overlapping source notifications coalesce and drain both items without delaying viewport work', async () => {
     const { hooks } = controllableHooks(40);
     const src = pushedSource(fakeSource(500));
     scroller = createKernel<number>({
@@ -3280,13 +3444,12 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
     });
     await scroller.openWindow({ kind: 'latest' }); // m-400..m-499, noNewer=true
     await scroller.goToLatest();
-    // user's in-flight optimistic send at the tail → incoming opponent msgs shove a SURVIVING tail (the flipMove path)
+    // The explicitly inserted optimistic row survives the unrelated incoming messages.
     scroller.insertAfter(
       499,
       { id: -1, data: -1, clientMessageId: 'cid-0' },
       { optimistic: true },
     );
-    animEnd('-1');
     await scroller.goToLatest();
 
     const beforeBurst = scroller.getMountedGeometry(499)!.bottom;
@@ -3303,25 +3466,13 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
     expect(content.querySelectorAll('[data-cb-id="801"]').length).toBe(1);
     // Both 40px arrivals follow because their combined growth is below 70%.
     expect(scroller.getMountedGeometry(499)!.bottom).toBe(beforeBurst - 80);
-    // The overlap must not leak the animating counter (the double flipMove on the surviving tail): drain EVERY in-flight
-    // animation (cb-enter-above on op-0/op-1, cb-move shove on pending-0) and confirm the counter returns to 0. A leak
-    // sticks it > 0 forever, deferring every later scheduleBalance → edge-loading silently stops working.
-    for (const sel of [
-      '.cb-enter',
-      '.cb-enter-above',
-      '.cb-move',
-      '.cb-leave',
-    ]) {
-      for (const el of Array.from(content.querySelectorAll<HTMLElement>(sel)))
-        el.dispatchEvent(new Event('animationend'));
-    }
-    expect(
-      (
-        scroller as unknown as {
-          animating: number;
-        }
-      ).animating,
-    ).toBe(0);
+    // No row animation completion is needed before subsequent viewport work.
+    expect(content.querySelector('.cb-enter, .cb-enter-above, .cb-move, .cb-leave')).toBeNull();
+    const oldestBefore = scroller.getInfo().oldestId!;
+    viewport.scrollTop = 0;
+    viewport.dispatchEvent(new Event('scroll'));
+    await flush();
+    expect(scroller.getInfo().oldestId!).toBeLessThan(oldestBefore);
   });
 
   it('partial newer pages retain explicitly inserted optimistic instances through catch-up', async () => {
@@ -3347,8 +3498,6 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
     const optB: CbItem<number> = { id: -2, clientMessageId: 'cid-b', data: -1 };
     scroller.insertAfter(499, optA, { optimistic: true }); // mount for immediate display
     scroller.insertAfter(-1, optB, { optimistic: true });
-    animEnd('-1');
-    animEnd('-2');
     expect(content.querySelectorAll('[data-cb-id="-1"]').length).toBe(1);
     expect(content.querySelectorAll('[data-cb-id="-2"]').length).toBe(1);
 
@@ -3394,7 +3543,6 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
     await scroller.openWindow({ kind: 'latest' }); // noNewer=true
     const optA: CbItem<number> = { id: -1, clientMessageId: 'cid-a', data: -1 };
     scroller.insertAfter(499, optA, { optimistic: true });
-    animEnd('-1');
     await flush();
     await flush();
     expect(scroller.getInfo().noNewer).toBe(true);
@@ -3402,10 +3550,8 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
     expect(content.querySelectorAll('[data-cb-id="600"]').length).toBe(1);
   });
 
-  // A confirm (real matching an in-flight optimistic by clientMessageId) takes the optimistic's slot — same id, same
-  // position — so it does NOT play a cb-enter: the bubble is already on screen as the optimistic; only the cb-confirmed
-  // spinner→check choreography plays (reconcileOptimistic tags it). The optimistic duplicate is removed synchronously
-  // (no two-bubble flash). (A PLAIN incoming real — no clientMessageId — still enters from above; see the next test.)
+  // Matching clientMessageId removes the optimistic duplicate synchronously.
+  // Confirmation does not add an entry effect or a sending-status animation to history.
   it('a confirmed real from a newer demand settles without an enter animation', async () => {
     const { hooks } = controllableHooks();
     const base = fakeSource(500);
@@ -3422,7 +3568,6 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
       { id: -1, data: -1, clientMessageId: 'cid-0' },
       { optimistic: true },
     ); // tail bubble tracked by cid-0
-    animEnd('-1'); // drain the optimistic's own cb-enter
     src.pushLive([
       {
         id: 600,
@@ -3440,11 +3585,9 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
     expect(content.querySelector('[data-cb-id="-1"]')).toBeNull(); // optimistic duplicate removed (no two-bubble flash)
   });
 
-  // A plain incoming real (no clientMessageId) landing ABOVE an optimistic tail does NOT confirm anything, so the tail
-  // survives and is shoved DOWN by the real's height. That shove is non-zero → the surviving tail gets a cb-move FLIP, and
-  // the incoming real enters from above (cb-enter-above) for the same cover-avoidance reason. This exercises the tail-shove
-  // branch of the coordinated animation (the confirm case above has a zero shove since real and optimistic share content).
-  it('a plain incoming real moves the legacy optimistic tail without translating its entry', async () => {
+  // An unrelated incoming real precedes the optimistic tail without confirming it
+  // or scheduling a row animation.
+  it('a plain incoming real precedes an optimistic tail without entry effects', async () => {
     const { hooks } = controllableHooks(100);
     const src = pushedSource(fakeSource(500));
     scroller = createKernel<number>({
@@ -3459,10 +3602,9 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
       { id: -1, data: -1, clientMessageId: 'cid-0' },
       { optimistic: true },
     ); // tail bubble NOT confirmed by real-X
-    animEnd('-1');
     src.pushLive([{ id: 602, data: 777, boundary: 'newest' as const }]);
     await flush();
-    // The incoming real entered from above (tail present → cover avoidance), NOT from below.
+    // New content is visible immediately, independent of the optimistic tail.
     expect(
       content
         .querySelector('[data-cb-id="602"]')
@@ -3516,7 +3658,6 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
     await flush(); // img1 mounts (newest wasn't an image → no absorb)
     // Trimming also changes the oldest mounted row into the older loading slot.
     expect(t.createdIds.slice(createsAfterInit)).toEqual([700, scroller.getInfo().oldestId]);
-    animEnd('700');
     const albumElement = scroller.getMountedGeometry(700)!.el;
 
     src.pushLive(batches.shift()!);
@@ -3627,7 +3768,6 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
         .querySelector('[data-cb-id="600"]')
         ?.classList.contains('cb-confirmed'),
     ).toBe(false);
-    animEnd('600');
 
     // Send image B: another optimistic (cid-b). real-b's target IS real-a (an image) → it ABSORBS instead of mounting.
     const albumElement = scroller.getMountedGeometry(600)!.el;
@@ -3720,7 +3860,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
     expect(src.newers()).toBe(newersBefore); // getNewer not called (gate: !noNewer → return)
   });
 
-  it('Phase C: removeItem(mountedId) plays cb-leave then unmounts on animationend; returns 1', async () => {
+  it('removeItem disposes its row synchronously without an exit effect', async () => {
     const { hooks } = controllableHooks();
     scroller = createKernel<number>({
       viewport,
@@ -3732,11 +3872,6 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
     const mountedBefore = scroller.getInfo().mounted;
     const n = scroller.removeItem(450);
     expect(n).toBe(1);
-    const el = content.querySelector<HTMLElement>('[data-cb-id="450"]');
-    expect(el?.classList.contains('cb-leave')).toBe(true);
-    expect(scroller.getInfo().mounted).toBe(mountedBefore); // still mounted during the animation
-    animEnd('450');
-    await flush();
     expect(scroller.getInfo().mounted).toBe(mountedBefore - 1);
     expect(content.querySelector('[data-cb-id="450"]')).toBeNull();
   });
@@ -3787,7 +3922,6 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
     // m-451 is a non-head album member → resolves to the album item (m-450..452); m-460 is a separate item.
     const n = scroller.removeItem([451, 460]);
     expect(n).toBe(2); // dedup: the album counts once
-    for (const id of ['450', '460']) animEnd(id);
     await flush();
     expect(scroller.getInfo().mounted).toBe(mountedBefore - 2);
     expect(content.querySelector('[data-cb-id="450"]')).toBeNull(); // whole album gone
@@ -3915,7 +4049,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
     expect(scroller.getMountedGeometry(452)?.item.data).toBe(452);
   });
 
-  it('Phase C: while a cb-leave is in flight, balance is deferred; it resumes on animationend', async () => {
+  it('immediate removal does not suspend subsequent viewport work', async () => {
     const { hooks } = controllableHooks();
     const src = fakeSource(500);
     scroller = createKernel<number>({
@@ -3926,17 +4060,15 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
     });
     await scroller.openWindow({ kind: 'latest' });
     const getsBefore = src.gets();
-    scroller.removeItem(400); // cb-leave, animating=1
+    scroller.removeItem(400);
+    expect(scroller.getMountedGeometry(400)).toBeNull();
     viewport.scrollTop = 0; // top edge → loadOlder would fire if balance ran
     viewport.dispatchEvent(new Event('scroll'));
-    await flush();
-    expect(src.gets()).toBeGreaterThan(getsBefore); // demand subscription is not animation-gated
-    animEnd('400');
     await flush();
     expect(src.gets()).toBeGreaterThan(getsBefore);
   });
 
-  it('Phase C: removeItem above the viewport compensates scrollTop (-= height) on animationend', async () => {
+  it('removeItem above the viewport immediately preserves the reading position', async () => {
     const { hooks } = controllableHooks(); // 100px/item
     scroller = createKernel<number>({
       viewport,
@@ -3947,8 +4079,6 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
     await scroller.openWindow({ kind: 'latest' }); // pinned to bottom; m-400 (top 0) is above the viewport
     const stBefore = viewport.scrollTop;
     scroller.removeItem(400); // above the fold
-    animEnd('400');
-    await flush();
     expect(viewport.scrollTop).toBe(stBefore - 100); // pinned: content below shifted up by the removed height
   });
 
@@ -4812,6 +4942,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
             updates++;
             dataMap.set(item.id, n.data);
           },
+          predestory: () => {},
           destroy: () => {},
         };
       },
@@ -4876,6 +5007,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
             updates++;
             dataMap.set(item.id, n.data);
           },
+          predestory: () => {},
           destroy: () => {},
         };
       },

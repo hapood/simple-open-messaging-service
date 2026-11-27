@@ -87,6 +87,7 @@
 }
 
 // Cell: absolute positioning; height locked to px by layoutAlbum before render.
+// Component-local transitions animate internal album geometry changes without holding the kernel balance gate.
 .msg-media-cell {
   position: absolute;
   overflow: hidden;
@@ -99,6 +100,13 @@
   background-size: cover;
   background-position: center;
   background-repeat: no-repeat;
+  transition:
+    left 180ms cubic-bezier(0.22, 1, 0.36, 1),
+    width 180ms cubic-bezier(0.22, 1, 0.36, 1);
+
+  @media (prefers-reduced-motion: reduce) {
+    transition: none;
+  }
 }
 
 // The selection check is always present in the cell markup because selection state belongs to the

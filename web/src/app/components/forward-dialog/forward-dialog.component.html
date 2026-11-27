@@ -82,9 +82,11 @@
               }
               @case ('succeeded') {
                 @if (shareLinkMessage(); as message) {
-                  <div class="forward-dialog__direct-preview">
-                    <app-msg-link-row [data]="message" />
-                  </div>
+                  @if (message.type === 'msg' && message.contentType === 'LINK') {
+                    <div class="forward-dialog__direct-preview">
+                      <app-msg-link-row [data]="message" />
+                    </div>
+                  }
                 }
               }
               @case ('failed') {
@@ -128,7 +130,7 @@
                   @case ('FORWARD') {
                     <app-msg-forward-row [data]="message" />
                   }
-                  @default {
+                  @case ('PURE_TEXT') {
                     <app-msg-text-row [data]="message" />
                   }
                 }

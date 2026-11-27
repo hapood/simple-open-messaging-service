@@ -56,7 +56,7 @@ describe('MediaRowComponent thumbnail composition', () => {
       const anchor = { kind: 'origin' as const, namespaceId: 3, originSeq: 4 };
       fixture.componentRef.setInput('data', {
         ...message(images, kind),
-        quote: { anchor },
+        quote: { kind: 'jumpable', anchor },
       });
       await fixture.whenStable();
       const jump = vi.fn();
@@ -69,6 +69,63 @@ describe('MediaRowComponent thumbnail composition', () => {
       fixture.destroy();
     },
   );
+
+  it('interpolates absorbed cell height in integer pixels inside a stable final album allocation', async () => {
+    const fixture = await render([image(1)]);
+    const root: HTMLElement = fixture.nativeElement;
+    const first = root.querySelector<HTMLElement>('app-album-media-cell')!;
+    const frames: Array<{ height: number; top: number; allocation: number }> =
+      [];
+    const callbacks: FrameRequestCallback[] = [];
+    const request = vi
+      .spyOn(window, 'requestAnimationFrame')
+      .mockImplementation((callback) => {
+        callbacks.push(callback);
+        return callbacks.length;
+      });
+    const cancel = vi.spyOn(window, 'cancelAnimationFrame');
+    const clock = vi.spyOn(performance, 'now').mockReturnValue(1000);
+    try {
+      fixture.componentRef.setInput(
+        'data',
+        message([image(1), image(2)], 'IMAGE'),
+      );
+      fixture.detectChanges();
+      await fixture.whenStable();
+      const start = performance.now();
+      for (const offset of [16, 40, 80, 120, 180, 220]) {
+        const pending = callbacks.splice(0);
+        for (const callback of pending) callback(start + offset);
+        frames.push({
+          height: parseFloat(first.style.height),
+          top: parseFloat(first.style.top),
+          allocation: first.parentElement!.offsetHeight,
+        });
+      }
+      expect(new Set(frames.map((frame) => frame.height)).size).toBeGreaterThan(
+        1,
+      );
+      expect(new Set(frames.map((frame) => frame.allocation)).size).toBe(1);
+      expect(
+        frames.every(
+          (frame) =>
+            Number.isInteger(frame.height) && Number.isInteger(frame.top),
+        ),
+      ).toBe(true);
+      expect(getComputedStyle(first).transitionProperty).not.toMatch(
+        /height|top/,
+      );
+      fixture.componentRef.setInput('data', message([image(1)], 'IMAGE'));
+      fixture.detectChanges();
+      await fixture.whenStable();
+      fixture.destroy();
+      expect(cancel).toHaveBeenCalled();
+    } finally {
+      request.mockRestore();
+      cancel.mockRestore();
+      clock.mockRestore();
+    }
+  });
 
   it('composes album cells without observing original client downloads', async () => {
     const images = [

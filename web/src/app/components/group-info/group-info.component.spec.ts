@@ -1,7 +1,10 @@
 import { signal } from '@angular/core';
 import { of } from 'rxjs';
 import { GroupInfoComponent } from './group-info.component';
-import type { ResolvedMemberProfile } from '../../services/member-profile-store.service';
+import type {
+  ResolvedMemberProfile,
+  ResolvedMemberPage,
+} from '../../services/member-profile-store.service';
 
 describe('GroupInfoComponent dissolution acknowledgement', () => {
   it('closes the panel and synchronizes server state without inventing a local lifecycle result', async () => {
@@ -46,9 +49,10 @@ function deferred<T>() {
 }
 
 function harness() {
-  const queryPage = vi.fn();
+  const queryRosterPage = vi.fn();
   const state = {
     rosterRequest: 0,
+    rosterCursor: 'page-2' as string | null,
     threadId: signal(42),
     memberQuery: signal(''),
     loading: signal(false),
@@ -59,11 +63,11 @@ function harness() {
     rosterError: signal(false),
     rosterReset: signal(0),
     showNetworkError: vi.fn(),
-    memberProfiles: { queryPage },
+    memberProfiles: { queryRosterPage },
   };
   return {
     state,
-    queryPage,
+    queryRosterPage,
     component: state as unknown as GroupInfoComponent,
   };
 }
@@ -73,21 +77,21 @@ const member = (name: string) =>
 
 describe('GroupInfoComponent roster query ordering', () => {
   it('does not query the member roster after membership becomes read-only', async () => {
-    const { state, component, queryPage } = harness();
+    const { state, component, queryRosterPage } = harness();
     (component as unknown as { readOnly: () => boolean }).readOnly = () => true;
 
     await GroupInfoComponent.prototype.loadMembers.call(component);
 
-    expect(queryPage).not.toHaveBeenCalled();
+    expect(queryRosterPage).not.toHaveBeenCalled();
     expect(state.loading()).toBe(false);
   });
 
   it('clears loaded pages immediately for a new search and rejects the old page', async () => {
-    const { state, component, queryPage } = harness();
+    const { state, component, queryRosterPage } = harness();
     state.roster.set([member('Old')]);
-    const oldPage = deferred<ResolvedMemberProfile[]>();
-    const newPage = deferred<ResolvedMemberProfile[]>();
-    queryPage
+    const oldPage = deferred<ResolvedMemberPage>();
+    const newPage = deferred<ResolvedMemberPage>();
+    queryRosterPage
       .mockReturnValueOnce(oldPage.promise)
       .mockReturnValueOnce(newPage.promise);
     const append = GroupInfoComponent.prototype.loadMoreMembers.call(component);
@@ -96,20 +100,23 @@ describe('GroupInfoComponent roster query ordering', () => {
     expect(state.roster()).toEqual([]);
     expect(state.rosterHasMore()).toBe(false);
     expect(state.rosterReset()).toBe(1);
-    expect(queryPage).toHaveBeenLastCalledWith(42, { take: 50, search: 'New' });
-    oldPage.resolve([member('Old page')]);
+    expect(queryRosterPage).toHaveBeenLastCalledWith(42, {
+      take: 50,
+      search: 'New',
+    });
+    oldPage.resolve({ items: [member('Old page')], nextCursor: null });
     await append;
     expect(state.roster()).toEqual([]);
-    newPage.resolve([member('New')]);
+    newPage.resolve({ items: [member('New')], nextCursor: null });
     await reset;
     expect(state.roster().map((row) => row.name)).toEqual(['New']);
   });
 
   it('prevents duplicate next-page requests and retains rows on failure', async () => {
-    const { state, component, queryPage } = harness();
+    const { state, component, queryRosterPage } = harness();
     state.roster.set([member('Current')]);
     let reject!: (reason: Error) => void;
-    queryPage.mockReturnValue(
+    queryRosterPage.mockReturnValue(
       new Promise((_resolve, fail) => {
         reject = fail;
       }),
@@ -117,7 +124,7 @@ describe('GroupInfoComponent roster query ordering', () => {
     const pending =
       GroupInfoComponent.prototype.loadMoreMembers.call(component);
     await GroupInfoComponent.prototype.loadMoreMembers.call(component);
-    expect(queryPage).toHaveBeenCalledOnce();
+    expect(queryRosterPage).toHaveBeenCalledOnce();
     reject(new Error('offline'));
     await pending;
     expect(state.roster()[0].name).toBe('Current');
@@ -127,30 +134,30 @@ describe('GroupInfoComponent roster query ordering', () => {
   });
 
   it('does not let an older query overwrite a refreshed roster', async () => {
-    const { state, component, queryPage } = harness();
-    const old = deferred<ResolvedMemberProfile[]>();
-    queryPage
+    const { state, component, queryRosterPage } = harness();
+    const old = deferred<ResolvedMemberPage>();
+    queryRosterPage
       .mockReturnValueOnce(old.promise)
-      .mockResolvedValueOnce([member('New')]);
+      .mockResolvedValueOnce({ items: [member('New')], nextCursor: null });
     const pending = GroupInfoComponent.prototype.loadMembers.call(component);
     await GroupInfoComponent.prototype.loadMembers.call(component);
-    old.resolve([member('Old')]);
+    old.resolve({ items: [member('Old')], nextCursor: null });
     await pending;
     expect(state.roster()[0].name).toBe('New');
     expect(state.loading()).toBe(false);
   });
 
   it('discards an old next page when a profile notification refreshes the roster', async () => {
-    const { state, component, queryPage } = harness();
+    const { state, component, queryRosterPage } = harness();
     state.roster.set([member('Old')]);
-    const oldPage = deferred<ResolvedMemberProfile[]>();
-    queryPage
+    const oldPage = deferred<ResolvedMemberPage>();
+    queryRosterPage
       .mockReturnValueOnce(oldPage.promise)
-      .mockResolvedValueOnce([member('New')]);
+      .mockResolvedValueOnce({ items: [member('New')], nextCursor: null });
     const pending =
       GroupInfoComponent.prototype.loadMoreMembers.call(component);
     await GroupInfoComponent.prototype.loadMembers.call(component);
-    oldPage.resolve([member('Old page')]);
+    oldPage.resolve({ items: [member('Old page')], nextCursor: null });
     await pending;
     expect(state.roster().map((row) => row.name)).toEqual(['New']);
     expect(state.loadingMore()).toBe(false);

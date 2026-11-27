@@ -1,5 +1,10 @@
 # Server gaps and new-message arrival
 
+> Superseded by [Gap-driven chat message windows](chat-gap-driven-message-window.md).
+> The distinctions and first-open/arrival flow below describe an earlier design,
+> not the current target. In particular, local temporary gaps are now explicit
+> items and successful query delivery requires kernel replacement admission.
+
 This document records the window behavior for server gaps and new arrivals.
 Ordinary `loadOlder` of history that is already covered locally stays.
 

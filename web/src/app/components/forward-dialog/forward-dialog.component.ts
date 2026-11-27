@@ -53,6 +53,7 @@ import {
   type SplitButtonOption,
 } from '../split-button/split-button.component';
 import { ForwardRecentTargetsService } from '../../services/forward-recent-targets.service';
+import { SessionLifecycleService } from '../../services/session-lifecycle.service';
 
 export type ForwardMode = 'DIRECT' | 'HISTORY';
 export type ForwardDialogKind =
@@ -110,7 +111,9 @@ export class ForwardDialogComponent implements OnDestroy {
   private readonly route = inject(RouteService);
   private readonly user = inject(UserService);
   private readonly recentTargets = inject(ForwardRecentTargetsService);
-  private readonly recentUserId = this.user.sessionProfile()?.id;
+  private readonly lifecycle = inject(SessionLifecycleService);
+  private readonly recentScope = this.lifecycle.capture();
+  private destroyed = false;
   private readonly linkCards = inject(LinkCardService);
   private readonly generations = inject(LinkCardGenerationService);
   private readonly transloco = inject(TranslocoService);
@@ -217,11 +220,14 @@ export class ForwardDialogComponent implements OnDestroy {
   );
 
   constructor() {
-    if (this.recentUserId !== undefined) {
-      void this.recentTargets.read(this.recentUserId).then((ids) => {
-        if (!this.recentRemembered) this.recentThreadIds.set(ids);
-      });
-    }
+    void this.recentTargets.read(this.recentScope).then((ids) => {
+      if (
+        !this.destroyed &&
+        !this.recentRemembered &&
+        this.lifecycle.isCurrent(this.recentScope)
+      )
+        this.recentThreadIds.set(ids);
+    });
     effect(() => {
       if (this.kind() !== 'NATIVE_SHARE') return;
       const url = this.sharedUrl();
@@ -314,6 +320,7 @@ export class ForwardDialogComponent implements OnDestroy {
   }
 
   ngOnDestroy(): void {
+    this.destroyed = true;
     this.generationRequest?.unsubscribe();
     this.generationRequest = undefined;
   }
@@ -345,13 +352,6 @@ export class ForwardDialogComponent implements OnDestroy {
 
   private rememberRecentThreadIds(threadIds: readonly number[]): void {
     this.recentRemembered = true;
-    const next = [
-      ...threadIds,
-      ...this.recentThreadIds().filter((id) => !threadIds.includes(id)),
-    ].slice(0, 12);
-    this.recentThreadIds.set(next);
-    if (this.recentUserId !== undefined) {
-      void this.recentTargets.remember(this.recentUserId, threadIds);
-    }
+    void this.recentTargets.remember(threadIds, this.recentScope);
   }
 }

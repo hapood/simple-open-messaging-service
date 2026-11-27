@@ -24,16 +24,16 @@ export function projectMessageContent(
         file: parseFileContent(content, resolveUrl),
       };
     case 'IMAGE':
-      images = [parseImageContent(content, resolveUrl)];
+      images = [parseImageContent(content, resolveUrl, attribution.msgId)];
       break;
     case 'VIDEO':
-      images = [parseVideoContent(content, resolveUrl)];
+      images = [parseVideoContent(content, resolveUrl, attribution.msgId)];
       break;
     case 'AUDIO':
-      images = [parseAudioContent(content, resolveUrl)];
+      images = [parseAudioContent(content, resolveUrl, attribution.msgId)];
       break;
     case 'GALLERY':
-      images = parseGalleryContent(content, resolveUrl);
+      images = parseGalleryContent(content, resolveUrl, attribution.msgId);
       break;
     default:
       return { contentType, images: null, file: null };
@@ -97,8 +97,71 @@ type GalleryEntry =
   | (AudioContent & { kind: 'AUDIO' })
   | (ResourceContent & { kind: 'FILE' });
 
-function metadata(item: ResourceContent, resolveUrl: MediaUrlResolver) {
+function requireObject(value: unknown, label: string): Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value))
+    throw new Error(`Invalid ${label} content`);
+  return value as Record<string, unknown>;
+}
+function requireString(
+  obj: Record<string, unknown>,
+  key: string,
+  label: string,
+): string {
+  const value = obj[key];
+  if (typeof value !== 'string')
+    throw new Error(`Invalid ${label}.${key}`);
+  return value;
+}
+function requireNumber(
+  obj: Record<string, unknown>,
+  key: string,
+  label: string,
+): number {
+  const value = obj[key];
+  if (typeof value !== 'number' || !Number.isFinite(value))
+    throw new Error(`Invalid ${label}.${key}`);
+  return value;
+}
+function requireResource(value: unknown, label: string): ResourceContent {
+  const obj = requireObject(value, label);
   return {
+    ...obj,
+    url: requireString(obj, 'url', label),
+    name: requireString(obj, 'name', label),
+    size: requireNumber(obj, 'size', label),
+    mimeType: requireString(obj, 'mimeType', label),
+  };
+}
+function requireImage(value: unknown, label = 'image'): ImageContent {
+  const base = requireResource(value, label);
+  return {
+    ...base,
+    w: requireNumber(base, 'w', label),
+    h: requireNumber(base, 'h', label),
+  };
+}
+function requireVideo(value: unknown, label = 'video'): VideoContent {
+  const base = requireImage(value, label);
+  return {
+    ...base,
+    duration: requireNumber(base, 'duration', label),
+  };
+}
+function requireAudio(value: unknown, label = 'audio'): AudioContent {
+  const base = requireResource(value, label);
+  return {
+    ...base,
+    duration: requireNumber(base, 'duration', label),
+  };
+}
+
+function metadata(
+  item: ResourceContent,
+  resolveUrl: MediaUrlResolver,
+  msgId: number,
+) {
+  return {
+    msgId,
     src: resolveUrl(item),
     name: item.name,
     size: item.size,
@@ -107,21 +170,38 @@ function metadata(item: ResourceContent, resolveUrl: MediaUrlResolver) {
     sentAt: null,
   };
 }
-function image(item: ImageContent, resolveUrl: MediaUrlResolver): ImageMedia {
-  return { ...metadata(item, resolveUrl), kind: 'image', w: item.w, h: item.h };
-}
-function video(item: VideoContent, resolveUrl: MediaUrlResolver): VideoMedia {
+function image(
+  item: ImageContent,
+  resolveUrl: MediaUrlResolver,
+  msgId: number,
+): ImageMedia {
   return {
-    ...metadata(item, resolveUrl),
+    ...metadata(item, resolveUrl, msgId),
+    kind: 'image',
+    w: item.w,
+    h: item.h,
+  };
+}
+function video(
+  item: VideoContent,
+  resolveUrl: MediaUrlResolver,
+  msgId: number,
+): VideoMedia {
+  return {
+    ...metadata(item, resolveUrl, msgId),
     kind: 'video',
     w: item.w,
     h: item.h,
     duration: item.duration,
   };
 }
-function audio(item: AudioContent, resolveUrl: MediaUrlResolver): AudioMedia {
+function audio(
+  item: AudioContent,
+  resolveUrl: MediaUrlResolver,
+  msgId: number,
+): AudioMedia {
   return {
-    ...metadata(item, resolveUrl),
+    ...metadata(item, resolveUrl, msgId),
     kind: 'audio',
     duration: item.duration,
   };
@@ -130,54 +210,62 @@ function audio(item: AudioContent, resolveUrl: MediaUrlResolver): AudioMedia {
 export function parseImageContent(
   content: string,
   resolveUrl: MediaUrlResolver = defaultUrlResolver,
+  msgId = 0,
 ): ImageMedia {
-  return image(JSON.parse(content) as ImageContent, resolveUrl);
+  return image(requireImage(JSON.parse(content)), resolveUrl, msgId);
 }
 export function parseVideoContent(
   content: string,
   resolveUrl: MediaUrlResolver = defaultUrlResolver,
+  msgId = 0,
 ): VideoMedia {
-  return video(JSON.parse(content) as VideoContent, resolveUrl);
+  return video(requireVideo(JSON.parse(content)), resolveUrl, msgId);
 }
 export function parseAudioContent(
   content: string,
   resolveUrl: MediaUrlResolver = defaultUrlResolver,
+  msgId = 0,
 ): AudioMedia {
-  return audio(JSON.parse(content) as AudioContent, resolveUrl);
+  return audio(requireAudio(JSON.parse(content)), resolveUrl, msgId);
 }
 export function parseGalleryContent(
   content: string,
   resolveUrl: MediaUrlResolver = defaultUrlResolver,
+  msgId = 0,
 ): AlbumMedia[] {
-  const gallery = JSON.parse(content) as { items: GalleryEntry[] };
-  return gallery.items.map((item) => {
-    switch (item.kind) {
+  const gallery = requireObject(JSON.parse(content), 'gallery');
+  if (!Array.isArray(gallery['items']))
+    throw new Error('Invalid gallery.items');
+  return gallery['items'].map((raw) => {
+    const obj = requireObject(raw, 'gallery.item');
+    const kind = obj['kind'];
+    switch (kind) {
       case 'IMAGE':
-        return image(item, resolveUrl);
+        return image(requireImage(obj, 'gallery.image'), resolveUrl, msgId);
       case 'VIDEO':
-        return video(item, resolveUrl);
+        return video(requireVideo(obj, 'gallery.video'), resolveUrl, msgId);
       case 'AUDIO':
-        return audio(item, resolveUrl);
+        return audio(requireAudio(obj, 'gallery.audio'), resolveUrl, msgId);
       case 'FILE':
-        return { ...metadata(item, resolveUrl), kind: 'file' };
+        return {
+          ...metadata(
+            requireResource(obj, 'gallery.file'),
+            resolveUrl,
+            msgId,
+          ),
+          kind: 'file',
+        };
       default:
-        return unsupportedKind(item);
+        throw new Error(`Unsupported gallery resource: ${JSON.stringify(obj)}`);
     }
   });
-}
-function unsupportedKind(item: never): never {
-  throw new Error(`Unsupported gallery resource: ${JSON.stringify(item)}`);
 }
 
 export function parseFileContent(
   content: string,
   resolveUrl: MediaUrlResolver = defaultUrlResolver,
 ): FileInfo {
-  const item = JSON.parse(content) as ResourceContent & {
-    name: string;
-    size: number;
-    mimeType: string;
-  };
+  const item = requireResource(JSON.parse(content), 'file');
   return {
     url: resolveUrl(item),
     name: item.name,

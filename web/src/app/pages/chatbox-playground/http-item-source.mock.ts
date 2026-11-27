@@ -15,6 +15,7 @@ import type {
   CbDemandResult,
   CbSource,
   CbSourceWindowRequest,
+  CbSourceWindowContext,
 } from '../../lib/chat-box/cb-source';
 import type {
   AlbumMedia,
@@ -129,6 +130,24 @@ export class MockUserService {
  */
 const MAX_PAGE = 50;
 
+type IntervalCommit = (left: number, right: number) => void;
+
+export interface MockHistoryCallbacks {
+  onHistoryIntervalStarted?: () => IntervalCommit;
+  onHead?: (
+    seq: number,
+    author?: { account: string; namespaceId: number },
+  ) => void;
+}
+
+interface NewerWaiter {
+  cursorId: number;
+  count: number;
+  subscriber: Subscriber<CbDemandResult<ChatItemData>>;
+  controller: AbortController;
+  committed?: IntervalCommit;
+}
+
 /**
  * Playground mock data source: implements {@link CbSource}<{@link ChatItemData}>, backed by the deterministic buildItems generator.
  *
@@ -163,13 +182,17 @@ export class MockItemSource implements CbSource<ChatItemData> {
     string,
     { name: string; isSelf: boolean }
   >();
-  private readonly newerWaiters = new Set<{
-    cursorId: number;
-    count: number;
-    subscriber: Subscriber<CbDemandResult<ChatItemData>>;
-  }>();
+  private readonly newerWaiters = new Set<NewerWaiter>();
   private readonly pumpingWaiters = new WeakSet<object>();
+  private readonly lifetime = new AbortController();
   private liveRevision = 0;
+  private head: number;
+  /** Optional offline transport gate; rejection represents a failed history fetch.
+   * Snapshot coordinates are captured before this hook, as with a server page. */
+  beforeHistoryScan?: (
+    range: { left: number; right: number },
+    signal: AbortSignal,
+  ) => Promise<void>;
 
   constructor(
     total: number,
@@ -179,6 +202,7 @@ export class MockItemSource implements CbSource<ChatItemData> {
     userId: number,
     isGroupConversation = false,
     groupSenderCount = 1,
+    private readonly callbacks: MockHistoryCallbacks = {},
   ) {
     this.full = buildItems(
       total,
@@ -189,6 +213,7 @@ export class MockItemSource implements CbSource<ChatItemData> {
     this.userId = userId;
     this.isGroupConversation = isGroupConversation;
     this.nextMsgId = total + 1;
+    this.head = total;
   }
 
   /** Search the same in-memory history rendered by the production thread shell. */
@@ -206,7 +231,10 @@ export class MockItemSource implements CbSource<ChatItemData> {
       .slice()
       .sort((a, b) => b.id - a.id)
       .slice(0, take)
-      .map((item) => ({ seq: item.id, createdAt: item.data.createdAtMs }));
+      .map((item) => ({
+        seq: item.id,
+        createdAt: item.data.type !== 'serverGap' ? item.data.createdAtMs : 0,
+      }));
   }
 
   /** Keep a withdrawn mock message absent from later pagination or search requests. */
@@ -222,34 +250,45 @@ export class MockItemSource implements CbSource<ChatItemData> {
       lastReadSeq: this.entryReadSeq,
       hasCachedMessages: this.sequence().length > 0,
       hasCachedHead: this.sequence().length > 0,
+      // Playground owns the complete sequence, including empty/deleted coordinates.
+      seamReady: true,
+      empty: this.entryReadSeq === 0 && this.sequence().length === 0,
     };
   }
 
   async loadWindow(
     request: CbSourceWindowRequest,
+    context?: CbSourceWindowContext,
   ): Promise<CbItem<ChatItemData>[]> {
-    await this.wait();
+    const signal = context?.signal
+      ? AbortSignal.any([context.signal, this.lifetime.signal])
+      : this.lifetime.signal;
+    const committed = this.callbacks.onHistoryIntervalStarted?.();
     const seq = this.sequence();
+    const head = this.head;
+    const scan = async (start: number, end: number) => {
+      const left = start === 0 ? 0 : seq[start - 1].id;
+      const right = end === seq.length ? head : (seq[end - 1]?.id ?? left);
+      await this.waitForScan(left, right, signal);
+      const items = await this.shapeWindow(seq, start, end);
+      signal.throwIfAborted();
+      if (left < right) committed?.(left, right);
+      return items;
+    };
     switch (request.kind) {
       case 'cached':
       case 'latest':
-        return this.shapeWindow(
-          seq,
+        return scan(
           Math.max(0, seq.length - Math.min(request.count, MAX_PAGE)),
           seq.length,
         );
       case 'start':
-        return this.shapeWindow(
-          seq,
-          0,
-          Math.min(seq.length, request.count, MAX_PAGE),
-        );
+        return scan(0, Math.min(seq.length, request.count, MAX_PAGE));
       case 'around': {
         // The cursor is a coordinate, not a requirement for an extant row.
         const firstNewer = seq.findIndex((item) => item.id > request.messageId);
         const split = firstNewer < 0 ? seq.length : firstNewer;
-        return this.shapeWindow(
-          seq,
+        return scan(
           Math.max(0, split - Math.min(request.olderCount, MAX_PAGE)),
           Math.min(seq.length, split + Math.min(request.newerCount, MAX_PAGE)),
         );
@@ -285,63 +324,69 @@ export class MockItemSource implements CbSource<ChatItemData> {
   async getOlder(
     cursorId: number,
     count: number,
+    consumerSignal?: AbortSignal,
   ): Promise<CbItem<ChatItemData>[]> {
-    await this.wait();
+    const signal = consumerSignal
+      ? AbortSignal.any([consumerSignal, this.lifetime.signal])
+      : this.lifetime.signal;
+    const committed = this.callbacks.onHistoryIntervalStarted?.();
     const seq = this.sequence();
-    const idx = seq.findIndex((it) => it.id === cursorId);
-    if (idx < 0) return [];
-    const take = Math.min(count, MAX_PAGE);
-    const start = Math.max(0, idx - take);
+    const found = seq.findIndex((it) => it.id >= cursorId);
+    const idx = found < 0 ? seq.length : found;
+    const start = Math.max(0, idx - Math.min(count, MAX_PAGE));
+    const left = start === 0 ? 0 : seq[start - 1].id;
+    const right = Math.min(this.head, cursorId - 1);
     const raw = seq.slice(start, idx);
-    if (raw.length === 0) return [];
+    await this.waitForScan(left, right, signal);
     await this.ensureProfiles(raw);
+    signal.throwIfAborted();
+    if (left < right) committed?.(left, right);
     const items = raw.map((it) => this.shape(it));
-    if (start === 0) items[0] = { ...items[0], boundary: 'oldest' };
+    if (start === 0 && items.length)
+      items[0] = { ...items[0], boundary: 'oldest' };
     return items;
   }
 
-  /**
-   * Fetch `count` items newer than cursorId (ascending; excludes cursor). Returns reals only — in-flight
-   * optimistic sends are mounted separately by the kernel at the newest edge via {@link getPending}. As a side
-   * effect, reconciles pending: any pending entry whose clientMessageId matches a returned real is dropped (the
-   * confirm arrived). Tags the last returned item 'newest' when the real batch reached the sequence end.
-   */
+  /** Fetch a snapshot after a coordinate, including coverage for deleted rows. */
   async getNewer(
     cursorId: number,
     count: number,
   ): Promise<CbItem<ChatItemData>[]> {
-    await this.wait();
+    const committed = this.callbacks.onHistoryIntervalStarted?.();
+    const page = await this.scanNewer(cursorId, count, this.lifetime.signal);
+    this.lifetime.signal.throwIfAborted();
+    if (cursorId < page.right) committed?.(cursorId, page.right);
+    return page.items;
+  }
+
+  private async scanNewer(
+    cursorId: number,
+    count: number,
+    signal: AbortSignal,
+  ) {
     const seq = this.sequence();
-    const start = seq.findIndex((item) => item.id > cursorId);
-    if (start < 0) return [];
-    const take = Math.min(count, MAX_PAGE);
-    const end = Math.min(seq.length, start + take);
-    const rawReal = seq.slice(start, end);
-    const reachedEnd = end === seq.length;
-
-
-    const items: CbItem<ChatItemData>[] = [];
-    if (rawReal.length > 0) {
-      await this.ensureProfiles(rawReal);
-      for (const it of rawReal) items.push(this.shape(it));
-    }
-    if (items.length === 0) return [];
-
-    // Tag the last item 'newest' when the real batch reached the sequence end.
-    if (reachedEnd) {
+    const startIndex = seq.findIndex((item) => item.id > cursorId);
+    const start = startIndex < 0 ? seq.length : startIndex;
+    const end = Math.min(seq.length, start + Math.min(count, MAX_PAGE));
+    const right = end === seq.length ? this.head : seq[end - 1].id;
+    const raw = seq.slice(start, end);
+    await this.waitForScan(cursorId, right, signal);
+    await this.ensureProfiles(raw);
+    signal.throwIfAborted();
+    const items = raw.map((item) => this.shape(item));
+    if (end === seq.length && items.length > 0)
       items[items.length - 1] = {
         ...items[items.length - 1],
         boundary: 'newest',
       };
-    }
-    return items;
+    return { items, right };
   }
 
   requestOlder(cursorId: number, count: number): CbDemand<ChatItemData> {
-    return mockDemand(async () => {
-      const items = await this.getOlder(cursorId, count);
+    return mockDemand(async (signal) => {
+      const items = await this.getOlder(cursorId, count, signal);
       return items.length > 0 ? { kind: 'items', items } : { kind: 'boundary' };
-    });
+    }, this.lifetime.signal);
   }
 
   requestMessagesForEmptyWindow(count: number): CbDemand<ChatItemData> {
@@ -350,26 +395,43 @@ export class MockItemSource implements CbSource<ChatItemData> {
 
   requestNewer(cursorId: number, count: number): CbDemand<ChatItemData> {
     return new Observable((subscriber) => {
-      const waiter = { cursorId, count, subscriber };
+      if (this.lifetime.signal.aborted) {
+        subscriber.complete();
+        return;
+      }
+      const waiter: NewerWaiter = {
+        cursorId,
+        count,
+        subscriber,
+        controller: new AbortController(),
+        committed: this.callbacks.onHistoryIntervalStarted?.(),
+      };
       this.newerWaiters.add(waiter);
       void this.pumpNewerWaiter(waiter);
       return () => {
+        waiter.controller.abort();
         this.newerWaiters.delete(waiter);
       };
     });
   }
 
-  private async pumpNewerWaiter(waiter: {
-    cursorId: number;
-    count: number;
-    subscriber: Subscriber<CbDemandResult<ChatItemData>>;
-  }): Promise<void> {
+  private async pumpNewerWaiter(waiter: NewerWaiter): Promise<void> {
     if (this.pumpingWaiters.has(waiter)) return;
     this.pumpingWaiters.add(waiter);
     const revision = this.liveRevision;
     try {
-      const items = await this.getNewer(waiter.cursorId, waiter.count);
-      if (!this.newerWaiters.has(waiter) || items.length === 0) return;
+      const { items, right } = await this.scanNewer(
+        waiter.cursorId,
+        waiter.count,
+        AbortSignal.any([waiter.controller.signal, this.lifetime.signal]),
+      );
+      if (!this.newerWaiters.has(waiter) || waiter.subscriber.closed) return;
+      if (waiter.cursorId < right) {
+        waiter.committed?.(waiter.cursorId, right);
+        // Empty scans still advance this consumer past deleted coordinates.
+        waiter.cursorId = right;
+      }
+      if (items.length === 0) return;
       this.newerWaiters.delete(waiter);
       waiter.subscriber.next({ kind: 'items', items });
       waiter.subscriber.complete();
@@ -388,7 +450,34 @@ export class MockItemSource implements CbSource<ChatItemData> {
    *  pulls it back via getNewer on the next signal (where pending reconcile + shape happen). id = the caller-given
    *  msgId (playground makeMockItem / the confirmed optimistic id). */
   pushLive(rawItems: CbItem<ChatItemData>[]): void {
+    if (this.lifetime.signal.aborted) return;
     for (const raw of rawItems) this.live.push(raw);
+    const newest = rawItems.reduce<CbItem<ChatItemData> | undefined>(
+      (last, item) => (!last || item.id > last.id ? item : last),
+      undefined,
+    );
+    if (newest && newest.id > this.head) {
+      this.head = newest.id;
+      const creator =
+        newest.data.type === 'msg' ? newest.data.creator : undefined;
+      const mock = creator ? MOCK_USERS.get(mockCreatorId(creator)) : undefined;
+      const author = mock
+        ? { account: mock.account, namespaceId: mock.namespaceId }
+        : creator
+          ? (parseUserIdentityKey(creator) ?? undefined)
+          : undefined;
+      this.callbacks.onHead?.(this.head, author);
+    }
+    this.liveRevision++;
+    for (const waiter of this.newerWaiters) void this.pumpNewerWaiter(waiter);
+  }
+
+  /** An authoritative head can include coordinates whose bodies were deleted. */
+  advanceDeletedHead(seq: number): void {
+    if (this.lifetime.signal.aborted || seq <= this.head) return;
+    this.head = seq;
+    this.nextMsgId = Math.max(this.nextMsgId, seq + 1);
+    this.callbacks.onHead?.(seq);
     this.liveRevision++;
     for (const waiter of this.newerWaiters) void this.pumpNewerWaiter(waiter);
   }
@@ -401,6 +490,7 @@ export class MockItemSource implements CbSource<ChatItemData> {
   }
 
   destroy(): void {
+    this.lifetime.abort();
     for (const waiter of this.newerWaiters) waiter.subscriber.complete();
     this.newerWaiters.clear();
   }
@@ -409,7 +499,7 @@ export class MockItemSource implements CbSource<ChatItemData> {
 
   /** full (history) + live (WS) concatenated, ascending (oldest → newest). */
   private sequence(): CbItem<ChatItemData>[] {
-    return [...this.full, ...this.live];
+    return [...this.full, ...this.live].sort((a, b) => a.id - b.id);
   }
 
   /** Collect missing creators → look them up on userService to fill `profiles` (mirrors HttpItemSource.ensureProfiles). */
@@ -465,20 +555,69 @@ export class MockItemSource implements CbSource<ChatItemData> {
       : { id: it.id, data };
   }
 
-  private wait(): Promise<void> {
-    return new Promise((r) => setTimeout(r, this.latency));
+  private async waitForScan(
+    left: number,
+    right: number,
+    signal: AbortSignal,
+  ): Promise<void> {
+    signal.throwIfAborted();
+    if (left < right && this.beforeHistoryScan) {
+      const work = this.beforeHistoryScan({ left, right }, signal);
+      // A test/debug transport may ignore AbortSignal. Detach promptly anyway;
+      // its eventual resolution or rejection must never publish stale evidence.
+      await new Promise<void>((resolve, reject) => {
+        const abort = () => reject(signal.reason);
+        signal.addEventListener('abort', abort, { once: true });
+        void work
+          .then(resolve, reject)
+          .finally(() => signal.removeEventListener('abort', abort));
+        if (signal.aborted) abort();
+      });
+    }
+    signal.throwIfAborted();
+    await this.wait(signal);
+    signal.throwIfAborted();
+  }
+
+  private wait(signal = this.lifetime.signal): Promise<void> {
+    signal.throwIfAborted();
+    return new Promise((resolve, reject) => {
+      const abort = () => {
+        clearTimeout(timer);
+        reject(signal.reason);
+      };
+      const timer = setTimeout(() => {
+        signal.removeEventListener('abort', abort);
+        resolve();
+      }, this.latency);
+      signal.addEventListener('abort', abort, { once: true });
+    });
   }
 }
 
-function mockDemand<T>(work: () => Promise<CbDemandResult<T>>): CbDemand<T> {
+function mockDemand<T>(
+  work: (signal: AbortSignal) => Promise<CbDemandResult<T>>,
+  lifetime: AbortSignal,
+): CbDemand<T> {
   return new Observable((subscriber) => {
-    void work()
+    if (lifetime.aborted) {
+      subscriber.complete();
+      return;
+    }
+    const controller = new AbortController();
+    const retire = () => subscriber.complete();
+    lifetime.addEventListener('abort', retire, { once: true });
+    void work(controller.signal)
       .catch((error): CbDemandResult<T> => ({ kind: 'error', error }))
       .then((result) => {
         if (subscriber.closed) return;
         subscriber.next(result);
         subscriber.complete();
       });
+    return () => {
+      controller.abort();
+      lifetime.removeEventListener('abort', retire);
+    };
   });
 }
 
@@ -613,7 +752,10 @@ function buildItems(
             w: rw * 100,
             h: rh * 100,
             size: 200_000 + Math.floor(rand() * 2_800_000),
-            name: `photo-${id}.svg`, mimeType: 'image/svg+xml', senderName: null, sentAt: date.getTime(),
+            name: `photo-${id}.svg`,
+            mimeType: 'image/svg+xml',
+            senderName: null,
+            sentAt: date.getTime(),
             msgId: id,
           },
         ];

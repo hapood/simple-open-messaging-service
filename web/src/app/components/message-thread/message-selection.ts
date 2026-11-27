@@ -20,7 +20,7 @@ export function albumMemberItem(
   item: CbItem<ChatItemData>,
   memberId: number,
 ): CbItem<ChatItemData> {
-  if (item.data.serverGap || (item.ids?.length ?? 0) < 2) return item;
+  if (item.data.type === 'serverGap' || (item.ids?.length ?? 0) < 2) return item;
   const data = item.data;
   if (data.images === null)
     throw new Error('Album selection requires media content');

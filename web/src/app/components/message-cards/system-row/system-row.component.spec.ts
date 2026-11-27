@@ -151,8 +151,11 @@ describe('SystemRowComponent', () => {
 
   it.each([
     [{ type: 'GROUP_CREATED', creator: me }, 'me 创建了群聊'],
-    [{ type: 'GROUP_JOINED', member: alice }, 'alice@peer.test 加入了群聊'],
-    [{ type: 'GROUP_LEFT', member: me }, '你已不在该群聊中'],
+    [
+      { type: 'GROUP_JOINED', members: [alice], totalCount: 1 },
+      'alice@peer.test 加入了群聊',
+    ],
+    [{ type: 'GROUP_LEFT', members: [me], totalCount: 1 }, '你已不在该群聊中'],
     [{ type: 'GROUP_DISSOLVED' }, '群聊已解散'],
     [
       {
@@ -195,30 +198,71 @@ describe('SystemRowComponent', () => {
     expect(render(body).nativeElement.textContent).toContain(expected);
   });
 
+  it.each(['GROUP_JOINED', 'GROUP_LEFT'] as const)(
+    'renders bounded batch names and the remaining count for %s',
+    (type) => {
+      const fixture = render({
+        type,
+        members: [me, { ...me, account: 'bob' }],
+        totalCount: 7,
+      });
+      const host = fixture.nativeElement as HTMLElement;
+      expect(host.querySelector('.system-names')?.textContent).toBe('me、bob');
+      expect(host.textContent).toContain('等 7 人');
+      expect(host.textContent).toContain(
+        type === 'GROUP_JOINED' ? '加入了群聊' : '已离开群聊',
+      );
+      language.setLang('en');
+      TestBed.flushEffects();
+      fixture.detectChanges();
+      expect(host.textContent).toContain('and 5 others');
+      expect(host.textContent).toContain(
+        type === 'GROUP_JOINED'
+          ? 'joined the group'
+          : 'is no longer in the group',
+      );
+      expect(
+        getComputedStyle(host.querySelector('.system-suffix')!).flexShrink,
+      ).toBe('0');
+    },
+  );
+
   it.each([
     ['USER_RETRACTION', '消息已撤回', 'Message retracted'],
-    ['MODERATION_REMOVAL', '消息已被管理员删除', 'Message removed by administrator'],
-  ] as const)('renders an anonymous deletion slot: %s', (deletionType, expected, english) => {
-    // Even stale display inputs must not reveal a sender, event participant, or time.
-    const fixture = render({ type: 'GROUP_CREATED', creator: alice }, {
-      name: 'Alice',
-      deletionType,
-    });
-    const host = fixture.nativeElement as HTMLElement;
-    expect(host.textContent?.trim()).toBe(expected);
-    expect(host.querySelector('time')).toBeNull();
-    expect(host.querySelector('app-msg-date-row')).toBeNull();
-    expect(host.querySelector('app-user-avatar')).toBeNull();
-    expect(resolveProfile).not.toHaveBeenCalled();
-    expect(TestBed.inject(ProfileNamespaceRepository).resolve).not.toHaveBeenCalled();
-    const style = getComputedStyle(host.querySelector('.system-message')!);
-    expect(style.textAlign).toBe('center');
-    expect(style.lineHeight).toBe('18px');
-    language.setLang('en');
-    TestBed.flushEffects();
-    fixture.detectChanges();
-    expect(host.textContent?.trim()).toBe(english);
-  });
+    [
+      'MODERATION_REMOVAL',
+      '消息已被管理员删除',
+      'Message removed by administrator',
+    ],
+  ] as const)(
+    'renders an anonymous deletion slot: %s',
+    (deletionType, expected, english) => {
+      // Even stale display inputs must not reveal a sender, event participant, or time.
+      const fixture = render(
+        { type: 'GROUP_CREATED', creator: alice },
+        {
+          name: 'Alice',
+          deletionType,
+        },
+      );
+      const host = fixture.nativeElement as HTMLElement;
+      expect(host.textContent?.trim()).toBe(expected);
+      expect(host.querySelector('time')).toBeNull();
+      expect(host.querySelector('app-msg-date-row')).toBeNull();
+      expect(host.querySelector('app-user-avatar')).toBeNull();
+      expect(resolveProfile).not.toHaveBeenCalled();
+      expect(
+        TestBed.inject(ProfileNamespaceRepository).resolve,
+      ).not.toHaveBeenCalled();
+      const style = getComputedStyle(host.querySelector('.system-message')!);
+      expect(style.textAlign).toBe('center');
+      expect(style.lineHeight).toBe('18px');
+      language.setLang('en');
+      TestBed.flushEffects();
+      fixture.detectChanges();
+      expect(host.textContent?.trim()).toBe(english);
+    },
+  );
 
   it.each([
     [me, '你已解除与 Alice Profile 的好友关系'],
@@ -287,7 +331,11 @@ describe('SystemRowComponent', () => {
         }),
       );
     const fixture = render(
-      { type: 'GROUP_JOINED', member: { ...alice, profileRev: 3 } },
+      {
+        type: 'GROUP_JOINED',
+        members: [{ ...alice, profileRev: 3 }],
+        totalCount: 1,
+      },
       { isGroupConversation: true },
     );
     expect(fixture.nativeElement.textContent).toContain(
@@ -311,7 +359,7 @@ describe('SystemRowComponent', () => {
     );
     fixture.componentRef.setInput(
       'data',
-      data({ type: 'GROUP_LEFT', member: me }),
+      data({ type: 'GROUP_LEFT', members: [me], totalCount: 1 }),
     );
     fixture.detectChanges();
     expect(fixture.nativeElement.textContent).not.toContain('Alice Profile');
@@ -329,7 +377,7 @@ describe('SystemRowComponent', () => {
       }),
     );
     const fixture = render(
-      { type: 'GROUP_JOINED', member: participant },
+      { type: 'GROUP_JOINED', members: [participant], totalCount: 1 },
       { isGroupConversation: true },
     );
     await vi.waitFor(() =>
@@ -373,7 +421,7 @@ describe('SystemRowComponent', () => {
     });
     conversations.set([thread]);
     const fixture = render(
-      { type: 'GROUP_LEFT', member: participant },
+      { type: 'GROUP_LEFT', members: [participant], totalCount: 1 },
       { isGroupConversation: true },
     );
     fixture.detectChanges();
@@ -406,12 +454,15 @@ describe('SystemRowComponent', () => {
     const fixture = render(
       {
         type: 'GROUP_JOINED',
-        member: {
-          account: 'alice',
-          publisherNamespaceId: 7,
-          profileNamespaceId: 0,
-          profileRev: 3,
-        },
+        members: [
+          {
+            account: 'alice',
+            publisherNamespaceId: 7,
+            profileNamespaceId: 0,
+            profileRev: 3,
+          },
+        ],
+        totalCount: 1,
       },
       { isGroupConversation: true },
     );
@@ -450,7 +501,8 @@ describe('SystemRowComponent', () => {
     const fixture = render(
       {
         type: 'GROUP_LEFT',
-        member: { ...alice, profileRev: 3 },
+        members: [{ ...alice, profileRev: 3 }],
+        totalCount: 1,
       },
       {
         isGroupConversation: true,

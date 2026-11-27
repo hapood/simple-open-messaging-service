@@ -1,5 +1,13 @@
 # Chat surface binding lifecycle
 
+> Current message-window target:
+> [Gap-driven chat message windows](chat-gap-driven-message-window.md) revises
+> source activation order, loading/notification ownership, positioning, animation,
+> and item retirement. Conversation binding, foreground/composer permissions,
+> reusable infrastructure, and cancellation ownership remain applicable here.
+> Implementation/validation history below predates that target and does not
+> establish its acceptance.
+
 Status: implementation in progress. Kernel and composer reuse, browser/native
 history cancellation, explicit surface binding, and window subscription ownership
 are implemented. Native history cancellation remains per request; global host

@@ -36,7 +36,10 @@ function message(quote: ChatMsgData['quote']): ChatMsgData {
 describe('TextRowComponent — forwarded quote navigation', () => {
   it('keeps a missing origin target clickable without fetching a preview', async () => {
     const anchor = { kind: 'origin' as const, namespaceId: 3, originSeq: 4 };
-    const ref = mount({ ...message({ anchor }), threadId: 7 });
+    const ref = mount({
+      ...message({ kind: 'jumpable', anchor }),
+      threadId: 7,
+    });
     await TestBed.tick();
     const targets: unknown[] = [];
     ref.instance.quoteJump.subscribe((target) => targets.push(target));
@@ -84,7 +87,9 @@ describe('TextRowComponent — forwarded quote navigation', () => {
   }
 
   it('emits the bundle-local target id when the quoted message was forwarded', () => {
-    const ref = mount(message({ author: 'Alice', body: 'original', seq: 1 }));
+    const ref = mount(
+      message({ kind: 'jumpable', author: 'Alice', body: 'original', seq: 1 }),
+    );
     const targets: import('../../../services/history-anchor').HistoryAnchor[] =
       [];
     const subscription = ref.instance.quoteJump.subscribe((id) =>
@@ -103,6 +108,7 @@ describe('TextRowComponent — forwarded quote navigation', () => {
   it('renders a tombstoned quote as a coordinate-only clickable jump', () => {
     const ref = mount(
       message({
+        kind: 'jumpable',
         seq: 1,
         author: 'Alice',
         body: 'secret',
@@ -119,7 +125,7 @@ describe('TextRowComponent — forwarded quote navigation', () => {
     // jump coordinate, so no preview metadata survives.
     ref.setInput('data', {
       ...ref.instance.data(),
-      quote: { seq: 1 },
+      quote: { kind: 'jumpable', seq: 1 },
     });
     ref.changeDetectorRef.detectChanges();
     const quote = host.querySelector<HTMLElement>('.msg-quote')!;
@@ -136,7 +142,9 @@ describe('TextRowComponent — forwarded quote navigation', () => {
   });
 
   it('renders a bundle zero target as an error on the reply, without navigation or pending text', () => {
-    const ref = mount(message({ seq: 0, status: 'NOT_FOUND' }));
+    const ref = mount(
+      message({ kind: 'unavailable', seq: 0, status: 'NOT_FOUND' }),
+    );
     const host = ref.location.nativeElement as HTMLElement;
     const targets: unknown[] = [];
     ref.instance.quoteJump.subscribe((target) => targets.push(target));
@@ -152,7 +160,9 @@ describe('TextRowComponent — forwarded quote navigation', () => {
   });
 
   it('renders a non-interactive preview when the quoted message was not forwarded', () => {
-    const ref = mount(message({ author: 'Alice', body: 'original' }));
+    const ref = mount(
+      message({ kind: 'snapshot', author: 'Alice', body: 'original' }),
+    );
     const host = ref.location.nativeElement as HTMLElement;
 
     expect(host.querySelector('.msg-quote')).not.toBeNull();
@@ -161,7 +171,7 @@ describe('TextRowComponent — forwarded quote navigation', () => {
   });
 
   it('keeps an uncached quote in a separate clickable block before the message body', () => {
-    const ref = mount(message({ seq: 1 }));
+    const ref = mount(message({ kind: 'jumpable', seq: 1 }));
     const host = ref.location.nativeElement as HTMLElement;
     const bubble = host.querySelector<HTMLElement>('.msg-bubble')!;
     const quote = bubble.querySelector<HTMLElement>('.msg-quote')!;
@@ -176,7 +186,9 @@ describe('TextRowComponent — forwarded quote navigation', () => {
   });
 
   it('renders a Telegram-style two-line reply preview', () => {
-    const ref = mount(message({ author: 'Alice', body: 'original', seq: 1 }));
+    const ref = mount(
+      message({ kind: 'jumpable', author: 'Alice', body: 'original', seq: 1 }),
+    );
     const quote = (
       ref.location.nativeElement as HTMLElement
     ).querySelector<HTMLElement>('.msg-quote')!;
@@ -200,6 +212,7 @@ describe('TextRowComponent — forwarded quote navigation', () => {
   it('uses the localized file-set label for a gallery reply target', () => {
     const ref = mount(
       message({
+        kind: 'jumpable',
         author: 'Alice',
         body: '[File set · 2]',
         contentType: 'GALLERY',
@@ -217,6 +230,7 @@ describe('TextRowComponent — forwarded quote navigation', () => {
   it('renders a target thumbnail only when reply metadata provides one', () => {
     const ref = mount(
       message({
+        kind: 'jumpable',
         seq: 1,
         author: 'Alice',
         body: 'Photo',
@@ -238,6 +252,7 @@ describe('TextRowComponent — forwarded quote navigation', () => {
   it('requests a reply thumbnail regardless of original image size', () => {
     const ref = mount(
       message({
+        kind: 'jumpable',
         seq: 1,
         contentType: 'IMAGE',
         image: '/uploads/cas/aa/bb/photo.jpg',

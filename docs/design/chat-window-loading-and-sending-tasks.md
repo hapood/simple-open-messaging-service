@@ -1,5 +1,13 @@
 # Chat window loading and sending-task presentation
 
+> Scoped supersession: [Gap-driven chat message windows](chat-gap-driven-message-window.md)
+> replaces this document's entry/skeleton admission, historical-edge loading,
+> positioning, animation, and message-item retirement policies. Real messages
+> must no longer become spinner slots. Sending-task ownership, header/panel
+> presentation, and durable sending rules below remain applicable except where
+> separately revised by the tail-cue design. Historical implementation notes are
+> not evidence that the new gap-driven target is implemented.
+
 ## Status and scope
 
 Approved frontend design. This document supersedes older designs that mount

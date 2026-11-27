@@ -20,7 +20,14 @@ export class PlaygroundMemberProfiles
 
   async queryPage(
     threadId: number,
-    params: { afterIdentity?: string; take: number; search?: string },
+    params: Parameters<MemberProfileRepository['queryPage']>[1],
+  ) {
+    return (await this.queryRosterPage(threadId, params)).items;
+  }
+
+  async queryRosterPage(
+    threadId: number,
+    params: Parameters<MemberProfileRepository['queryRosterPage']>[1],
   ) {
     const search = params.search?.trim().toLowerCase() ?? '';
     const members = (this.state.rosters.get(threadId) ?? [])
@@ -36,13 +43,23 @@ export class PlaygroundMemberProfiles
             ? 1
             : 0,
       );
-    return members
-      .filter(
-        (member) =>
-          !params.afterIdentity || member.identityKey > params.afterIdentity,
-      )
+    const eligible = members.filter(
+      (member) =>
+        (!params.cursor || member.identityKey > params.cursor) &&
+        (!params.exclude ||
+          member.account !== params.exclude.account ||
+          member.namespaceId !== params.exclude.namespaceId),
+    );
+    const items = eligible
       .slice(0, params.take)
       .map((member) => ({ ...member }));
+    return {
+      items,
+      nextCursor:
+        eligible.length > items.length && items.length > 0
+          ? items[items.length - 1].identityKey
+          : null,
+    };
   }
 }
 

@@ -29,13 +29,10 @@ export class QuoteBlockComponent {
   readonly isSelf = input(false);
   readonly quoteJump = output<HistoryAnchor>();
   private readonly downloads = inject(ImageDownloadService);
-  readonly displayQuote = computed(() => {
-    const quote = this.quote();
-    return quote?.status ? { seq: quote.seq, status: quote.status } : quote;
-  });
+  readonly displayQuote = computed(() => this.quote());
   readonly anchor = computed<HistoryAnchor | undefined>(() => {
     const quote = this.displayQuote();
-    if (!quote || quote.status) return undefined;
+    if (!quote || quote.kind !== 'jumpable') return undefined;
     return (
       quote.anchor ??
       (quote.seq && quote.seq > 0
@@ -43,15 +40,19 @@ export class QuoteBlockComponent {
         : undefined)
     );
   });
-  readonly thumbnail = computed(() =>
-    this.downloads.thumbnailUrl({
-      msgId: this.displayQuote()?.seq,
-      src: this.displayQuote()?.image ?? '',
-    }),
-  );
-  readonly avatarType = computed(() =>
-    this.displayQuote()?.imageIdentity?.startsWith('!')
+  readonly thumbnail = computed(() => {
+    const quote = this.displayQuote();
+    if (!quote || quote.kind === 'unavailable') return '';
+    return this.downloads.thumbnailUrl({
+      src: quote.image ?? '',
+    });
+  });
+  readonly avatarType = computed(() => {
+    const quote = this.displayQuote();
+    return quote &&
+      quote.kind !== 'unavailable' &&
+      quote.imageIdentity?.startsWith('!')
       ? UserAvatarType.GROUP
-      : UserAvatarType.OTHER,
-  );
+      : UserAvatarType.OTHER;
+  });
 }

@@ -5,6 +5,23 @@ import type { StoredDownloadRecord } from '../app/services/download-history-stor
 /** Playground downloads have no authenticated account or durable production history. */
 export class PlaygroundWebdbStorage extends WebdbStorage {
   private readonly sends = new Map<string, StoredSendTask>();
+  private readonly messageHeads = new Map<number, number>();
+
+  override async getMessageHead(threadId: number): Promise<number | undefined> {
+    return this.messageHeads.get(threadId);
+  }
+
+  override async putMessageHead(
+    threadId: number,
+    knownNewestSeq: number,
+  ): Promise<void> {
+    if (!Number.isSafeInteger(knownNewestSeq) || knownNewestSeq < 0)
+      throw new Error('known newest message sequence is invalid');
+    this.messageHeads.set(
+      threadId,
+      Math.max(this.messageHeads.get(threadId) ?? 0, knownNewestSeq),
+    );
+  }
 
   override async enqueuePendingSend(task: StoredSendTask): Promise<void> {
     this.sends.set(task.clientMessageId, structuredClone(task));
@@ -29,10 +46,12 @@ export class PlaygroundWebdbStorage extends WebdbStorage {
   private readonly downloadHistory = new Map<string, StoredDownloadRecord>();
 
   override async downloadRecords(): Promise<StoredDownloadRecord[]> {
-    return [...this.downloadHistory.values()].map(record => ({ ...record }));
+    return [...this.downloadHistory.values()].map((record) => ({ ...record }));
   }
 
-  override async putDownloadRecord(record: StoredDownloadRecord): Promise<void> {
+  override async putDownloadRecord(
+    record: StoredDownloadRecord,
+  ): Promise<void> {
     this.downloadHistory.set(record.id, { ...record });
   }
 
@@ -40,7 +59,9 @@ export class PlaygroundWebdbStorage extends WebdbStorage {
     this.downloadHistory.delete(id);
   }
 
-  override async clearDownloadRecords(_deleteFiles: boolean): Promise<string[]> {
+  override async clearDownloadRecords(
+    _deleteFiles: boolean,
+  ): Promise<string[]> {
     this.downloadHistory.clear();
     return [];
   }

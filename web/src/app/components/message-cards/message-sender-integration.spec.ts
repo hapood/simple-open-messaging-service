@@ -15,7 +15,7 @@ import { readStickyAvatarIdentity } from '../../lib/sticky-avatar';
 import type { CbItem } from '../../lib/chat-box/chat-box-scroller';
 import type { AvatarView } from '../user-avatar/avatar-view';
 import { UserAvatarType } from '../user-avatar/model';
-import type { ChatItemData } from './chat-item';
+import type { ChatItemData, ChatMsgData } from './chat-item';
 import { createMsgCbElement } from './create-item';
 import { MessageSenderService } from './message-sender.service';
 import { StickyAvatarOverlayComponent } from './sticky-avatar-overlay/sticky-avatar-overlay.component';
@@ -41,7 +41,7 @@ describe('message sender presentation integration', () => {
         { provide: LinkCardService, useValue: { matchFirst: () => null } },
       ],
     });
-    const item: CbItem<ChatItemData> = {
+    const item: CbItem<ChatMsgData> = {
       id: 1,
       data: {
         type: 'msg',
@@ -125,7 +125,7 @@ describe('message sender presentation integration', () => {
                 size: 1,
                 mimeType: 'application/pdf',
               },
-            },
+            } as ChatItemData,
           },
           null,
         ),

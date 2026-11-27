@@ -4,6 +4,7 @@ import {
   createComponent,
   EnvironmentInjector,
   InputSignal,
+  Injector,
   Type,
   signal,
 } from '@angular/core';
@@ -30,6 +31,8 @@ import { AvatarComponent } from '../user-avatar/avatar.component';
 import { UserAvatarType } from '../user-avatar/model';
 import type { AvatarView } from '../user-avatar/avatar-view';
 import { MessageSenderService } from './message-sender.service';
+import { AvatarPresentationService } from '../user-avatar/avatar-presentation.service';
+import { CbItemLifetime } from '../../lib/chat-box/cb-item-lifetime';
 
 /**
  * Read-only shape shared by dynamically selected rows. Each row may accept a narrower
@@ -56,9 +59,10 @@ function createBoundRow<D extends ChatMsgData>(
   decode: (message: ChatMsgData) => NoInfer<D>,
   initial: ChatMsgData,
   environmentInjector: EnvironmentInjector,
+  elementInjector: Injector,
 ): BoundRow {
   const value = decode(initial);
-  const ref = createComponent(component, { environmentInjector });
+  const ref = createComponent(component, { environmentInjector, elementInjector });
   const bindData = (message: ChatMsgData) =>
     ref.setInput('data', decode(message));
   ref.setInput('data', value);
@@ -68,6 +72,7 @@ function createBoundRow<D extends ChatMsgData>(
 function createMessageRow(
   data: ChatMsgData,
   injector: EnvironmentInjector,
+  elementInjector: Injector,
 ): BoundRow {
   switch (data.contentType) {
     case 'IMAGE':
@@ -83,6 +88,7 @@ function createMessageRow(
         },
         data,
         injector,
+        elementInjector,
       );
     case 'FILE':
       return createBoundRow(
@@ -94,6 +100,7 @@ function createMessageRow(
         },
         data,
         injector,
+        elementInjector,
       );
     case 'PURE_TEXT':
       return createBoundRow(
@@ -105,6 +112,7 @@ function createMessageRow(
         },
         data,
         injector,
+        elementInjector,
       );
     case 'LINK':
       return createBoundRow(
@@ -116,6 +124,7 @@ function createMessageRow(
         },
         data,
         injector,
+        elementInjector,
       );
     case 'CONTACT_CARD':
       return createBoundRow(
@@ -127,6 +136,7 @@ function createMessageRow(
         },
         data,
         injector,
+        elementInjector,
       );
     case 'FORWARD':
       return createBoundRow(
@@ -138,6 +148,7 @@ function createMessageRow(
         },
         data,
         injector,
+        elementInjector,
       );
     case 'SYSTEM':
       return createBoundRow(
@@ -149,6 +160,7 @@ function createMessageRow(
         },
         data,
         injector,
+        elementInjector,
       );
   }
 }
@@ -220,9 +232,9 @@ export function computeRowFlags(
   }
   // Date context survives a mounted message's anonymous deletion replacement.
   // It uses only that original message's timestamp, never persisted deletion stubs.
-  if (!item.data.serverGap) {
+  if (item.data.type !== 'serverGap') {
     showDate = shouldShowDateSeparator(
-      prev && !prev.data.serverGap ? prev.data.createdAtMs : null,
+      prev && prev.data.type !== 'serverGap' ? prev.data.createdAtMs : null,
       item.data.createdAtMs,
       item.boundary === 'oldest' || item.boundary === 'both',
     );
@@ -304,8 +316,18 @@ export function createMsgCbElement(
     anchor: DOMRect,
   ) => void,
 ): CbElement<ChatItemData> {
+  if (item.data.type === 'serverGap')
+    throw new Error('server-gap item must use createServerGapCbElement');
   const data = item.data;
-  const { ref, bindData } = createMessageRow(data, envInjector);
+  const lifetime = new CbItemLifetime();
+  const elementInjector = Injector.create({
+    providers: [{ provide: CbItemLifetime, useValue: lifetime }],
+    parent: envInjector,
+  });
+  const { ref, bindData } = createMessageRow(data, envInjector, elementInjector);
+  lifetime.onDestroy(() => ref.destroy());
+  lifetime.onDestroy(() => elementInjector.destroy());
+  lifetime.onPredestory(() => ref.changeDetectorRef.detach());
   // createComponent() only constructs the view; it does not enroll it in Angular's application view
   // tree. Message rows contain async, signal-driven children (including sender presentation, whose profile
   // bytes resolve after the first render), so leaving the host view detached freezes those children at
@@ -326,7 +348,10 @@ export function createMsgCbElement(
   // reverse (above→viewport) handoff synchronous as well.
   const tailAvatarRef = createComponent(AvatarComponent, {
     environmentInjector: envInjector,
+    elementInjector,
   });
+  lifetime.onDestroy(() => tailAvatarRef.destroy());
+  lifetime.onPredestory(() => tailAvatarRef.changeDetectorRef.detach());
   appRef.attachView(tailAvatarRef.hostView);
   const tailAvatar = document.createElement('div');
   tailAvatar.className = 'msg-avatar msg-avatar-tail';
@@ -341,6 +366,7 @@ export function createMsgCbElement(
   });
   const senderMessages = new BehaviorSubject(data);
   const updateSenderView = (view: AvatarView): void => {
+    if (!lifetime.active) return;
     senderView.set(view);
     if (data.type !== 'system') ref.setInput('senderView', view);
     tailAvatarRef.setInput('view', view);
@@ -401,6 +427,9 @@ export function createMsgCbElement(
     nextItem: CbItem<ChatItemData>,
     nextPrev: CbItem<ChatItemData> | null,
   ): void => {
+    if (!lifetime.active) return;
+    if (nextItem.data.type === 'serverGap')
+      throw new Error('message renderer cannot update to a server-gap item');
     const flags = computeRowFlags(nextItem, nextPrev, interactionNext);
     bindData(nextItem.data);
     ref.setInput('isShowHead', flags.isShowHead);
@@ -418,6 +447,7 @@ export function createMsgCbElement(
   };
 
   const updateNext = (nextItem: CbItem<ChatItemData> | null): void => {
+    if (!lifetime.active) return;
     interactionNext = nextItem;
     applyGroupPosition(
       ref.location.nativeElement,
@@ -456,13 +486,16 @@ export function createMsgCbElement(
       }),
     )
     .subscribe(updateSenderView);
-  const el = wrapEl(ref, update, updateNext, measuredHost, () => {
-    senderSubscription.unsubscribe();
-    senderMessages.complete();
-    appRef.detachView(tailAvatarRef.hostView);
-    tailAvatarRef.destroy();
-    appRef.detachView(ref.hostView);
+  lifetime.onPredestory(() => {
+    // Live avatar observation owns its URL lease. Retain only the painted bytes
+    // before releasing that observer; no profile transport stays alive for exit.
+    lifetime.onDestroy(
+      envInjector.get(AvatarPresentationService).retainImage(senderView()),
+    );
   });
+  lifetime.onPredestory(() => senderSubscription.unsubscribe());
+  lifetime.onPredestory(() => senderMessages.complete());
+  const el = wrapEl(ref, lifetime, update, updateNext, measuredHost);
   selectionHost = el.el;
   applySelectionMetadata(el.el, item);
   applyAvatarOffset(el.el, showDate, isGroupStart);
@@ -481,11 +514,9 @@ export function createMsgCbElement(
       );
     };
     el.el.addEventListener('click', openMemberProfile);
-    const baseDestroy = el.destroy;
-    el.destroy = () => {
+    lifetime.onPredestory(() => {
       el.el.removeEventListener('click', openMemberProfile);
-      baseDestroy();
-    };
+    });
   }
   if (data.contentType === 'FORWARD' && onOpenForward) {
     const openForward = (event: MouseEvent): void => {
@@ -501,11 +532,9 @@ export function createMsgCbElement(
       if (bundleId) onOpenForward(bundleId);
     };
     el.el.addEventListener('click', openForward);
-    const baseDestroy = el.destroy;
-    el.destroy = () => {
+    lifetime.onPredestory(() => {
       el.el.removeEventListener('click', openForward);
-      baseDestroy();
-    };
+    });
   }
   if (onInteraction) {
     let longPressTimer: ReturnType<typeof setTimeout> | undefined;
@@ -605,8 +634,7 @@ export function createMsgCbElement(
     el.el.addEventListener('pointermove', onPointerMove);
     el.el.addEventListener('click', onClick, true);
     el.el.addEventListener('contextmenu', onContextMenu);
-    const baseDestroy = el.destroy;
-    el.destroy = () => {
+    lifetime.onPredestory(() => {
       clearPressVisual();
       el.el.removeEventListener('pointerdown', onPointerDown);
       el.el.removeEventListener('pointerup', onPointerEnd);
@@ -614,18 +642,11 @@ export function createMsgCbElement(
       el.el.removeEventListener('pointermove', onPointerMove);
       el.el.removeEventListener('click', onClick, true);
       el.el.removeEventListener('contextmenu', onContextMenu);
-      baseDestroy();
-    };
+    });
   }
-  // Wire row navigation outputs. Each subscription is released on
-  // destroy so re-rendering the row (rebuildEntry) or unmounting it does not leak a handler. Several outputs may compose
-  // on one entry — wrapDestroy chains them LIFO into a single destroy().
+  // Row navigation ends before exit, not when Angular finally removes the view.
   const wrapDestroy = (extra: () => void): void => {
-    const base = el.destroy;
-    el.destroy = () => {
-      extra();
-      base();
-    };
+    lifetime.onPredestory(extra);
   };
   if (ref.instance.quoteJump && onQuoteJump) {
     const sub = ref.instance.quoteJump.subscribe(onQuoteJump);
@@ -648,7 +669,7 @@ export function createMsgCbElement(
     const inst = ref.instance as {
       openFile?: { subscribe: (fn: () => void) => { unsubscribe(): void } };
     };
-    const sub = inst.openFile?.subscribe(() => onOpenFile(data));
+    const sub = inst.openFile?.subscribe(() => onOpenFile(data as ChatMsgData));
     if (sub) wrapDestroy(() => sub.unsubscribe());
   }
   return el;
@@ -675,6 +696,7 @@ export function createGhostCbElement(): CbElement<ChatItemData> {
   return {
     el,
     update: () => {}, // ghosts are placeholders, never morphed in place (no optimistic send is ever a ghost)
+    predestory: () => {},
     destroy: () => {},
   };
 }
@@ -686,21 +708,24 @@ export function createGhostCbElement(): CbElement<ChatItemData> {
  */
 function wrapEl<T>(
   ref: { location: { nativeElement: HTMLElement }; destroy: () => void },
+  lifetime: CbItemLifetime,
   update: (item: CbItem<T>, prev: CbItem<T> | null) => void,
   updateNext: (next: CbItem<T> | null) => void,
   measuredHost?: HTMLElement,
-  beforeDestroy?: () => void,
 ): CbElement<T> {
   const el = measuredHost ?? ref.location.nativeElement;
   applyMessageListItemSemantics(el);
+  lifetime.onPredestory(() => {
+    el.inert = true;
+    el.setAttribute('aria-hidden', 'true');
+  });
+  lifetime.onDestroy(() => el.remove());
   return {
     el,
     update,
     updateNext,
-    destroy: () => {
-      beforeDestroy?.();
-      ref.destroy();
-    },
+    predestory: () => lifetime.predestory(),
+    destroy: () => lifetime.destroy(),
   };
 }
 
@@ -716,10 +741,10 @@ export function createServerGapCbElement(
   item: CbItem<ChatItemData>,
   label: string,
 ): CbElement<ChatItemData> {
-  if (!item.data.serverGap)
+  if (item.data.type !== 'serverGap')
     throw new Error('server-gap renderer received a message item');
   const host = document.createElement('div');
-  host.className = `cb-server-gap cb-server-gap--${item.data.serverGap.state === 'SERVER_PENDING' ? 'pending' : 'unavailable'}`;
+  host.className = `cb-server-gap cb-server-gap--${item.data.state === 'SERVER_PENDING' ? 'pending' : 'unavailable'}`;
   const rule = document.createElement('span');
   rule.className = 'cb-server-gap__rule';
   const text = document.createElement('span');
@@ -731,6 +756,7 @@ export function createServerGapCbElement(
     el: host,
     update: () => {},
     updateNext: () => {},
+    predestory: () => {},
     destroy: () => {},
   };
 }

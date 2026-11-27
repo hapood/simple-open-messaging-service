@@ -71,9 +71,10 @@ import type {
   CbSourceWindowRequest,
 } from '../../lib/chat-box/cb-source';
 import type {
+  AuthoredMessageItem,
   ChatItemData,
   ChatMsgData,
-  MediaStatus,
+  TextMessageItem,
 } from '../message-cards/chat-item';
 import {
   contextualLinkContent,
@@ -108,12 +109,13 @@ class MessagePageLoadError extends Error {
 }
 
 export interface HttpItemSourceLiveOpts {
+  /** Capture a presentation generation for this interval consumer. The returned
+   * callback receives successful committed scans, never cached rows or POSTs. */
+  onHistoryIntervalStarted?: () => (left: number, right: number) => void;
   onQuoteDeleted?: (replySeq: number, targetSeq: number) => void;
   onQuoteUpdated?: (replySeq: number, quote: ChatMsgData['quote']) => void;
   /** Presentation-only notice for the unread/new-message badge. It never invokes a kernel load or retry. */
   onNewerAvailable?: (seq: number, previousLatestSeq?: number) => void;
-  /** A mediaStatus change landed for this thread through the shared availability service — the
-   *  kernel re-renders that one card in place via updateItemData (height-neutral). */
 }
 
 export class HttpItemSource implements CbSource<ChatItemData> {
@@ -192,7 +194,7 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     private readonly repo: MessageRepository,
     private readonly userService: UserService,
     private readonly outbox: ThreadSendOutbox,
-    live: HttpItemSourceLiveOpts,
+    private readonly live: HttpItemSourceLiveOpts,
     private readonly messages: MsgService,
     private readonly profileRepo: ProfileRepository,
   ) {
@@ -202,7 +204,7 @@ export class HttpItemSource implements CbSource<ChatItemData> {
       .pipe(filter((threadId) => threadId === conv.threadId))
       .subscribe(() => {
         for (const [seq, entry] of this.mountedQuotes) {
-          if (!entry.quote.body)
+          if (entry.quote.kind === 'jumpable' && !entry.quote.body)
             void this.refreshMountedQuote(seq).catch(() => {});
         }
       });
@@ -301,6 +303,7 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     if (!entry) return;
     const version = ++entry.version;
     let quote = entry.quote;
+    if (quote.kind !== 'jumpable') return;
     const anchor = quote.anchor;
     if (anchor?.kind === 'origin') {
       const target = await this.wait(
@@ -312,6 +315,7 @@ export class HttpItemSource implements CbSource<ChatItemData> {
       );
       if (target)
         quote = {
+          kind: 'jumpable',
           anchor,
           seq: target.seq,
           body: deriveMessagePreview(
@@ -332,11 +336,15 @@ export class HttpItemSource implements CbSource<ChatItemData> {
       if (deleted.length || this.deletedQuoteSeqs.has(seq))
         // Keep only a local jump coordinate for a possible mounted notice;
         // never re-resolve an erased preview through its origin.
-        quote = { seq };
+        quote = { kind: 'jumpable', seq };
     }
     if (this.mountedQuotes.get(replySeq) !== entry || entry.version !== version)
       return;
-    if (entry.quote.seq === quote.seq && entry.quote.body === quote.body)
+    if (
+      entry.quote.kind === 'jumpable' &&
+      entry.quote.seq === quote.seq &&
+      entry.quote.body === quote.body
+    )
       return;
     entry.quote = quote;
     this.onQuoteUpdated(replySeq, quote);
@@ -371,25 +379,44 @@ export class HttpItemSource implements CbSource<ChatItemData> {
       this.repo.newestKnownSeq(this.conv.threadId),
     );
     this.entryKnownEndSeq = knownEndSeq;
-    this.entryPreparation = this.queryHistory({
-      kind: 'localAround',
-      anchor: this.entryReadSeq,
-      olderCount: this.entryReadSeq > 0 ? MAX_PAGE : 0,
-      newerCount: MAX_PAGE,
-    })
-      .then((result) => {
+    const seamPromise =
+      typeof this.repo.evaluateEntrySeam === 'function'
+        ? this.repo
+            .evaluateEntrySeam(
+              this.conv.threadId,
+              this.entryReadSeq,
+              knownEndSeq,
+              this.lifetime.signal,
+            )
+            .catch(() => null)
+        : Promise.resolve(null);
+    this.entryPreparation = Promise.all([
+      this.queryHistory({
+        kind: 'localAround',
+        anchor: this.entryReadSeq,
+        olderCount: this.entryReadSeq > 0 ? MAX_PAGE : 0,
+        newerCount: MAX_PAGE,
+      }),
+      seamPromise,
+    ])
+      .then(([result, seam]) => {
         if (result.failed) throw new MessagePageLoadError();
         this.lifetime.signal.throwIfAborted();
         this.entrySeed = result;
+        const hasCachedMessages = result.items.some(
+          (item) => item.kind === 'message',
+        );
+        const empty = seam ? seam.empty : this.entryReadSeq === 0 && knownEndSeq === 0;
+        const seamReady = seam ? seam.ready : empty || hasCachedMessages;
         return Object.freeze({
           lastReadSeq: this.entryReadSeq,
-          hasCachedMessages: result.items.some(
-            (item) => item.kind === 'message',
-          ),
+          hasCachedMessages,
           hasCachedHead: result.items.some(
             (item) =>
               item.kind === 'message' && item.message.seq === knownEndSeq,
           ),
+          seamReady,
+          empty,
         });
       })
       .catch((error: unknown) => {
@@ -475,7 +502,11 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     if (result.failed) throw new MessagePageLoadError();
     let items = await this.wait(this.historyItemsToCb(result.items));
     if (!items.some((item) => !item.displayInterval)) {
-      const pending = items.filter((item) => item.data.serverGap?.state === 'SERVER_PENDING');
+      const pending = items.filter(
+        (item) =>
+          item.data.type === 'serverGap' &&
+          item.data.state === 'SERVER_PENDING',
+      );
       if (pending.length) {
         // Cold entry is a spinner, not a whole-thread gap. Subscribe before waiting
         // so the first committed reverse page can establish a real local window.
@@ -487,7 +518,11 @@ export class HttpItemSource implements CbSource<ChatItemData> {
             map((page) => {
               if (
                 page.length &&
-                page.every((item) => item.data.serverGap?.state === 'SERVER_UNAVAILABLE')
+                page.every(
+                  (item) =>
+                    item.data.type === 'serverGap' &&
+                    item.data.state === 'SERVER_UNAVAILABLE',
+                )
               )
                 throw new MessagePageLoadError();
               return page;
@@ -590,11 +625,20 @@ export class HttpItemSource implements CbSource<ChatItemData> {
   /** A renderer's interval owns the transport consumer. A page only replaces its
    * committed scan; the unscanned part keeps its original server-gap identity. */
   watchInterval(item: CbItem<ChatItemData>): Observable<CbItem<ChatItemData>[]> {
-    const gap = item.data.serverGap;
-    if (!gap) throw new Error('interval subscription requires a server gap');
+    if (item.data.type !== 'serverGap')
+      throw new Error('interval subscription requires a server gap');
+    const gap = item.data;
     return defer(() => {
       if (this.lifetime.signal.aborted) return EMPTY;
-      let projection: MessageHistorySourceItem[] = [{ kind: 'serverGap', ...gap }];
+      const committed = this.live.onHistoryIntervalStarted?.();
+      let projection: MessageHistorySourceItem[] = [
+        {
+          kind: 'serverGap',
+          left: gap.left,
+          right: gap.right,
+          state: gap.state,
+        },
+      ];
       return this.repo
         .watchHistoryInterval(this.conv.threadId, gap.left, gap.right)
         .pipe(
@@ -604,6 +648,7 @@ export class HttpItemSource implements CbSource<ChatItemData> {
             const left = Math.max(gap.left, page.left);
             const right = Math.min(gap.right, page.right);
             if (left >= right) return this.historyItemsToCb(projection);
+            committed?.(left, right);
             const items: MessageHistorySourceItem[] = [];
             // Cold entry can consume several deleted-only scans before it mounts
             // a real page. Preserve prior scan evidence, not the original gap.
@@ -802,6 +847,7 @@ export class HttpItemSource implements CbSource<ChatItemData> {
       );
       const anchor: HistoryAnchor = { kind: 'origin', ...reference };
       quotes.set(message.seq, {
+        kind: 'jumpable',
         anchor,
         ...(target
           ? {
@@ -850,10 +896,11 @@ export class HttpItemSource implements CbSource<ChatItemData> {
         data: { ...this.toMsgData(m), quote: quotes.get(m.seq) },
       };
       if (
-        item.data.quote?.seq !== undefined &&
+        item.data.quote?.kind === 'jumpable' &&
+        item.data.quote.seq !== undefined &&
         this.deletedQuoteSeqs.has(item.data.quote.seq)
       ) {
-        item.data.quote = { seq: item.data.quote.seq };
+        item.data.quote = { kind: 'jumpable', seq: item.data.quote.seq };
       }
       if (m.clientMessageId) {
         item.clientMessageId = m.clientMessageId;
@@ -883,6 +930,17 @@ export class HttpItemSource implements CbSource<ChatItemData> {
         item,
       ]),
     );
+    // Body reads and profile/quote resolution are asynchronous. Recheck durable
+    // tombs before publishing, including commits whose live signal was missed.
+    if (messages.length) {
+      const deletions = await this.wait(
+        this.repo.getMessageDeletions(
+          this.conv.threadId,
+          messages.map((message) => message.seq),
+        ),
+      );
+      for (const { seq } of deletions) this.deletedQuoteSeqs.add(seq);
+    }
     const out: CbItem<ChatItemData>[] = [];
     for (const item of sourceItems) {
       if (item.kind === 'message') {
@@ -908,21 +966,11 @@ export class HttpItemSource implements CbSource<ChatItemData> {
         id: gapId,
         displayInterval: { left: item.left, right: item.right },
         data: {
-          type: 'system',
-          contentType: 'SYSTEM',
+          type: 'serverGap',
           msgId: item.right,
-          isSelf: false,
-          name: '',
-          text: '',
-          time: '',
-          images: null,
-          file: null,
-          createdAtMs: 0,
-          serverGap: {
-            left: item.left,
-            right: item.right,
-            state: item.state,
-          },
+          left: item.left,
+          right: item.right,
+          state: item.state,
         },
       });
     }
@@ -1006,19 +1054,31 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     if (!creatorIdentity) throw new Error('invalid profile identity key');
     const p = this.profilesBySeq.get(m.seq) ?? this.profiles.get(creatorKey);
     if (!p) throw new Error('message User was not resolved');
-    const textContent =
-      m.contentType === 'PURE_TEXT'
-        ? requireTextMessageContent(m.content)
-        : null;
-    const renderedText = textContent
-      ? toRenderMessageEntities(
-          textContent.text,
-          selfMentionIdentity(
-            this.conv,
-            this.userService.sessionProfile()?.account,
-          ),
-        )
-      : null;
+    const content = projectMessageContent(
+      m.contentType,
+      m.content,
+      { msgId: m.seq, senderName: p.name, sentAt: m.createdAt },
+      (item) => contextualMediaUrl(item, m.threadId, m.seq),
+    );
+    // Rendered segments and mention state exist only on text messages.
+    let textFields: Pick<TextMessageItem, 'text' | 'textSegments' | 'mentionState'>;
+    if (content.contentType === 'PURE_TEXT') {
+      const body = requireTextMessageContent(m.content).text;
+      const rendered = toRenderMessageEntities(
+        body,
+        selfMentionIdentity(
+          this.conv,
+          this.userService.sessionProfile()?.account,
+        ),
+      );
+      textFields = {
+        text: toDisplayText(body),
+        textSegments: rendered.segments,
+        mentionState: rendered.mentionState,
+      };
+    } else {
+      textFields = { text: this.nontextDisplay(m.content, content.contentType, m) };
+    }
     return {
       type: 'msg',
       msgId: m.seq,
@@ -1055,22 +1115,23 @@ export class HttpItemSource implements CbSource<ChatItemData> {
                 profileNamespaceId: m.profileNamespaceId,
               },
             },
-      // Non-text cards keep their wire content in `text` as well. In particular, FORWARD content is
-      // the JSON card descriptor consumed by parseForwardCard; dropping it here makes every valid
-      // forwarded bundle render as "unavailable".
-      text: textContent
-        ? toDisplayText(textContent.text)
-        : m.contentType === 'LINK'
-          ? contextualLinkContent(m.content, m.threadId, m.seq)
-          : m.content,
-      textSegments: renderedText?.segments,
-      mentionState: renderedText?.mentionState,
+      ...content,
+      ...textFields,
       time: dayjs(m.createdAt).format('HH:mm'),
-      ...projectMessageContent(m.contentType, m.content, {
-        msgId: m.seq, senderName: p.name, sentAt: m.createdAt,
-      }, item => contextualMediaUrl(item, m.threadId, m.seq)),
       createdAtMs: m.createdAt,
     };
+  }
+
+  /** Non-text cards keep their wire content in `text`. In particular, FORWARD content is the JSON card
+   *  descriptor consumed by parseForwardCard; dropping it makes every forwarded bundle "unavailable". */
+  private nontextDisplay(
+    wireContent: string,
+    contentType: Exclude<AuthoredMessageItem['contentType'], 'PURE_TEXT' | 'SYSTEM'>,
+    message: Message,
+  ): string {
+    return contentType === 'LINK'
+      ? contextualLinkContent(wireContent, message.threadId, message.seq)
+      : wireContent;
   }
 
   /** Resolve each author at the revision selected by that message. */

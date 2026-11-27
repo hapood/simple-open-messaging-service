@@ -2,7 +2,8 @@ import {
   parseSystemMessageContent,
   type SystemEventAddress,
 } from '../../../../../../shared/system-message-content';
-import { firstValueFrom, of } from 'rxjs';
+import { CancellationScope, firstValueFromAbortable } from '../../../lib/async/cancellation-scope';
+import { onCbItemPredestory } from '../../../lib/chat-box/cb-item-activity';
 import { MemberProfileRepository } from '../../../services/member-profile-store.service';
 import { ProfileRepository } from '../../../services/profile-store.service';
 import { WebdbService } from '../../../services/webdb.service';
@@ -39,9 +40,16 @@ import { DateRowComponent } from '../date-row/date-row.component';
       <app-msg-date-row [ms]="data().createdAtMs" />
     }
     <div class="system-message" role="status">
-      {{ label() }}
+      @if (labelParts(); as parts) {
+        <span class="system-names">{{ parts.names }}</span>
+        @if (parts.suffix) {
+          <span class="system-suffix">{{ ' ' + parts.suffix }}</span>
+        }
+      } @else {
+        <span class="system-names">{{ label() }}</span>
+      }
       @if (!isDeletion() && data().time) {
-        <time>{{ data().time }}</time>
+        <time class="system-suffix">{{ data().time }}</time>
       }
     </div>
   `,
@@ -53,8 +61,13 @@ import { DateRowComponent } from '../date-row/date-row.component';
       padding: var(--chat-timeline-gap-item) var(--chat-timeline-inset-inline) 0;
     }
     .system-message {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 4px;
       width: fit-content;
       max-width: min(32rem, 90%);
+      height: 24px;
       margin: 0 auto;
       padding: 2px 10px;
       box-sizing: border-box;
@@ -65,9 +78,19 @@ import { DateRowComponent } from '../date-row/date-row.component';
       font-size: 12px;
       line-height: 18px;
       text-align: center;
+      white-space: nowrap;
+      overflow: hidden;
+    }
+    .system-names {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .system-suffix {
+      flex-shrink: 0;
     }
     time {
-      margin-left: 6px;
+      margin-left: 2px;
       opacity: 0.7;
     }
   `,
@@ -108,6 +131,7 @@ export class SystemRowComponent {
             participant.profileNamespaceId !== 0,
         );
       }
+      if ('members' in event) return event.members[0];
       if ('member' in event) return event.member;
       if (event.type === 'GROUP_CREATED') return event.creator;
       if (event.type === 'GROUP_OWNER_TRANSFERRED') return event.newOwner;
@@ -116,7 +140,7 @@ export class SystemRowComponent {
   );
 
   constructor() {
-    effect((onCleanup) => {
+    const observation = effect((onCleanup) => {
       const data = this.data();
       const identity = this.displayIdentity();
       this.profileName.set('');
@@ -125,6 +149,7 @@ export class SystemRowComponent {
       this.resolveIdentityDomain(data, identity, onCleanup);
       this.resolveProfiledParticipant(data, identity, onCleanup);
     });
+    onCbItemPredestory(() => observation.destroy());
   }
 
   private profilePair(_data: SystemMessageItem, identity: SystemEventAddress) {
@@ -198,17 +223,23 @@ export class SystemRowComponent {
       data.type === 'system'
         ? (data.localSystemProfileRevs?.[participantKey] ?? identity.profileRev)
         : identity.profileRev;
+    const requests = new CancellationScope();
     let cancelled = false;
+    onCleanup(() => {
+      cancelled = true;
+      requests.cancel();
+    });
     let request = 0;
     const refresh = () => {
       const current = ++request;
       if (!revision) return;
-      void firstValueFrom(
+      void firstValueFromAbortable(
         this.profiles.resolve(
           unevidencedProfileDemand(
             this.profileDemand(data, identity, revision),
           ),
         ),
+        requests.signal,
       )
         .then((profile) => {
           if (!cancelled && current === request)
@@ -281,6 +312,35 @@ export class SystemRowComponent {
     );
   }
 
+  private readonly participantName = computed(() => {
+    const identity = this.displayIdentity();
+    const alias =
+      identity?.publisherNamespaceId === 0
+        ? (this.conversations
+            .items()
+            .find(
+              (item) =>
+                item.type === 'P2P' &&
+                item.account === identity.account &&
+                item.publisherNamespaceId === identity.profileNamespaceId,
+            )
+            ?.alias?.trim() ?? '')
+        : '';
+    return (
+      alias ||
+      this.profileName() ||
+      displayUserAccount(
+        identity
+          ? {
+              account: identity.account,
+              namespaceId: identity.publisherNamespaceId,
+              domain: this.namespaceDomain(),
+            }
+          : {},
+      )
+    );
+  });
+
   readonly label = computed(() => {
     this.language.lang();
     try {
@@ -322,31 +382,7 @@ export class SystemRowComponent {
         });
         return `${direction} · ${media} · ${result} · ${started} · ${waiting}${duration}`;
       }
-      const identity = this.displayIdentity();
-      const alias =
-        identity?.publisherNamespaceId === 0
-          ? (this.conversations
-              .items()
-              .find(
-                (item) =>
-                  item.type === 'P2P' &&
-                  item.account === identity.account &&
-                  item.publisherNamespaceId === identity.profileNamespaceId,
-              )
-              ?.alias?.trim() ?? '')
-          : '';
-      const name =
-        alias ||
-        this.profileName() ||
-        displayUserAccount(
-          identity
-            ? {
-                account: identity.account,
-                namespaceId: identity.publisherNamespaceId,
-                domain: this.namespaceDomain(),
-              }
-            : {},
-        );
+      const name = this.participantName();
       const translate = (key: string) =>
         this.transloco.translate(`chat.systemMessage.${key}`, { name });
       switch (body.type) {
@@ -365,12 +401,30 @@ export class SystemRowComponent {
           return translate('friendRemovedOther');
         case 'GROUP_CREATED':
           return translate('groupCreated');
-        case 'GROUP_JOINED':
-          return translate('groupJoined');
-        case 'GROUP_LEFT':
-          return translate(
-            this.isCurrentUser(body.member) ? 'groupLeftSelf' : 'groupLeft',
+        case 'GROUP_JOINED': {
+          const names = this.formatBatchMemberNames(body.members, name);
+          return this.formatBatchAction(
+            names,
+            body.totalCount,
+            body.members.length,
+            'groupJoined',
           );
+        }
+        case 'GROUP_LEFT': {
+          if (
+            body.totalCount === 1 &&
+            body.members.some((m) => this.isCurrentUser(m))
+          ) {
+            return translate('groupLeftSelf');
+          }
+          const names = this.formatBatchMemberNames(body.members, name);
+          return this.formatBatchAction(
+            names,
+            body.totalCount,
+            body.members.length,
+            'groupLeft',
+          );
+        }
         case 'GROUP_DISSOLVED':
           return translate('groupDissolved');
         case 'GROUP_ADMIN_GRANTED':
@@ -385,6 +439,61 @@ export class SystemRowComponent {
       return this.fallback('failed to render system message', error);
     }
   });
+
+  readonly labelParts = computed(
+    (): { names: string; suffix: string } | null => {
+      const body = this.event();
+      if (!body) return null;
+      if (body.type !== 'GROUP_JOINED' && body.type !== 'GROUP_LEFT')
+        return null;
+      if (
+        body.type === 'GROUP_LEFT' &&
+        body.totalCount === 1 &&
+        body.members.some((m) => this.isCurrentUser(m))
+      ) {
+        return null;
+      }
+      this.language.lang();
+      const firstName = this.participantName();
+      const names = this.formatBatchMemberNames(body.members, firstName);
+      const key = body.type === 'GROUP_JOINED' ? 'groupJoined' : 'groupLeft';
+      const full = this.formatBatchAction(
+        '',
+        body.totalCount,
+        body.members.length,
+        key,
+      ).trim();
+      return { names, suffix: full };
+    },
+  );
+
+  private formatBatchMemberNames(
+    members: readonly SystemEventAddress[],
+    firstName: string,
+  ): string {
+    if (members.length === 1) return firstName;
+    const rest = members.slice(1).map((m) => displayUserAccount(m));
+    return [firstName, ...rest].join('、');
+  }
+
+  private formatBatchAction(
+    names: string,
+    totalCount: number,
+    shownCount: number,
+    key: 'groupJoined' | 'groupLeft',
+  ): string {
+    const base = this.transloco.translate(`chat.systemMessage.${key}`, {
+      name: names,
+    });
+    if (totalCount <= shownCount) return base;
+    const isZh = this.language.lang().startsWith('zh');
+    const extra = isZh
+      ? `等 ${totalCount} 人`
+      : ` and ${totalCount - shownCount} others`;
+    return names
+      ? `${names}${extra} ${base.replace(names, '').trim()}`
+      : `${extra.trim()} ${base.trim()}`;
+  }
 
   private fallback(reason: string, error?: unknown): string {
     console.error(`[system-message] ${reason}`, error ?? this.data().text);

@@ -2,7 +2,10 @@ import { TestBed } from '@angular/core/testing';
 import { firstValueFrom } from 'rxjs';
 import { PlaygroundSocialState } from './playground-social-state';
 import { PlaygroundUserService } from './playground-user.mock';
-import { PlaygroundProfiles } from './playground-profile.mock';
+import {
+  PlaygroundMemberProfiles,
+  PlaygroundProfiles,
+} from './playground-profile.mock';
 import { playgroundAvatars } from './playground-avatars';
 
 describe('playground self profile', () => {
@@ -53,6 +56,30 @@ describe('playground self profile', () => {
         );
       }
     }
+  });
+
+  it('paginates roster cursors without duplicating members and respects exclusions', async () => {
+    const members = TestBed.inject(PlaygroundMemberProfiles);
+    const exclude = { account: 'me', namespaceId: 0 };
+    const all = await members.queryPage(2, { take: 100, exclude });
+    expect(all.length).toBeGreaterThan(1);
+    expect(all.some((member) => member.account === 'me')).toBe(false);
+    const collected = [];
+    let cursor: string | null = null;
+    do {
+      const page = await members.queryRosterPage(2, {
+        take: 1,
+        cursor,
+        exclude,
+      });
+      collected.push(...page.items);
+      if (page.nextCursor) expect(page.nextCursor).not.toBe(cursor);
+      cursor = page.nextCursor;
+    } while (cursor);
+    expect(collected).toEqual(all);
+    expect(
+      await members.queryRosterPage(2, { take: 10, search: 'no-such-member' }),
+    ).toEqual({ items: [], nextCursor: null });
   });
 
   it('starts self without a profile and publishes each save as a new revision', async () => {

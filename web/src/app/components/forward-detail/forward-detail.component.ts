@@ -348,12 +348,12 @@ export class ForwardDetailComponent implements OnInit, OnDestroy {
       createdAtMs: message.sentAt,
       quote: quoteTarget
         ? {
+            kind: 'snapshot',
             author: quoteTarget.profile.displayName,
             body: snapshotPreview(quoteTarget),
-            seq: message.quoteTargetId,
           }
         : message.quoteTargetId !== undefined
-          ? { seq: 0, status: 'NOT_FOUND' }
+          ? { kind: 'unavailable', seq: 0, status: 'NOT_FOUND' }
           : undefined,
     };
   }

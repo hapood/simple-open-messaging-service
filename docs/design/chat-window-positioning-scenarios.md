@@ -1,5 +1,12 @@
 # Window positioning scenarios
 
+> Superseded positioning target:
+> [Gap-driven chat message windows](chat-gap-driven-message-window.md) uses
+> transaction-local dynamic references for ordinary reading, separate explicit
+> scroll/pin paths, and scroll animation independent of the spinner batch's
+> coordinated canvas movement. New messages appear immediately. The selector
+> table below records the intermediate implementation, not the new contract.
+
 > Design revision: [Chat window loading and sending-task presentation](chat-window-loading-and-sending-tasks.md)
 > supersedes the pending-in-history policies below. Sending tasks move to the
 > header/task panel and contribute no history geometry. The pending-height branch

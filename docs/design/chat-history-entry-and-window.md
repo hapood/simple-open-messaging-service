@@ -1,5 +1,12 @@
 # Chat history entry and message windows
 
+> Superseded target: [Gap-driven chat message windows](chat-gap-driven-message-window.md)
+> now defines entry readiness, local-only checkpoints, unified gap loading, head
+> delivery, follow state, positioning, animation, and item retirement. The
+> implementation notes and earlier decisions below are historical context,
+> including the section previously titled "Current entry contract". They must
+> not override the new target.
+
 > The later [window loading and sending-task design](chat-window-loading-and-sending-tasks.md)
 > supersedes this document's optimistic/pending-in-history presentation and
 > skeleton rendering details. Cache entry, finite suffix requests, gap replacement,
@@ -349,8 +356,9 @@ not mean the user is at the bottom of the viewport.
 
 
 - At the bottom, follow the arrival unless its measured added height exceeds
-  70% of the viewport. The height rule and its fade consequence are defined in
-  [chat-tail-sending-cue.md](chat-tail-sending-cue.md).
+  70% of the viewport. The current growth and follow rules are defined in
+  [gap-driven chat message windows](chat-gap-driven-message-window.md#6-bottom-follow-state-and-the-large-arrival-exception);
+  new message content appears immediately.
 - A batch above that limit suppresses following **for that batch only**,
   preserving the existing reading position as far as geometry allows.
 - There is no sticky unpinned state: on the next update, attachment is determined

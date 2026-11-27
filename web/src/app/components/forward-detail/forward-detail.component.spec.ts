@@ -197,17 +197,25 @@ describe('forward reply display', () => {
     });
   });
   it('preserves an absent quote without enabling navigation', () => {
-    expect(project(reply(0)).quote).toEqual({ seq: 0, status: 'NOT_FOUND' });
+    expect(project(reply(0)).quote).toEqual({
+      kind: 'unavailable',
+      seq: 0,
+      status: 'NOT_FOUND',
+    });
   });
-  it('resolves a selected target in the enclosing bundle', () => {
+  it('resolves a selected target as a non-interactive snapshot in the enclosing bundle', () => {
     expect(project(reply(1)).quote).toEqual({
-      seq: 1,
+      kind: 'snapshot',
       author: 'alice',
       body: 'original',
     });
   });
   it('displays an unresolved positive reference as unavailable', () => {
-    expect(project(reply(99)).quote).toEqual({ seq: 0, status: 'NOT_FOUND' });
+    expect(project(reply(99)).quote).toEqual({
+      kind: 'unavailable',
+      seq: 0,
+      status: 'NOT_FOUND',
+    });
   });
   it('keeps ordinary text distinct from an absent quote', () => {
     expect(project(reply()).quote).toBeUndefined();

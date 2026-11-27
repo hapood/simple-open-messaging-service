@@ -1,5 +1,9 @@
 import type { CbItem } from '../../lib/chat-box/chat-box-scroller';
-import type { ChatItemData, ChatMsgData } from './chat-item';
+import type {
+  ChatItemData,
+  ChatMsgData,
+  SystemMessageItem,
+} from './chat-item';
 import { computeRowFlags } from './create-item';
 import { projectMessageContent } from './media-content';
 
@@ -7,7 +11,7 @@ function message(
   msgId: number,
   creator: number,
   contentType: ChatMsgData['contentType'] = 'PURE_TEXT',
-): CbItem<ChatItemData> {
+): CbItem<ChatMsgData | SystemMessageItem> {
   if (contentType === 'SYSTEM')
     return {
       id: msgId,

@@ -15,4 +15,8 @@ export interface PreparedMessageEntry {
   readonly hasCachedMessages: boolean;
   /** The retained seed contains the exact known head captured during entry preparation. */
   readonly hasCachedHead: boolean;
+  /** True when the frozen read-position seam (R and R+1) is locally ready without a skeleton. */
+  readonly seamReady: boolean;
+  /** True when both R=0 and knownEndSeq=0 (confirmed empty conversation). */
+  readonly empty: boolean;
 }

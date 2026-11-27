@@ -7,6 +7,9 @@ import {
   vi,
   type Mock,
 } from 'vitest';
+import type { ChatItemData, ChatMsgData } from '../message-cards/chat-item';
+import type { CbItem } from '../../lib/chat-box/chat-box-scroller';
+const msgData = (data: ChatItemData): ChatMsgData => data as ChatMsgData;
 /**
  * HttpItemSource unit tests — production data layer, signal-only live contract (no DOM, no kernel).
  *
@@ -132,7 +135,11 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
         { provide: BrowserSendFiles, useValue: { release: vi.fn() } },
         {
           provide: SessionLifecycleService,
-          useValue: { invalidated$: NEVER, capture: () => ({}), assertCurrent: vi.fn() },
+          useValue: {
+            invalidated$: NEVER,
+            capture: () => ({}),
+            assertCurrent: vi.fn(),
+          },
         },
       ],
     });
@@ -386,11 +393,14 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
           },
         ),
     } satisfies Pick<ProfileRepository, 'watch'>;
-    vi.spyOn(TestBed.inject(ProfileWatchService), 'watchProfile').mockImplementation(
-      resolutionRepo?.watch ?? profileRepo.watch,
-    );
+    vi.spyOn(
+      TestBed.inject(ProfileWatchService),
+      'watchProfile',
+    ).mockImplementation(resolutionRepo?.watch ?? profileRepo.watch);
     const activeProfileRepo = TestBed.inject(ProfileRepository);
     const newerAvailable = vi.fn().mockName('onNewerAvailable');
+    const intervalCommitted = vi.fn();
+    const intervalStarted = vi.fn(() => intervalCommitted);
     const createSource = () =>
       new HttpItemSource(
         groupRoster ? groupConv(tid) : conv(tid),
@@ -402,6 +412,7 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
           onQuoteDeleted,
           onQuoteUpdated,
           onNewerAvailable: newerAvailable,
+          onHistoryIntervalStarted: intervalStarted,
         },
         messages as never,
         activeProfileRepo,
@@ -422,6 +433,8 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
       reconnectSignal$,
       mediaStatusLive$,
       newerAvailable,
+      intervalCommitted,
+      intervalStarted,
       outbox,
       queryUserInfo,
       messages,
@@ -444,6 +457,8 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
         lastReadSeq: 0,
         hasCachedMessages: true,
         hasCachedHead: end === 10,
+        seamReady: true,
+        empty: false,
       });
       const items = await src.loadWindow({ kind: 'cached', count: 50 });
       expect(items[0].boundary).toBe(end === 10 ? 'newest' : undefined);
@@ -470,42 +485,138 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
 
   it('cold entry waits for a committed real page without exposing a whole-thread gap', async () => {
     const { src, repo } = setup({ code: 0, message: 'ok', data: [] });
-    const gap = { kind: 'serverGap' as const, left: 0, right: 100, state: 'SERVER_PENDING' as const };
-    vi.mocked(repo.queryBrowserMessageHistory).mockResolvedValue({ items: [gap], hasOlder: false, hasNewer: false, failed: false });
-    const pages = new Subject<{ left: number; right: number; items: import('../../services/message-repository.service').MessageHistorySourceItem[] }>();
+    const gap = {
+      kind: 'serverGap' as const,
+      left: 0,
+      right: 100,
+      state: 'SERVER_PENDING' as const,
+    };
+    vi.mocked(repo.queryBrowserMessageHistory).mockResolvedValue({
+      items: [gap],
+      hasOlder: false,
+      hasNewer: false,
+      failed: false,
+    });
+    const pages = new Subject<{
+      left: number;
+      right: number;
+      items: import('../../services/message-repository.service').MessageHistorySourceItem[];
+    }>();
     vi.mocked(repo.watchHistoryInterval).mockReturnValue(pages);
     let resolved = false;
-    const load = src.loadWindow({ kind: 'latest', count: 50 }).then((items) => { resolved = true; return items; });
+    const load = src.loadWindow({ kind: 'latest', count: 50 }).then((items) => {
+      resolved = true;
+      return items;
+    });
     await vi.waitFor(() =>
       expect(repo.watchHistoryInterval).toHaveBeenCalledWith(42, 0, 100),
     );
     expect(resolved).toBe(false);
-    pages.next({ left: 90, right: 100, items: [{ kind: 'message', message: row(100, 2) }] });
+    pages.next({
+      left: 90,
+      right: 100,
+      items: [{ kind: 'message', message: row(100, 2) }],
+    });
     const items = await load;
-    expect(items.map((item) => item.data.serverGap ?? item.id)).toEqual([
-      { left: 0, right: 90, state: 'SERVER_PENDING' }, 100,
-    ]);
+    expect(
+      items.map((item) =>
+        item.data.type === 'serverGap'
+          ? {
+              left: item.data.left,
+              right: item.data.right,
+              state: item.data.state,
+            }
+          : item.id,
+      ),
+    ).toEqual([{ left: 0, right: 90, state: 'SERVER_PENDING' }, 100]);
     expect(items[0].displayInterval).toEqual({ left: 0, right: 90 });
     expect(pages.observed).toBe(false);
     src.destroy();
   });
 
+  it.each(['empty', 'gap', 'deleted'] as const)(
+    'reports committed %s scans without requiring message bodies',
+    async (kind) => {
+      const { src, repo, intervalCommitted, intervalStarted, getMessageDeletions } =
+        setup({ code: 0, message: 'ok', data: [] });
+      const pages = new Subject<import('../../services/message-repository.service').MessageHistoryIntervalPage>();
+      vi.mocked(repo.watchHistoryInterval).mockReturnValue(pages);
+      const gap: CbItem<ChatItemData> = {
+        id: -1,
+        displayInterval: { left: 10, right: 20 },
+        data: { type: 'serverGap', msgId: 20, left: 10, right: 20, state: 'SERVER_PENDING' },
+      };
+      if (kind === 'deleted') getMessageDeletions.mockResolvedValue([{ seq: 20, type: 'USER_RETRACTION' }]);
+      const sub = src.watchInterval(gap).subscribe();
+      expect(intervalStarted).toHaveBeenCalledOnce();
+      expect(intervalCommitted).not.toHaveBeenCalled();
+      pages.next({ left: 15, right: 20, items: kind === 'empty' ? [] : kind === 'gap'
+        ? [{ kind: 'serverGap', left: 15, right: 20, state: 'SERVER_PENDING' }]
+        : [{ kind: 'message', message: row(20, 2) }] });
+      await vi.waitFor(() => expect(intervalCommitted).toHaveBeenCalledExactlyOnceWith(15, 20));
+      sub.unsubscribe();
+      pages.next({ left: 10, right: 20, items: [] });
+      expect(intervalCommitted).toHaveBeenCalledOnce();
+      src.destroy();
+    },
+  );
+
+  it('failed or destroyed interval consumers cannot publish completion', () => {
+    const { src, repo, intervalCommitted } = setup({ code: 0, message: 'ok', data: [] });
+    const pages = new Subject<import('../../services/message-repository.service').MessageHistoryIntervalPage>();
+    vi.mocked(repo.watchHistoryInterval).mockReturnValue(pages);
+    const gap: CbItem<ChatItemData> = {
+      id: -1, displayInterval: { left: 10, right: 20 },
+      data: { type: 'serverGap', msgId: 20, left: 10, right: 20, state: 'SERVER_PENDING' },
+    };
+    src.watchInterval(gap).subscribe({ error: () => {} });
+    pages.error(new Error('failed'));
+    src.destroy();
+    src.watchInterval(gap).subscribe();
+    expect(intervalCommitted).not.toHaveBeenCalled();
+  });
+
   it('interval projection keeps residual gaps and cancels on source teardown', async () => {
-    const { src, repo } = setup({ code: 0, message: 'ok', data: [row(101, 2)] });
+    const { src, repo } = setup({
+      code: 0,
+      message: 'ok',
+      data: [row(101, 2)],
+    });
     vi.mocked(repo.queryBrowserMessageHistory).mockResolvedValue({
-      items: [{ kind: 'serverGap', left: 0, right: 100, state: 'SERVER_PENDING' }, { kind: 'message', message: row(101, 2) }],
-      hasOlder: false, hasNewer: false, failed: false,
+      items: [
+        { kind: 'serverGap', left: 0, right: 100, state: 'SERVER_PENDING' },
+        { kind: 'message', message: row(101, 2) },
+      ],
+      hasOlder: false,
+      hasNewer: false,
+      failed: false,
     });
     const gap = (await src.loadWindow({ kind: 'latest', count: 50 }))[0];
-    const pages = new Subject<{ left: number; right: number; items: import('../../services/message-repository.service').MessageHistorySourceItem[] }>();
+    const pages = new Subject<{
+      left: number;
+      right: number;
+      items: import('../../services/message-repository.service').MessageHistorySourceItem[];
+    }>();
     vi.mocked(repo.watchHistoryInterval).mockReturnValue(pages);
     const deliver = vi.fn();
     src.watchInterval(gap).subscribe(deliver);
-    pages.next({ left: 0, right: 100, items: [{ kind: 'serverGap', left: 0, right: 99, state: 'SERVER_PENDING' }, { kind: 'message', message: row(100, 2) }] });
+    pages.next({
+      left: 0,
+      right: 100,
+      items: [
+        { kind: 'serverGap', left: 0, right: 99, state: 'SERVER_PENDING' },
+        { kind: 'message', message: row(100, 2) },
+      ],
+    });
     for (let i = 0; i < 30; i++) await Promise.resolve();
     expect(deliver).toHaveBeenCalledTimes(1);
     const items = deliver.mock.calls[0][0];
-    expect(items.map((item: { displayInterval?: unknown; id: number }) => item.displayInterval ?? item.id)).toEqual([{ left: 0, right: 99 }, 100]);
+    expect(
+      items.map(
+        (item: { displayInterval?: unknown; id: number }) =>
+          item.displayInterval ?? item.id,
+      ),
+    ).toEqual([{ left: 0, right: 99 }, 100]);
     src.destroy();
     expect(pages.observed).toBe(false);
   });
@@ -519,12 +630,18 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
       if (host === 'native') nativeWindow.__TAURI_INTERNALS__ = {};
       const { src, repo } = setup({ code: 0, message: 'ok', data: [] });
       try {
-        const query = vi.mocked(host === 'native'
-          ? repo.queryNativeMessageHistory
-          : repo.queryBrowserMessageHistory);
-        type Result = Awaited<ReturnType<typeof repo.queryBrowserMessageHistory>>;
+        const query = vi.mocked(
+          host === 'native'
+            ? repo.queryNativeMessageHistory
+            : repo.queryBrowserMessageHistory,
+        );
+        type Result = Awaited<
+          ReturnType<typeof repo.queryBrowserMessageHistory>
+        >;
         const pending: Array<(result: Result) => void> = [];
-        query.mockImplementation(() => new Promise<Result>((resolve) => pending.push(resolve)));
+        query.mockImplementation(
+          () => new Promise<Result>((resolve) => pending.push(resolve)),
+        );
         const retiredDelivery = vi.fn();
         const siblingDelivery = vi.fn();
         const retired = src.requestOlder(101, 50).subscribe(retiredDelivery);
@@ -534,13 +651,20 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
         retired.unsubscribe();
         expect(retiredSignal.aborted).toBe(true);
         expect(siblingSignal.aborted).toBe(false);
-        pending[0]({ items: [], hasOlder: false, hasNewer: false, failed: false });
+        pending[0]({
+          items: [],
+          hasOlder: false,
+          hasNewer: false,
+          failed: false,
+        });
         await Promise.resolve();
         await Promise.resolve();
         expect(retiredDelivery).not.toHaveBeenCalled();
         pending[1]({
           items: [{ kind: 'message', message: row(50, 2) }],
-          hasOlder: true, hasNewer: true, failed: false,
+          hasOlder: true,
+          hasNewer: true,
+          failed: false,
         });
         await vi.waitFor(() => expect(siblingDelivery).toHaveBeenCalledOnce());
         expect(siblingDelivery.mock.calls[0][0].items[0].id).toBe(50);
@@ -595,6 +719,8 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
       lastReadSeq: 0,
       hasCachedMessages: false,
       hasCachedHead: false,
+      seamReady: true,
+      empty: true,
     });
     src.destroy();
   });
@@ -778,7 +904,10 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
         avatarBlob: null,
       }),
     );
-    const accountProfiles = { watch: resolve } satisfies Pick<ProfileRepository, 'watch'>;
+    const accountProfiles = { watch: resolve } satisfies Pick<
+      ProfileRepository,
+      'watch'
+    >;
     const { src } = setup(
       { code: 0, message: 'ok', data: [remoteGroupMessage(1)] },
       { profileRepository: accountProfiles, groupRoster: true },
@@ -807,7 +936,10 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
 
   it('degrades a profileRev 0 author to the account identity without resolving a demand', async () => {
     const resolve = vi.fn().mockName('resolve');
-    const accountProfiles = { watch: resolve } satisfies Pick<ProfileRepository, 'watch'>;
+    const accountProfiles = { watch: resolve } satisfies Pick<
+      ProfileRepository,
+      'watch'
+    >;
     const message = {
       ...remoteGroupMessage(1),
       profileRev: 0,
@@ -847,7 +979,10 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
                 avatarBlob: null,
               }),
       );
-    const accountProfiles = { watch: resolve } satisfies Pick<ProfileRepository, 'watch'>;
+    const accountProfiles = { watch: resolve } satisfies Pick<
+      ProfileRepository,
+      'watch'
+    >;
     const { src } = setup(
       { code: 0, message: 'ok', data: [row(1, 2), remoteGroupMessage(2)] },
       { profileRepository: accountProfiles, groupRoster: true },
@@ -950,7 +1085,12 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
       const { src } = setup({
         code: 0,
         message: 'ok',
-        data: [row(12, 2), legacy, tomb as MessageQueryRow, row(9, 2)],
+        data: [
+          row(12, 2),
+          legacy as unknown as MessageQueryRow,
+          tomb as unknown as MessageQueryRow,
+          row(9, 2),
+        ],
         hasMore: false,
       });
       expect(
@@ -966,6 +1106,75 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
       src.destroy();
     },
   );
+
+  it('rechecks durable body tombs before publishing an already-read history page', async () => {
+    const { src, getMessageDeletions } = setup({
+      code: 0,
+      message: 'ok',
+      data: [row(10, 2), row(11, 2)],
+      hasMore: false,
+    });
+    // The repository page predates the deletion and no live event was observed.
+    getMessageDeletions.mockResolvedValue([
+      { seq: 10, type: 'MODERATION_REMOVAL' },
+    ]);
+    expect(
+      (await src.loadWindow({ kind: 'cached', count: 50 })).map(
+        (item) => item.id,
+      ),
+    ).toEqual([11]);
+    expect(getMessageDeletions).toHaveBeenCalledWith(42, expect.arrayContaining([10, 11]));
+    src.destroy();
+  });
+
+  it('keeps a live tomb authoritative while the durable body recheck is pending', async () => {
+    const { src, getMessageDeletions, deletedLive$ } = setup({
+      code: 0,
+      message: 'ok',
+      data: [row(10, 2)],
+      hasMore: false,
+    });
+    let resolve!: (deletions: []) => void;
+    getMessageDeletions.mockImplementation(
+      () =>
+        new Promise((done) => {
+          resolve = done;
+        }),
+    );
+    const loading = src.loadWindow({ kind: 'cached', count: 50 });
+    await vi.waitFor(() => expect(resolve).toBeDefined());
+    deletedLive$.next({
+      threadId: 42,
+      deletions: [{ seq: 10, type: 'USER_RETRACTION' }],
+    });
+    resolve([]);
+    expect(await loading).toEqual([]);
+    src.destroy();
+  });
+
+  it('does not publish a late durable body recheck after source destruction', async () => {
+    const { src, getMessageDeletions } = setup({
+      code: 0,
+      message: 'ok',
+      data: [row(10, 2)],
+      hasMore: false,
+    });
+    let resolve!: (deletions: []) => void;
+    getMessageDeletions.mockImplementation(
+      () =>
+        new Promise((done) => {
+          resolve = done;
+        }),
+    );
+    const loading = src.loadWindow({ kind: 'cached', count: 50 });
+    const rejected = expect(loading).rejects.toMatchObject({
+      name: 'AbortError',
+    });
+    await vi.waitFor(() => expect(resolve).toBeDefined());
+    src.destroy();
+    resolve([]);
+    await rejected;
+  });
 
   it('does not rehydrate a body after its mounted deletion notification', async () => {
     const { src, deletedLive$ } = setup({
@@ -1505,14 +1714,17 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
 
     const items = await src.loadWindow({ kind: 'cached', count: 50 });
 
-    expect(items[0].data.text).toBe(content);
+    expect(msgData(items[0].data).text).toBe(content);
   });
 
   it('loads the confirmed first message without treating a live signal as a history mutation', async () => {
     const cid = 'b3f4a1e2-1c2d-4e3f-8a9b-0c1d2e3f4a5b';
     const echo = row(100, 1, cid);
     const { src, liveSignal$ } = setup({
-      code: 0, message: 'ok', data: [echo], hasMore: false,
+      code: 0,
+      message: 'ok',
+      data: [echo],
+      hasMore: false,
     });
     liveSignal$.next({ threadId: 42, seq: 100 });
     const items = await src.loadWindow({ kind: 'cached', count: 50 });
@@ -1551,7 +1763,7 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
     src.finishLocalInit(undefined);
 
     expect(items.map((item) => item.id)).toEqual([100]);
-    expect(items[0].data.name).toBe('Alice');
+    expect(msgData(items[0].data).name).toBe('Alice');
     expect(queryUserInfo).not.toHaveBeenCalled();
   });
 
@@ -1628,6 +1840,7 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
     });
     getMessageByOrigin.mockResolvedValue(undefined);
     const unregister = src.mountQuote(101, {
+      kind: 'jumpable',
       anchor: { kind: 'origin', namespaceId: 3, originSeq: 4 },
     });
     await vi.waitFor(() => expect(getMessageByOrigin).toHaveBeenCalledOnce());
@@ -1661,12 +1874,16 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
       { seq: 44, type: 'MODERATION_REMOVAL' },
     ]);
     src.mountQuote(101, {
+      kind: 'jumpable',
       anchor: { kind: 'origin', namespaceId: 3, originSeq: 4 },
       seq: 44,
       body: 'old',
     });
     await vi.waitFor(() =>
-      expect(onQuoteUpdated).toHaveBeenCalledWith(101, { seq: 44 }),
+      expect(onQuoteUpdated).toHaveBeenCalledWith(101, {
+        kind: 'jumpable',
+        seq: 44,
+      }),
     );
     src.destroy();
   });
@@ -1685,10 +1902,14 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
       return { ...row(44, 1), content: '{"text":"stale"}' };
     });
     src.mountQuote(101, {
+      kind: 'jumpable',
       anchor: { kind: 'origin', namespaceId: 3, originSeq: 4 },
     });
     await vi.waitFor(() =>
-      expect(onQuoteUpdated).toHaveBeenCalledWith(101, { seq: 44 }),
+      expect(onQuoteUpdated).toHaveBeenCalledWith(101, {
+        kind: 'jumpable',
+        seq: 44,
+      }),
     );
     src.destroy();
   });
@@ -1706,6 +1927,7 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
       }),
     );
     const unregister = src.mountQuote(101, {
+      kind: 'jumpable',
       anchor: { kind: 'origin', namespaceId: 3, originSeq: 4 },
     });
     unregister();
@@ -1763,8 +1985,11 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
     ]);
     const items = await src.loadWindow({ kind: 'cached', count: 50 });
     expect(getMessageDeletions).toHaveBeenCalledWith(42, [44]);
-    expect(items[0].data.quote).toEqual({ seq: 44 });
-    expect(items[0].data.text).toBe('reply');
+    expect(msgData(items[0].data).quote).toEqual({
+      kind: 'jumpable',
+      seq: 44,
+    });
+    expect(msgData(items[0].data).text).toBe('reply');
     src.destroy();
   });
 
@@ -1787,8 +2012,9 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
     expect(onQuoteDeleted).toHaveBeenCalledWith(101, 44);
     // A later stale HTTP/cache body cannot restore the preview.
     expect(
-      (await src.loadWindow({ kind: 'cached', count: 50 }))[0].data.quote,
-    ).toEqual({ seq: 44 });
+      msgData((await src.loadWindow({ kind: 'cached', count: 50 }))[0].data)
+        .quote,
+    ).toEqual({ kind: 'jumpable', seq: 44 });
     src.destroy();
     onQuoteDeleted.mockClear();
     deletedLive$.next({
@@ -1812,8 +2038,9 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
       return [];
     });
     expect(
-      (await src.loadWindow({ kind: 'cached', count: 50 }))[0].data.quote,
-    ).toEqual({ seq: 44 });
+      msgData((await src.loadWindow({ kind: 'cached', count: 50 }))[0].data)
+        .quote,
+    ).toEqual({ kind: 'jumpable', seq: 44 });
     src.destroy();
   });
 
@@ -1837,7 +2064,8 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
 
     const items = await src.loadWindow({ kind: 'cached', count: 50 });
 
-    expect(items[0].data.quote).toEqual({
+    expect(msgData(items[0].data).quote).toEqual({
+      kind: 'jumpable',
       anchor: { kind: 'origin', namespaceId: 3, originSeq: 4 },
       seq: 44,
       body: 'original message',
@@ -1861,7 +2089,8 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
 
     const items = await src.loadWindow({ kind: 'cached', count: 50 });
 
-    expect(items[0].data.quote).toEqual({
+    expect(msgData(items[0].data).quote).toEqual({
+      kind: 'jumpable',
       anchor: { kind: 'origin', namespaceId: 3, originSeq: 4 },
       seq: 44,
       body: 'original message',
@@ -1891,8 +2120,8 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
     const items = await src.loadWindow({ kind: 'cached', count: 50 });
 
     expect(items.length).toBe(1);
-    expect(items[0].data.contentType).toBe('AUDIO');
-    expect(items[0].data.images?.[0]).toEqual(
+    expect(msgData(items[0].data).contentType).toBe('AUDIO');
+    expect(msgData(items[0].data).images?.[0]).toEqual(
       expect.objectContaining({
         kind: 'audio',
         src: '/uploads/cas/aa/bb/voice.webm',
@@ -1992,7 +2221,8 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
 
       expect(initial).toHaveLength(2);
       expect(initial[0].id).toBe(Number.MIN_SAFE_INTEGER + 1);
-      expect(initial[0].data.serverGap).toEqual({
+      expect(initial[0].data).toMatchObject({
+        type: 'serverGap',
         left: 20,
         right: 30,
         state: 'SERVER_PENDING',

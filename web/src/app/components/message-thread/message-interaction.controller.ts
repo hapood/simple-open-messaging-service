@@ -56,7 +56,7 @@ export class MessageInteractionController {
     bounds: MessageContextBounds,
     menuItemCount: number,
   ): void {
-    if (item.data.serverGap) return;
+    if (item.data.type === 'serverGap') return;
     const sourceItem = item as CbItem<ChatMsgData>;
     const targetItem = this.targetItem(sourceItem, memberId);
     const position = positionMessageContextMenu(
@@ -107,7 +107,7 @@ export class MessageInteractionController {
   }
 
   toggle(item: CbItem<ChatItemData>, memberId?: number): void {
-    if (item.data.serverGap) return;
+    if (item.data.type === 'serverGap') return;
     const messageItem = item as CbItem<ChatMsgData>;
     if (!canSelectMessage(messageItem.data)) return;
     this.closeContextMenu();

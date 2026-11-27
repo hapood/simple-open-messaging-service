@@ -1,4 +1,5 @@
 import { firstValueFrom } from 'rxjs';
+import { MessageRepository } from '../app/services/message-repository.service';
 import { vi } from 'vitest';
 import { TestBed } from '@angular/core/testing';
 import type { CbItem } from '../app/lib/chat-box/chat-box-scroller';
@@ -21,6 +22,60 @@ function makeAdapter(): PlaygroundMessageThreadAdapter {
 }
 
 describe('PlaygroundMessageThreadAdapter', () => {
+  beforeEach(() => {
+    TestBed.configureTestingModule({
+      providers: [
+        {
+          provide: MessageRepository,
+          useValue: { applyThreadContentHead: vi.fn() },
+        },
+      ],
+    });
+  });
+
+  it('publishes scan coverage after mock history fetch, never on POST, and rejects replaced sources', async () => {
+    const adapter = makeAdapter();
+    adapter.itemCount.set(10);
+    adapter.sourceLatency.set(0);
+    adapter.confirmDelay.set(0);
+    adapter.opponentPushCount.set(0);
+    const committed = vi.fn();
+    const source = adapter.createSource(
+      { threadId: 1 } as ConversationItem,
+      0,
+      {
+        onNewerAvailable: vi.fn(),
+        onHistoryIntervalStarted: () => committed,
+      },
+    ) as MockItemSource;
+    let release!: () => void;
+    source.beforeHistoryScan = () =>
+      new Promise<void>((resolve) => {
+        release = resolve;
+      });
+    await adapter.sendIntent({
+      threadId: 1,
+      clientMessageId: 'interval',
+      item: { type: 'PURE_TEXT', content: 'scan' },
+    });
+    expect(committed).not.toHaveBeenCalled();
+    const result = firstValueFrom(source.requestNewer(10, 50));
+    await vi.waitFor(() => expect(release).toBeDefined());
+    release();
+    expect((await result).kind).toBe('items');
+    expect(committed).toHaveBeenCalledExactlyOnceWith(10, 11);
+    committed.mockClear();
+    source.beforeHistoryScan = () =>
+      new Promise<void>((resolve) => {
+        release = resolve;
+      });
+    const oldScan = source.loadWindow({ kind: 'latest', count: 50 });
+    adapter.createSource({ threadId: 1 } as ConversationItem, 0);
+    release();
+    await oldScan;
+    expect(committed).not.toHaveBeenCalled();
+    source.destroy();
+  });
   it('shares withdrawal facts with live observers and replacement sources without a database', async () => {
     const adapter = makeAdapter();
     adapter.sourceLatency.set(0);
@@ -99,10 +154,16 @@ describe('PlaygroundMessageThreadAdapter', () => {
 
     expect(pushed).toHaveLength(1);
     const data = pushed[0][0].data;
-    expect(data.type === 'msg' ? data.mentionState : undefined).toBe('me');
-    expect(data.type === 'msg' ? data.textSegments?.[0]?.kind : undefined).toBe(
-      'mention',
-    );
+    expect(
+      data.type === 'msg' && 'mentionState' in data
+        ? data.mentionState
+        : undefined,
+    ).toBe('me');
+    expect(
+      data.type === 'msg' && 'textSegments' in data
+        ? data.textSegments?.[0]?.kind
+        : undefined,
+    ).toBe('mention');
     // The preview/unread commit lives in the ticker (tickLiveGroupMessage
     // commits before emitting groupLive$); emitting the event directly tests
     // only the adapter's delivery path. Preview behavior is covered by the
@@ -181,14 +242,14 @@ describe('PlaygroundMessageThreadAdapter', () => {
     await vi.waitFor(async () => {
       const items = await source.getNewer(10, 10);
       expect(items.length).toBe(2);
-      expect(items[0].data.type).toBe('msg');
-      expect(items[0].clientMessageId).toBe('contact-1');
-      expect(JSON.parse(items[0].data.text)).toEqual({
-        account: 'alice', namespaceId: 0, profileRev: 1,
+      const first = items[0].data;
+      if (first.type !== 'msg') throw new Error('expected msg');
+      expect(JSON.parse(first.text)).toEqual({
+        account: 'alice',
+        namespaceId: 0,
+        profileRev: 1,
       });
-      expect(items[0].data.type === 'msg' && items[0].data.contentType).toBe(
-        'CONTACT_CARD',
-      );
+      expect(first.contentType).toBe('CONTACT_CARD');
       expect(items[1].data.type === 'msg' && items[1].data.isSelf).toBe(false);
     });
   });
@@ -204,13 +265,16 @@ describe('PlaygroundMessageThreadAdapter', () => {
     );
 
     const messages = await source.loadWindow({ kind: 'latest', count: 100 });
-    const incoming = messages.filter(
-      (item) => item.data.type === 'msg' && !item.data.isSelf,
-    );
+    const incoming = messages
+      .map((item) => item.data)
+      .filter((data) => data.type === 'msg' && !data.isSelf);
 
-    expect(incoming.every((item) => item.data.isGroupConversation)).toBe(true);
     expect(
-      new Set(incoming.map((item) => item.data.name)).size,
+      incoming.every((data) => data.type === 'msg' && data.isGroupConversation),
+    ).toBe(true);
+    expect(
+      new Set(incoming.map((data) => (data.type === 'msg' ? data.name : '')))
+        .size,
     ).toBeGreaterThan(1);
   });
 

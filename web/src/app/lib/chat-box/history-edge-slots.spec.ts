@@ -5,7 +5,6 @@ const row = (id: number, flags = {}) => ({
   id,
   optimistic: false,
   transient: false,
-  leaving: false,
   ...flags,
 });
 const history = (entry: { id: number }) => entry.id > 0;
@@ -32,7 +31,7 @@ describe('history edge slots', () => {
     });
   });
 
-  it('skips separators, leaving rows, and pending at either edge', () => {
+  it('skips separators and pending at either edge', () => {
     const older = row(10);
     const newer = row(20);
     expect(
@@ -43,7 +42,6 @@ describe('history edge slots', () => {
           older,
           row(15),
           newer,
-          row(21, { leaving: true }),
           row(22, { optimistic: true }),
         ],
         history,
