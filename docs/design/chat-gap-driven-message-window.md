@@ -2,15 +2,17 @@
 
 ## Status and precedence
 
-Status: implemented core design, including required `predestory()` retirement,
-`CbLayoutScheduler` (`idle` / `balancing` / `animating` / `resizing` / `destroyed`),
-single-gap balance admission (closest to viewport center when not pinned, or
-bottom-most when `pinToBottom`), consumer-scoped tomb handoff without gap-to-gap
-inheritance, dual-branch `scrollTop` / `transform` arrival displacement across
-the viewport-height threshold, the shared tail activity row with immediate 3dot
-removal, transient `POST /thread-feed` head `author` propagation, and
-Web/Rust-aligned `evaluateEntrySeam` / `projectLocalInterval` / directional
-`history-interval`. End-to-end device/visual acceptance remains a manual check.
+Status: agreed target design. The message-ID navigation contract, immutable
+geometry snapshots, shared velocity-preserving motion and rebound, immediate
+tail-row appearance/removal, and the deadline-based arrival rule below
+supersede the earlier dual-branch arrival animation and spinner-animation
+batch architecture. There is no 3dot-appearance balance gate or per-element
+spinner canvas animation.
+
+The scroll implementation is organized around
+[`OffsetScrollMotion`](../../web/src/app/lib/chat-box/offset-scroll-motion.ts),
+[immutable layout calculations](../../web/src/app/lib/chat-box/scroll-layout.ts),
+and the [chat-box integration](../../web/src/app/lib/chat-box/chat-box-scroller.ts).
 
 This document is the current target contract for message-window entry, gap
 loading, head notifications, positioning, animation, and item retirement. In
@@ -23,8 +25,8 @@ those areas it supersedes:
   [chat window loading and sending-task presentation](chat-window-loading-and-sending-tasks.md).
 - The arrival, tail presentation, animation, and positioning policies in
   [tail sending cue](chat-tail-sending-cue.md), not task ownership or its non-history
-  identity. Both 3dots occupy one special tail row and share appearance animation;
-  removal is immediate.
+  identity. Both 3dots occupy one special tail row; appearance and removal are
+  immediate, and only the repeating dot pulse is decorative.
 
 Keep the durable range invariants in
 [client message history synchronization](client-message-history-sync.md), the
@@ -55,23 +57,23 @@ defaults must not silently override the requirements in the preceding sections.
 6. Do not keep a permanent positioning component. Ordinary layout preservation
    chooses a temporary reference dynamically; explicit scrolling and bottom
    following do not pass through midpoint anchoring.
-7. Scroll-offset animation is independent from the spinner animation batch.
-   That batch includes the spinner fade and existing messages' canvas-relative
-   layout movement. Never compensate the same scroll displacement twice.
+7. Shared scroll motion owns viewport travel and temporary compensation. Tail
+   rows appear and disappear immediately, without a spinner animation batch or
+   per-element canvas movement. Never compensate the same displacement twice.
 8. On logical removal, call the custom `predestory()` method to stop business
    activity. It preserves the original Angular component and DOM until final
    `destroy()`. The spelling `predestory` is the reviewed API name.
 9. Normal balance has no event-type parameter and commits at most one ready gap
-   per pass. An explicit animation phase prohibits the next balance during 3dot
-   appearance; events set dirty and retain data until the batch completes.
-   Component-local album/selection effects do not hold this gate. No recursive drain.
+   per pass. Synchronous commits are non-reentrant; events retain data and set
+   dirty for a later pass. Shared motion, rebound, dot pulses, and component-local
+   album/selection effects never gate balance. No recursive drain.
 10. Initial and special window loading bypass ordinary balance, reuse the tomb
     application/handoff helpers, and retain their explicit target positioning.
     Scroll animation remains interruptible independently of item replacement.
-11. New message bodies have no entry fade/scale. Both 3dots share coordinated
-    fade-in and canvas-relative movement of existing messages; disappearance is
-    immediate. Keep interruptible scroll animation, remove spring/elastic effects,
-    and correct post-removal position only for actual viewport blank space.
+11. New message bodies have no entry fade/scale. Both 3dots appear and disappear
+    immediately; only their repeating pulse is decorative. Keep interruptible
+    shared scroll motion, remove spring/elastic effects, and correct post-removal
+    position only for actual viewport blank space.
 12. Pic/message components own internal size and selection animations, including
     rAF, cancellation, and completion. Commit final outer geometry once; local
     effects do not block balance. Sender-preview and overlapping-avatar state is
@@ -197,9 +199,29 @@ head reconciliation may entry establish bottom following.
 
 ### 3.3 Explicit navigation
 
-- A mounted message/album member needs only a target offset and scroll animation.
+- The public `smoothScrollToMessage` request takes a message ID and a nonnegative
+  overscroll distance. Do not retain index-based or explicit-alignment scroll
+  compatibility entry points; unread navigation uses the same request with zero
+  overscroll. Explicit alignment belongs to initial window placement, not a
+  parallel scrolling API. Search navigation uses an explicit default small-reveal
+  constant of 20 CSS px, shared with oversized-arrival reveal; callers may still
+  request zero overscroll. Resolve identity and geometry outside the motion layer;
+  callers do not supply a component, mutable entry, or animation direction.
+- Resolve any member ID of a merged message/album to its mounted presentation,
+  not only the representative/head ID. Preserve the request through optimistic
+  confirmation by reconciling the optimistic identity with the confirmed member
+  ID; confirmation must not create a second jump or lose the target.
+- A loaded target is resolved against current mounted geometry. With zero
+  overscroll, a fully visible target causes no movement. Otherwise compute the
+  offset needed to reveal it, subject to the legal range. For positive overscroll,
+  choose the movement direction from the target midpoint relative to the viewport
+  midpoint, then keep that direction fixed for this request across balances and
+  retargeting; do not flip it as the target passes the midpoint. At coincident
+  midpoints use a deterministic tie-break. Clamp the final offset to valid geometry.
 - An unmounted target replaces the message window, retains the conversation and
   composer, and uses the whole-window skeleton while loading around the target.
+  Resolve its geometry and the request's direction when the target is first
+  available, then submit only the resolved final offset to shared motion.
 - Explicit `scrollToBottom` loads the latest window, using HTTP when necessary,
   if the actual latest content is not mounted. Reaching the geometric end of an
   arbitrary history window is not an equivalent operation.
@@ -212,9 +234,11 @@ head reconciliation may entry establish bottom following.
 ### 3.4 Initial and special loading bypass balance
 
 Initial loading and special whole-window loads commit through their existing
-explicit-positioning path, not ordinary balance. For entry/around loading, center
-the starting target where possible; zero, missing targets, and explicit latest
-navigation retain their distinct boundary/positioning rules above.
+explicit-positioning path, not ordinary balance. For read-position entry, center
+the starting target where possible. Public message-ID navigation uses section
+3.3's reveal/overscroll contract after loading, rather than unconditional centering;
+zero, missing targets, and explicit latest navigation retain their distinct
+boundary/positioning rules above.
 
 Before positioning or publishing visibility, reuse the same tomb helpers as
 ordinary balance: suppress deleted incoming bodies, replace already displayed
@@ -266,10 +290,11 @@ Before consuming a ready page, check:
 1. The binding/window and logical gap consumer are still current.
 2. The result's bounds still apply to the current interval projection.
 3. The gap is in the replacement region, or qualifies for active live-tail follow.
-4. No initialization, layout commit, or spinner animation prohibits balance.
+4. Initialization is complete and no synchronous layout commit is in progress.
+   Motion, rebound, and decorative dot pulses do not prohibit balance.
 
-A result waiting only for the animation gate stays ready in its component. Use
-that result directly when admitted; do not unconditionally re-query it. Apply
+A result waiting for commit admission stays ready in its component. Use that
+result directly when admitted; do not unconditionally re-query it. Apply
 all tombs handed to the component before returning its items to the kernel.
 Do not start a sibling query that overwrites an unconsumed ready scan; coalesce
 later availability until the ready result is consumed or discarded.
@@ -311,20 +336,16 @@ facts with their owner: ready pages on gaps, tombs in the chatbox pending map,
 heads on the window coordinator, and pending local reads/height changes on their
 existing consumers. Dirty is a wake flag, not a substitute for that data.
 
-Use an explicit layout phase (conceptually idle, balancing, animating) separate
-from initialization/window lifetime. A 3dot appearance batch includes existing
-messages' coordinated canvas movement. Album and selection effects stay component-local.
-Do not count per-element animation starts and ends to decide whether balance is
-allowed. An immediate 3dot removal is a synchronous gated layout commit, not an
-animation phase.
+Keep synchronous layout admission separate from initialization/window lifetime
+and from motion lifetime. A balance commit is non-reentrant; there is no
+`animating` phase that waits for 3dots, shared motion, or rebound. Both tail-row
+appearance and removal commit immediately when layout admission permits.
+Album and selection effects stay component-local.
 
-Keep a generic finite animation timer and completion mechanism. Arm it for actual
-cross-message appearance work, never as a delay for component-local animation,
-message rendering, or 3dot removal.
-Begin the gate before the first animation frame; both normal completion and timer
-fallback finish final presentation/retirement exactly once before reopening it.
-Teardown cancels the timer, and late completions cannot affect a new window.
-A paused background rAF or missing animation event must not strand the gate.
+Do not count animation starts/ends or arm a spinner-batch timer to decide when
+balance is allowed. A paused rAF or missing animation event cannot strand layout
+admission. The fixed arrival deadline selects a motion target; it does not delay
+rendering, measurement, gap replacement, or subsequent balances.
 
 One permitted pass:
 
@@ -340,14 +361,13 @@ One permitted pass:
    restore offset, and truncate against final geometry. New residual gaps read
    committed storage; they do not inherit tomb lists or the previous consumer's
    unprocessed results. Preserve temporary-reference/canvas-origin data before
-   removing entries. Local-only checkpoint work shares this gate.
-5. Publish tomb-safe visibility only after the commit. Message bodies appear
-   immediately; a 3dot appearance batch owns the explicit animation phase until
-   completion. Local pic/selection effects and 3dot removal do not enter that phase.
+   removing entries. Local-only checkpoint work shares this commit admission.
+5. Publish tomb-safe visibility only after the commit. Message bodies and changed
+   3dot visibility appear immediately. Reconcile snapshots and shared motion
+   without waiting for any animation completion.
 6. Retain dirty for other actionable ready gaps or events that arrived during
-   the pass. On animation completion, return to idle and schedule one further
-   pass when dirty. Without an animation, schedule a later pass rather than
-   recursing synchronously.
+   the pass. Return to idle and schedule a later pass when dirty, rather than
+   recursing synchronously or waiting for motion/rebound to finish.
 
 A pass may initiate async work, but neither an unresolved request nor a gap's
 mere presence warrants a busy loop. Ready gaps rejected by region checks must
@@ -356,15 +376,12 @@ all ready gaps in a synchronous recursive drain. Network subscriptions may run
 concurrently; the single-gap limit is a DOM replacement budget, not a requirement
 that only one gap subscription exists.
 
-A synchronous replacement commit is non-reentrant. An admitted 3dot appearance
-batch plays to completion without being interrupted by another ordinary balance
-or user scroll. User scroll still changes the viewport and can cancel the independent
-offset animation; it sets dirty for later balancing. Cancelling or completing
-scroll alone must not release the spinner gate. The animation owner issues one
-completion, not one balance per element.
-Reduced motion/no-effect batches finish the phase without waiting for a missing
-animation event. Binding teardown cancels and disposes everything immediately;
-late animation completions must not unlock a successor window.
+User scroll normally changes the viewport, interrupts shared motion, and sets
+dirty for later balancing. Only compensation-dependent rebound may temporarily
+block user scrolling (section 8.1.1); it never blocks balance. Dot pulses have no
+layout admission or completion ownership. Binding teardown cancels and disposes
+everything immediately; late motion/deadline callbacks must not affect a successor
+window.
 
 ### 4.5 Tomb handling and handoff
 
@@ -452,11 +469,13 @@ must not move existing messages by a fictitious second row height.
 | HTTP/network failure         | Remove failed loading presentation immediately and report once; retain unresolved facts without a tight retry loop. |
 | Cancellation                 | Release the consumer; no network-error toast.                                                                       |
 
-Appearance and removal are isolated layout operations: no checkpoint expansion
-or unrelated trim merely because the tail changed. Appearance owns the finite
-animation gate; removal is immediate when admitted and does not start a timer.
-During an existing appearance batch, retain desired visibility and apply
-it after the gate opens; cancellation and window teardown remain immediate.
+Appearance and removal are immediate, isolated layout operations: no checkpoint
+expansion or unrelated trim merely because the tail changed. Neither starts a
+fade, per-element canvas animation, timer, or balance gate. Capture immutable
+geometry before the change, measure the committed row, and reconcile visual
+position through shared motion/compensation. If a synchronous commit is already
+in progress, retain desired visibility for the next admitted commit, not for an
+animation completion. Only the repeating dot pulse is decorative and paint-only.
 Returned pages use normal one-gap balance. Suppress the corresponding programmatic
 scroll checkpoint, not the user's next real scroll.
 
@@ -519,7 +538,7 @@ feed updates. The avatars represent observed pending senders, not a complete cou
 
 Consume previews only after the kernel commits their message or authoritative
 covered/deleted scan. Receiving a head, writing to the local DB, or holding a ready
-page behind the animation gate is not consumption. Album absorption consumes its
+page awaiting commit admission is not consumption. Album absorption consumes its
 new member seqs, not just the album head. Local task completion alone cannot hide
 a side with unconsumed incoming previews; the shared row remains while either side
 has relevant work. Scope revocation releases this ephemeral state.
@@ -570,17 +589,49 @@ Bottom following is a window intent, not a test of `scrollTop` alone.
   3dot when present, can restore follow; this exception does not make arbitrary
   historical gap bottoms latest boundaries.
 - A large measured arrival is the other explicit exit from follow. Preserve the
-  pre-arrival visual origin and do not start scrolling to the new bottom. Clear
-  follow so a later resize cannot undo the decision.
+  pre-arrival visual origin and use a small reveal rather than chasing the new
+  bottom. Clear follow so a later resize cannot undo the decision. This contract
+  uses the explicit default small-reveal constant of 20 CSS px, also used by
+  search navigation.
 
-Retain the existing 70%-of-viewport growth limit and its short arrival aggregation
-window. Count genuinely new message height, including new album cells, not
-spinner/reserve churn, duplicate pages, tombs, or a remount of cached history.
-Do not bypass the limit by splitting one arriving burst into small deliveries.
-Explicit navigation and first-window positioning are not arrival batches.
+### 6.1 Arrival acceptance, separate from motion
 
-For pinned mutation, preserve the old visual origin using offset/canvas geometry,
-commit the new layout, then start the offset animation if follow is admitted.
+Use a fixed 120ms arrival aggregation window and a growth threshold of 70% of
+viewport **height**, not scroll distance or total content height. Start accounting
+at the eligible pinned latest-gap/new-arrival balance, not from an arbitrary
+scroll frame or every head notification. Subsequent qualifying deliveries in that
+window accumulate without extending its deadline; pagination must not restart
+accounting to bypass the limit. Count genuinely new message height, including
+new album cells, not spinner/reserve churn, duplicate pages, tombs, or a remount
+of cached history. Explicit navigation and first-window positioning are not
+arrival batches.
+
+The follow/arrival policy owns this accounting and the accepted target. The
+fixed 120ms deadline selects the next target from the accumulated growth and
+latest committed geometry. First revalidate window lifetime and pin intention;
+a cancelled follow request must not be revived by a late deadline. If follow
+remains eligible, growth not exceeding the threshold accepts the valid bottom;
+growth exceeding it accepts a small reveal of 20 CSS px, clamped to valid
+geometry, without changing pin intention.
+
+Before that deadline, render and balance normally, preserving visual position,
+but do not accept or dynamically chase each newly observed bottom. Existing
+accepted motion may continue; collecting arrivals is not permission to retarget
+it. At/after the deadline, subsequent eligible arrivals belong to a new fixed
+window rather than extending the previous one. Later balances reconcile geometry
+and compensate visual position without silently accepting more arrival movement.
+Only the next applicable policy decision can change the accepted destination.
+
+The shared motion layer receives only the accepted final offset. It knows
+nothing about arrival windows, the 70% threshold, message IDs, or pin policy.
+At deadline acceptance, retarget existing motion from its current visual position
+without resetting velocity, including when the oversized decision changes the
+required direction. There is no pre-admission bottom-follow animation that must
+be undone when aggregated growth crosses the threshold.
+
+For pinned mutation, preserve the old visual origin using immutable mounted
+geometry and commit the new layout. Arrival collection alone submits no new
+offset; submit the policy-approved final offset only at deadline acceptance.
 Do not first snap to the new bottom, and do not capture a midpoint anchor "just
 in case" the large-arrival rule declines follow.
 
@@ -612,21 +663,52 @@ becomes a stable message anchor. Do not derive compensation by adding unrelated
 
 These are separate paths, not additional anchor corrections:
 
-- Explicit scroll has a target offset and plays the scroll animation after any
-  required loading/mount/measurement.
-- Pinned mutation restores the old visual origin, then follows the new bottom
-  through offset animation if the growth policy allows it.
+- Explicit scroll resolves message identity and overscroll after any required
+  loading/mount/measurement, then supplies a final offset to shared motion.
+- Pinned mutation restores the old visual origin; only the follow/arrival policy's
+  deadline acceptance submits a new arrival target, including the oversized exception.
 
 Neither path computes or restores a midpoint reference. Preserve any translation
 of canvas origin caused by truncation so the starting visual position remains
-continuous without secretly routing through midpoint anchoring.
+continuous without secretly routing through midpoint anchoring. Geometry
+reconciliation preserves an existing request; it does not authorize a new one.
+
+### 7.2.1 Immutable mounted geometry during motion
+
+Capture a lightweight immutable snapshot of the mounted geometry at transaction
+boundaries: copied member IDs, measured positions/sizes, canvas origin, viewport
+and legal offset bounds, and the values needed to recover the presented position.
+Do not retain mutable `Entry` objects, component references, DOM nodes, or mutable
+member arrays as the old geometry. A snapshot is presentation evidence, not a
+second mounted window or a retained message-body cache.
+
+On every balance during motion, rematch old and new geometry by member IDs.
+Account for album merge/split, optimistic-to-confirmed identity reconciliation,
+replacement, and truncation; entry-object identity and an album's representative
+ID are insufficient. Use surviving shared messages to reconcile canvas movement
+and preserve their visual position, then re-resolve the accepted target in the
+new geometry. Explicit requests retain their fixed overscroll direction and
+arrival requests retain their policy-approved destination.
+
+Apply compensation through `scrollTop` within the legal range and a temporary
+transform for any displacement that cannot yet be represented by `scrollTop`.
+Their composition represents one presented offset, not two independent motions.
+There is no per-element spinner layout delta or second compensation path.
+Balance continues while shared motion or rebound is active; only initialization
+and synchronous layout admission constrain commits, never a 3dot appearance gate.
+
+If no shared message survives, do not guess continuity from stale entries or
+transfer a removed message's displacement to an unrelated successor. Snap to a
+valid final state resolved from the latest geometry and current intent, clearing
+obsolete compensation. This is a defined discontinuity fallback, not a reason to
+retain destroyed DOM or replay the previous window's animation.
 
 ### 7.3 Common geometry rules
 
 All height-affecting renders share the geometry and tomb helpers: page mount,
 gap replacement, tomb replacement, album changes, message content resize, and
 relevant viewport/composer reflow. Normal changes are admitted by the explicit
-balance phase gate; callbacks must not bypass it to mutate mounted contents.
+synchronous balance admission; callbacks must not bypass it to mutate mounted contents.
 Initial/special loading uses the independent explicit-positioning path in
 section 3.4. Paint-only changes need no new measurement. An ordinary transaction
 checks truncation against final geometry; special spinner transactions in
@@ -636,6 +718,12 @@ animation lifecycle is not part of kernel admission.
 
 Use integer CSS heights/line heights and `offsetHeight` measurements. Transforms
 are paint-only; never replace measurements with transformed bounding rectangles.
+After pending measurement, development builds may compare the modeled total
+(including structural sentinel height) with DOM `scrollHeight` when content is
+taller than the viewport. A difference greater than one pixel emits a compact
+summary, not a per-row computed-style or bounding-rectangle scan. This validates
+height accounting; it does not estimate heights, correct geometry, or decide
+whether user scrolling is locked.
 Capture new layout in batches. Spinner frames are paint-only. Component-local
 frames operate within committed outer dimensions, without kernel remeasurement.
 A frame callback must not cause an unbounded cycle of mount, immediate source
@@ -643,68 +731,95 @@ delivery, and trim.
 
 ## 8. Scroll, tail appearance, and album layout animation
 
-Messages and new album cells render immediately. There is no standalone message
-entry effect. Existing messages' canvas-relative movement during spinner
-appearance belongs to the spinner animation batch. 3dot removal is immediate. The virtual canvas
-is a coordinate model, not an HTML `<canvas>` requirement; keep one authoritative
-scroll offset.
+Messages and new album cells render immediately, with no standalone entry effect.
+Both 3dot appearance and removal are immediate. Immutable geometry reconciliation
+and shared motion preserve the viewport; there is no spinner animation batch or
+per-element canvas movement. The virtual canvas is a coordinate model, not an
+HTML `<canvas>` requirement; keep one authoritative presented scroll offset.
 
-### 8.1 Scroll-offset animation
+### 8.1 Shared scroll motion
 
-Animate `offset(current) -> offset(target)`. Explicit scroll and bottom follow
-move the viewport through the entire canvas. Do not include this displacement
-in the spinner batch's per-element canvas movement. User input interrupts
-programmatic scrolling. An ordinary explicit message jump does not acquire
-bottom-follow ownership.
+Use one shared, interruptible and retargetable motion layer for explicit scroll,
+accepted arrival movement, and rebound. Its destination input is a final offset
+only; message identity, overscroll direction, follow decisions, and the arrival
+threshold are resolved by its callers. Explicit scroll and bottom follow move
+the viewport through the entire canvas. Apply displacement once through the
+composed `scrollTop`/transform representation, never through per-element spinner
+movement. An ordinary explicit message jump does not acquire bottom-follow ownership.
 
-### 8.2 Shared 3dot appearance
+Retarget from the current presented position and preserve current velocity,
+rather than restarting easing from rest. When a new destination reverses the
+required direction, decelerate before reversing; never flip velocity instantly.
+Geometry compensation changes the coordinate representation without an extra
+visual jump or artificial velocity reset. Do not use browser-native smooth
+scrolling or a separate 180ms transform animation. Temporary transforms and
+`scrollTop` are outputs of the same motion, not independent completion owners.
 
-Use the same rAF appearance contract for both sides of the shared tail row. The
-component owns its fade-in; the kernel coordinates cross-message displacement
-and the finite batch gate. Capture old canvas positions, commit and measure the
-actual shared row height, then move retained messages upward to their resulting
-canvas positions while 3dots fade in. Existing messages remain opaque. Use
-non-overshooting motion, not spring/elastic easing. A second side appearing in
-an already occupied row need not add height or move messages.
+User scroll normally interrupts programmatic motion. The only temporary input
+restriction is the compensation-dependent rebound described below; motion alone
+must not hold the balance gate or block user scrolling.
 
-For a message participating in this spinner batch:
+### 8.1.1 Rebound, resize, and cancellation
 
-```text
-screenY = layoutCanvasY + spinnerLayoutDeltaY - scrollOffset
-```
+Rebound returns temporary out-of-range visual compensation to a valid presented
+offset through the same motion layer. It is not a spring, a separate animation,
+or a layout phase that suspends balance. It remains interruptible and retargetable
+by new requests and geometry. Block user scrolling only while that compensation
+requires it, and release the block as soon as it is no longer needed, rather than
+waiting for an unrelated timer or the entire motion to finish. Determine that
+block from the continuous offset versus its legal clamped offset, not from a
+nonzero transform: browsers can quantize `scrollTop`, and the residual transform
+can merely preserve subpixel paint inside the valid range. Such rounding must
+never block user input or schedule another rebound. Cancellation releases any
+remaining subpixel presentation without leaving a scroll lock.
 
-Initialize `spinnerLayoutDeltaY` from the old presented canvas position minus the
-new layout position, including any canvas-origin change, then animate it to zero.
-Do not include scroll displacement in this delta. If an element has no canvas
-layout change, its delta is zero. Capture and measure at transaction boundaries;
-per-frame work updates presentation without remeasuring layout. Keep integer
-`offsetHeight` geometry; the visual transform may be fractional.
+If a gap fills during rebound, reconcile the immutable snapshots immediately on
+the admitted balance. When the new scroll range can represent the compensated
+position, transfer the representation to `scrollTop` and end rebound without
+changing the visual position or resetting velocity. Any still-needed travel to
+the accepted destination continues in shared motion. Gap fill and rebound
+completion do not clear or reacquire follow: pin intention is governed by
+section 6, independently of compensation.
 
-Appearance prohibits ordinary balance from the first-frame wait until fade-in
-and all coordinated message movement finish. They share one finite timer and
-completion owner, not per-message locks. Appearance does not itself request
-balance. The repeating 3dot pulse is paint-only and does not extend this batch.
-Removal has no fade or reverse displacement animation.
+Viewport resizing cancels travel and snaps to the valid final state resolved
+from the latest measured geometry and current accepted intent. Clear obsolete
+transforms and input blocking; never snap to a cached pre-resize offset or revive
+a follow intention cancelled by user input. Window replacement, unbind, and
+destruction cancel frames, timers, and compensation. Release owned transform,
+overflow, and scrollbar-gutter styles explicitly and idempotently, even when the
+viewport is hidden or detached; a successful scroll write is not a prerequisite
+for releasing presentation. Teardown must not schedule work or change pin
+intention in a successor window.
 
-Scroll and this spinner batch share rAF scheduling but have independent
-completion ownership. Interrupting or retargeting scroll cannot cancel either
-the spinner fade or its canvas-relative message movement, or release the gate.
-New facts/results stay with their owners and set dirty while the gate is held.
+### 8.2 Immediate shared 3dot presentation
 
-### 8.3 Finite timer and completion
+Commit either side's appearance or disappearance immediately, with no fade-in,
+fade-out, reverse displacement, or per-element canvas animation. Capture an
+immutable pre-change snapshot, measure the actual shared row height once, and
+reconcile the resulting geometry through the same shared motion as other layout
+changes. A second side appearing in an occupied row must not add a fictitious
+second row height or move messages when geometry is unchanged.
 
-The common animation mechanism owns one finite timer and one idempotent finish
-operation per admitted animation batch, not a counter of individual effects.
-Normal completion and timer fallback converge on the same finalization: apply
-the spinner's final presentation and all retained messages' final canvas positions,
-clear their temporary deltas, return to idle, and
-schedule one later balance only if dirty. The timer must cover a suspended first rAF as
-well as missing completion events. Messages rendered without a spinner effect
-must not start an empty animation timer or incur an artificial delay.
+The repeating dot pulse is decorative and paint-only. It owns no balance gate,
+arrival deadline, motion completion, or read/visibility state. Pausing or disabling
+it must have no effect on layout or query progress. New facts/results remain with
+their owners until the next admitted synchronous balance, not until a pulse or
+appearance animation finishes.
 
-Reduced motion applies final canvas positions and spinner presentation immediately
-or with a minimal fade, then releases the phase. Unbind/window replacement cancels frames and timers and
-disposes immediately; stale callbacks cannot unlock the successor window.
+### 8.3 Motion completion and reduced motion
+
+Shared motion has one idempotent completion/cancellation owner for its presented
+offset and temporary compensation. Completion clears obsolete transforms and
+compensation-dependent input blocking; it does not release a spinner gate or
+trigger per-element completion balances. Ordinary dirty balance scheduling runs
+independently of motion frames and completion. The 120ms arrival deadline belongs
+to policy and is not an animation duration or a layout lock.
+
+Reduced motion applies accepted final geometry without unnecessary travel and
+may disable the decorative pulse. Tail-row appearance/removal remains immediate,
+with no alternative fade batch. Unbind/window replacement cancels frames and
+policy deadlines and disposes immediately; stale callbacks cannot affect the
+successor window.
 
 ### 8.4 Immediate removal and blank-space correction
 
@@ -716,17 +831,20 @@ album alike. If the other side keeps the row height unchanged and no blank space
 appears, do not move the viewport.
 
 Use the legal offset range derived from committed content height, viewport, and
-composer reserve. Clamp an offset beyond the new maximum; preserve a valid offset
-when there is no blank space. Short content remains bottom-aligned. Correction
-must not create a spring bounce, reacquire lost follow, or bypass the large-arrival
-exception. There is no removal timer or unconditional reverse row animation.
+composer reserve. Resolve an out-of-range final offset to that range; preserve a
+valid offset when there is no blank space. Where preserving the current visual
+position requires temporary compensation, settle it through shared rebound, not
+an immediate visual jump or a separate removal effect. Short content remains
+bottom-aligned. Correction must not create a spring bounce, reacquire lost follow,
+or bypass the large-arrival exception. There is no removal timer or unconditional
+reverse row animation.
 
 ### 8.5 Component-owned pic and selection effects
 
 Pic components own internal cell width/height interpolation, positions required
 by rearrangement, rAF, cancellation/retargeting, and completion. Message components
 likewise own selection background, checkmark, and content-inset transitions.
-These effects do not acquire the kernel animation gate or require kernel completion.
+These effects do not block balance or require kernel completion.
 Avatar fades and height-neutral task effects follow the same ownership rule.
 
 Commit the final outer message/album size once through normal kernel measurement,
@@ -794,8 +912,9 @@ cleanup action fails; no sibling resource may leak because an earlier hook threw
 
 On thread unbind/window replacement, revoke publication first, cancel window
 work, and immediately pre-destroy and destroy all active and retiring elements.
-Cancel scroll/spinner animation frames and timers, clear coordinated canvas
-deltas, and remove retained DOM; do not wait for fades or `animationend`. Destroy the source after releasing its consumers. A terminal
+Cancel shared-motion frames, arrival deadlines, and decorative pulses, clear
+compensation transforms and input blocking, and remove retained DOM; do not wait
+for fades or `animationend`. Destroy the source after releasing its consumers. A terminal
 chatbox disposal additionally destroys reusable kernel infrastructure.
 
 A retiring renderer cannot be updated or returned to the active state. Dispose
@@ -807,7 +926,7 @@ identity; cancelled renderer work must never be revived.
 | Owner                   | Responsibility                                                                                                      |
 | ----------------------- | ------------------------------------------------------------------------------------------------------------------- |
 | Chat window coordinator | Bind-first ordering, frozen entry/read facts, skeleton/navigation, retained head facts, presentation errors.        |
-| Generic kernel          | Mounted geometry, dynamic positioning, replacement admission, truncation, scroll/spinner animation, item lifecycle. |
+| Generic kernel          | Mounted geometry, dynamic positioning, replacement admission, truncation, shared scroll motion, item lifecycle. |
 | Gap item/controller     | Mount-owned subscription/query consumer, direction intent from kernel geometry, delivery proposal, cancellation.    |
 | Presentation source     | Typed local projection/fill operations and conversion to messages/gaps; no direct DOM writes.                       |
 | Browser repository      | IDB projection, bounded HTTP, canonical commits, commit notifications and consumer cancellation.                    |
@@ -843,31 +962,29 @@ message identity, or federation authorization to simplify UI code. Native change
 remain in Rust with thin IPC adapters. Source/configuration comments explain
 behavior directly and must not link to these documentation files.
 
-## 12. Implementation defaults and validation gates
+## 12. Implementation defaults
 
 No additional product decision is needed to start implementation. The following
-are explicit defaults or engineering gates, not claims of completed behavior:
+are explicit defaults, not a second product contract:
 
 - Start replacement-region admission with the existing viewport buffer (currently
   1000px above/below), expressed as gap/region intersection. This generalizes the
   old edge checks; validate wide gaps, short lists, and simultaneous deliveries.
 - When the viewport midpoint lies within a gap, use the newer-side retained
   reference and query from the gap bottom as a deterministic normal-mode tie-break.
-- Keep the existing 70% growth limit and 120ms arrival aggregation interval while
-  migrating the follow policy. Prevent pagination from resetting burst accounting.
+- Implement section 6.1's 70%-of-viewport-height limit and fixed 120ms arrival
+  window in the follow policy, outside shared motion. These are agreed behavior,
+  not tunable motion defaults. Prevent pagination from resetting burst accounting.
 - Keep direction/query budgets finite and retain the current 50-item backend
   page limit. Exact TypeScript/Rust interface names other than `predestory()` are
   implementation choices; no compatibility shim may preserve a second loader.
-- Centralize scroll timing, spinner fade rate, coordinated canvas-movement speed,
-  and the finite animation timer. Validate them in browser tests without claiming
-  operator-approved durations.
-- Prove child pre-destruction, presentation-resource cleanup, and immediate Angular
-  final disposal in focused browser tests. Verify local effect cancellation and
-  overlap-avatar clipping separately; no message/spinner exit layer is required.
-- Settle the concrete interval-sharing/eviction strategy with a capacity test
-  before removing the old subscription route. Report protocol or deployment
-  implications explicitly if that requires a server change.
-
-Required regression cases and the implementation sequence are in the development
-plan. This document does not establish browser, PostgreSQL, Rust, or device test
-results.
+- Centralize shared-motion tuning and the explicit default small-reveal constant
+  of 20 CSS px for search and oversized arrivals. Keep the fixed 120ms arrival
+  deadline in arrival policy; do not reinterpret it as a motion duration. Remove
+  spinner fade/batch timers and per-element canvas-movement machinery.
+- Child pre-destruction stops business activity and preserves the component until
+  final disposal. Local effect cancellation and overlap-avatar clipping stay
+  separate; no message/spinner exit layer is required.
+- Settle the concrete interval-sharing/eviction strategy before removing the old
+  subscription route. Report protocol or deployment implications explicitly if
+  that requires a server change.

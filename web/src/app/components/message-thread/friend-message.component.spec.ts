@@ -627,16 +627,16 @@ describe('MessageThreadComponent binding lifecycle', () => {
   it('local navigation bypasses asynchronous coordinate resolution and cancelled search stays silent', async () => {
     const { component } = pane();
     const resolveHistoryAnchor = vi.fn();
-    const scrollToIndex = vi.fn().mockResolvedValue(false);
+    const smoothScrollToMessage = vi.fn().mockResolvedValue(false);
     const warn = vi.fn();
     Object.assign(component, {
       source: { resolveHistoryAnchor },
-      scroller: { scrollToIndex },
+      scroller: { smoothScrollToMessage },
       toast: { warn },
     });
     await component.onSearchJump(10);
     expect(resolveHistoryAnchor).not.toHaveBeenCalled();
-    expect(scrollToIndex).toHaveBeenCalledExactlyOnceWith(10, 'center', true);
+    expect(smoothScrollToMessage).toHaveBeenCalledExactlyOnceWith(10, 20, true);
     expect(warn).not.toHaveBeenCalled();
   });
 
@@ -644,10 +644,10 @@ describe('MessageThreadComponent binding lifecycle', () => {
     const { component } = pane();
     let signal!: AbortSignal;
     let resolve!: (seq: number) => void;
-    const scrollToIndex = vi.fn().mockResolvedValue(true);
+    const smoothScrollToMessage = vi.fn().mockResolvedValue(true);
     const warn = vi.fn();
     Object.assign(component, {
-      scroller: { scrollToIndex },
+      scroller: { smoothScrollToMessage },
       toast: { warn },
       source: {
         resolveHistoryAnchor: (_anchor: object, cancellation: AbortSignal) => {
@@ -669,7 +669,7 @@ describe('MessageThreadComponent binding lifecycle', () => {
     expect(await latest).toBe(true);
     resolve(10);
     await Promise.resolve();
-    expect(scrollToIndex).toHaveBeenCalledExactlyOnceWith(20, 'center', true);
+    expect(smoothScrollToMessage).toHaveBeenCalledExactlyOnceWith(20, 20, true);
     expect(warn).not.toHaveBeenCalled();
   });
 
@@ -682,10 +682,10 @@ describe('MessageThreadComponent binding lifecycle', () => {
         reject(error: Error): void;
         signal: AbortSignal;
       }> = [];
-      const scrollToIndex = vi.fn().mockResolvedValue(true);
+      const smoothScrollToMessage = vi.fn().mockResolvedValue(true);
       const warn = vi.fn();
       Object.assign(component, {
-        scroller: { scrollToIndex },
+        scroller: { smoothScrollToMessage },
         toast: { warn },
         source: {
           resolveHistoryAnchor: (_anchor: object, signal: AbortSignal) =>
@@ -712,9 +712,9 @@ describe('MessageThreadComponent binding lifecycle', () => {
       if (outcome === 'resolve') pending[0].resolve(100);
       else pending[0].reject(new Error('old origin failure'));
       await Promise.resolve();
-      expect(scrollToIndex).toHaveBeenCalledExactlyOnceWith(
+      expect(smoothScrollToMessage).toHaveBeenCalledExactlyOnceWith(
         200,
-        'center',
+        20,
         true,
       );
       expect(warn).not.toHaveBeenCalled();
@@ -726,7 +726,7 @@ describe('MessageThreadComponent binding lifecycle', () => {
   it('a synchronous origin error cannot overwrite the subscription of a reentrant successor', async () => {
     const { component } = pane();
     let resolve!: (seq: number) => void;
-    const scrollToIndex = vi.fn().mockResolvedValue(true);
+    const smoothScrollToMessage = vi.fn().mockResolvedValue(true);
     const lookup = vi
       .fn()
       .mockImplementationOnce(() => {
@@ -740,7 +740,7 @@ describe('MessageThreadComponent binding lifecycle', () => {
       );
     let successor!: Promise<boolean>;
     Object.assign(component, {
-      scroller: { scrollToIndex },
+      scroller: { smoothScrollToMessage },
       source: { resolveHistoryAnchor: lookup },
       transloco: { translate: (key: string) => key },
       toast: {
@@ -764,7 +764,7 @@ describe('MessageThreadComponent binding lifecycle', () => {
     expect(await successor).toBe(false);
     resolve(200);
     await Promise.resolve();
-    expect(scrollToIndex).not.toHaveBeenCalled();
+    expect(smoothScrollToMessage).not.toHaveBeenCalled();
     expect(component.toast.warn).toHaveBeenCalledExactlyOnceWith(
       'chat.messageJumpFailed',
     );
@@ -1144,7 +1144,7 @@ describe('MessageThreadComponent independent contracts', () => {
       let reject!: (error: Error) => void;
       const warn = vi.fn();
       Object.assign(component, {
-        scroller: { scrollToIndex: vi.fn() },
+        scroller: { smoothScrollToMessage: vi.fn() },
         source: {
           resolveHistoryAnchor: () =>
             new Promise((yes, no) => {

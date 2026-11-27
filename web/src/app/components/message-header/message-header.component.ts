@@ -60,7 +60,7 @@ export class MessageHeaderComponent {
   /** The current thread's id, fed to the embedded search field. Derived from userMsgTrd. */
   readonly threadId = computed(() => this.userMsgTrd()?.threadId ?? 0);
 
-  /** Emits a message seq to center the kernel on (the parent owns the kernel + calls scrollToIndex). */
+  /** Emits a message identity for the parent's shared scroll navigation. */
   readonly searchJump = output<number>();
   private readonly nav = inject(NavStateMachineService);
   private readonly layout = inject(LayoutService);

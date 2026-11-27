@@ -712,6 +712,12 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
         }
       },
     );
+    // Geometry cases settle immediately; frame-by-frame motion has its own suite.
+    vi.spyOn(window, 'matchMedia').mockImplementation(query => ({
+      matches: query === '(prefers-reduced-motion: reduce)', media: query, onchange: null,
+      addListener: () => {}, removeListener: () => {},
+      addEventListener: () => {}, removeEventListener: () => {}, dispatchEvent: () => true,
+    }));
     rafSpy = vi
       .spyOn(window, 'requestAnimationFrame')
       .mockImplementation((cb: FrameRequestCallback) => {
@@ -1255,7 +1261,8 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
       anchor: 'center',
     });
     const before = source.newers();
-    expect(await scroller.goToLatest()).toBe(true);
+    // The host acknowledged but did not mount the latest window.
+    expect(await scroller.goToLatest()).toBe(false);
     expect(navigate).toHaveBeenCalledExactlyOnceWith({ kind: 'latest' });
     expect(source.newers()).toBe(before);
   });
@@ -1629,6 +1636,11 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
   );
 
   it('keeps bottom animation through its asynchronous scroll events and a second page, but yields to user input', async () => {
+    vi.mocked(window.matchMedia).mockImplementation(query => ({
+      matches: false, media: query, onchange: null,
+      addListener: () => {}, removeListener: () => {},
+      addEventListener: () => {}, removeEventListener: () => {}, dispatchEvent: () => true,
+    }));
     const { hooks } = controllableHooks(100);
     const source = pushedSource(fakeSource(100));
     scroller = createKernel({ viewport, content, hooks, source,
@@ -1649,7 +1661,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
       animator: { isRunning: boolean };
     };
     viewport.scrollTop -= 100;
-    scroller.smoothScrollToBottom();
+    await scroller.goToLatest();
     kernel.setScrollTopProgrammatic(viewport.scrollTop + 20);
     viewport.dispatchEvent(new Event('scroll'));
     expect(kernel.animator.isRunning).toBe(true);
@@ -1664,9 +1676,19 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
       viewport.dispatchEvent(new Event('scroll'));
     }
     expect(kernel.animator.isRunning).toBe(false);
+    // The original target stays approved until the fixed arrival window expires.
+    expect(scroller.isPinnedToBottom()).toBe(false);
+    await new Promise(resolve => setTimeout(resolve, 130));
+    for (let frame = 0; frame < 100 && kernel.animator.isRunning; frame++) {
+      now += 16;
+      const pending = [...frames.values()];
+      frames.clear();
+      for (const callback of pending) callback(now);
+      viewport.dispatchEvent(new Event('scroll'));
+    }
     expect(scroller.isPinnedToBottom()).toBe(true);
     viewport.scrollTop -= 100;
-    scroller.smoothScrollToBottom();
+    await scroller.goToLatest();
     viewport.dispatchEvent(new WheelEvent('wheel', { deltaY: -100 }));
     expect(kernel.animator.isRunning).toBe(false);
     expect(kernel.isFollowingBottom()).toBe(false);
@@ -1685,7 +1707,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
     await flush();
     await new Promise((r) => setTimeout(r, 250));
     await flush();
-    expect(viewport.scrollTop).toBe(before + (height === 420 ? height : 0));
+    expect(viewport.scrollTop).toBe(before + (height === 420 ? height : 20));
     const arrival = content.querySelector<HTMLElement>('[data-cb-id="100"]')!;
     expect(arrival).not.toBeNull();
     expect(arrival.matches('.cb-pending, .cb-enter, .cb-enter-above')).toBe(false);
@@ -1771,7 +1793,8 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
     setHeight(40, 160);
     scroller.mutateItem(60, item => ({ ...item }));
     expect(scroller.getMountedGeometry(40)!.height).toBe(160);
-    expect(viewport.scrollTop).toBe(5000);
+    // The remeasure preserves the reading anchor, not its obsolete absolute offset.
+    expect(viewport.scrollTop).toBe(5060);
     expect((scroller as unknown as { layoutSettleTimer?: unknown }).layoutSettleTimer).toBeUndefined();
   });
 
@@ -1785,12 +1808,10 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
       setHeight(99, 100 + growth);
       return { ...item };
     });
-    expect(viewport.scrollTop).toBe(before + (growth === 420 ? growth : 0));
-    if (growth === 420) {
-      expect(viewport.scrollTo).toHaveBeenLastCalledWith({ top: before + growth, behavior: 'smooth' });
-    } else {
-      expect(viewport.scrollTo).not.toHaveBeenCalled();
-    }
+    expect(viewport.scrollTop).toBe(before);
+    await new Promise(resolve => setTimeout(resolve, 130));
+    expect(viewport.scrollTop).toBe(before + (growth === 420 ? growth : 20));
+    expect(viewport.scrollTo).not.toHaveBeenCalled();
   });
 
   it('retargets an unfinished bottom follow but stops following after user input', async () => {
@@ -2071,7 +2092,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
     setHeight(701, 20);
     source.pushLive([{ id: 701, data: 99 }]);
     await flush();
-    await scroller.scrollToIndex(701, 'bottom'); // Position a mounted target without loading history.
+    await scroller.smoothScrollToMessage(701); // Position a mounted target without loading history.
     expect(scroller.getMountedGeometry(701)!.bottom).toBe(600);
 
     // The live item's real height settles asynchronously (RO fire) — AFTER positionAtBottom ran.
@@ -2119,7 +2140,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
       source: fakeSource(500),
     });
     await scroller.openWindow({ kind: 'latest' }); // m-400..m-499 mounted, pinned at bottom (scrollTop 9400)
-    scroller.scrollToIndex(450, 'center'); // mid-window, NOT at an edge (scrollTop ≈ 4750) → no edge load/trim
+    scroller.smoothScrollToMessage(450); // Mid-window (scrollTop = 5000), outside edge demand.
     const stBefore = viewport.scrollTop;
     scroller.mutateItem(430, item => {
       setHeight(430, 150);
@@ -2478,7 +2499,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
     expect(content.children.length).toBe(0);
   });
 
-  // ── Jump to a specific id (scrollToIndex / init({startMsgId})): mounted positioning + unmounted re-seed + centered fill / boundary compensation ──
+  // ── Jump to a specific id (smoothScrollToMessage / init({startMsgId})): mounted positioning + unmounted re-seed + centered fill / boundary compensation ──
 
   it('out-of-window navigation delegates replacement instead of reinitializing the old source', async () => {
     const { hooks } = controllableHooks();
@@ -2494,7 +2515,8 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
     });
     await scroller.openWindow({ kind: 'latest' });
     const calls = init.mock.calls.length;
-    expect(await scroller.scrollToIndex(10, 'center', true)).toBe(true);
+    // A successful host response without actually mounting the identity is not a successful jump.
+    expect(await scroller.smoothScrollToMessage(10, 0, true)).toBe(false);
     expect(replace).toHaveBeenCalledExactlyOnceWith({
       kind: 'message',
       messageId: 10,
@@ -2504,7 +2526,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
     expect(init).toHaveBeenCalledTimes(calls);
   });
 
-  it('scrollToIndex mounted → positions by anchor (top/center/bottom)', async () => {
+  it('mounted message navigation reveals the nearest edge and leaves visible targets in place', async () => {
     const { hooks } = controllableHooks(); // 100px/item
     scroller = createKernel<number>({
       viewport,
@@ -2513,12 +2535,14 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
       source: fakeSource(500),
     });
     await scroller.openWindow({ kind: 'latest' }); // mounts m-400..m-499
-    scroller.scrollToIndex(450, 'top'); // m-450 index=50 → prefix[50]=5000
+    await scroller.smoothScrollToMessage(450); // Above the viewport: reveal the top edge.
     expect(viewport.scrollTop).toBe(5000);
-    scroller.scrollToIndex(450, 'center'); // 5000 + 50 - 300
-    expect(viewport.scrollTop).toBe(4750);
-    scroller.scrollToIndex(450, 'bottom'); // 5000 + 100 - 600
-    expect(viewport.scrollTop).toBe(4500);
+    await scroller.smoothScrollToMessage(450);
+    expect(viewport.scrollTop).toBe(5000);
+    await scroller.smoothScrollToMessage(460); // Below the viewport: reveal the bottom edge.
+    expect(viewport.scrollTop).toBe(5500);
+    await scroller.smoothScrollToMessage(460, 20);
+    expect(viewport.scrollTop).toBe(5520);
   });
 
   it('mounted jumps keep the source and request smooth positioning without reinitialization', async () => {
@@ -2529,13 +2553,9 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
     scroller = createKernel({ viewport, content, hooks, source });
     await scroller.openWindow({ kind: 'latest' });
     const starts = init.mock.calls.length;
-    await scroller.scrollToIndex(450, 'center');
-    expect(viewport.scrollTo).toHaveBeenLastCalledWith({
-      top: 4750,
-      behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches
-        ? 'instant'
-        : 'smooth',
-    });
+    await scroller.smoothScrollToMessage(450);
+    expect(viewport.scrollTop).toBe(5000);
+    expect(viewport.scrollTo).not.toHaveBeenCalled();
     expect(init).toHaveBeenCalledTimes(starts);
     expect(destroy).not.toHaveBeenCalled();
     scroller.unbind();
@@ -2563,7 +2583,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
     expect(viewport.scrollTop).toBe(4650); // m-2500 index=49 centered: 4900+50-300
   });
 
-  it('scrollToIndex not mounted → re-seeds the window around the id, target mounted and centered', async () => {
+  it('smoothScrollToMessage not mounted → re-seeds the window around the id, target mounted and centered', async () => {
     const { hooks } = controllableHooks();
     scroller = createKernel<number>({
       viewport,
@@ -2573,7 +2593,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
     });
     await scroller.openWindow({ kind: 'latest' }); // mounts m-4900..m-4999
     expect(scroller.getInfo().oldestId).toBe(4900);
-    scroller.scrollToIndex(100, 'center'); // not mounted → async re-seed
+    scroller.smoothScrollToMessage(100); // not mounted → async re-seed
     await flush();
     const info = scroller.getInfo();
     expect(info.oldestId).toBe(51);
@@ -2584,7 +2604,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
   // Regression: jumping to a NON-HEAD member of a merged album must still resolve to its album item.
   // Before the fix, openAround's hasTarget check (item.id === targetId) failed because the album item only
   // carries the head's id → early return → empty viewport. itemHasId now matches any member in CbItem.ids.
-  it('scrollToIndex to a non-head album member msgId → resolves to album item, window non-empty (ids member-resolution regression)', async () => {
+  it('smoothScrollToMessage to a non-head album member msgId → resolves to album item, window non-empty (ids member-resolution regression)', async () => {
     const { hooks: baseHooks } = controllableHooks();
     // mergeItems: collapse m-10,m-11,m-12 into one album item (id=head m-10, ids=all three) — mirrors mergeAlbumItems.
     const mergeItems = (items: CbItem<number>[]): CbItem<number>[] => {
@@ -2623,7 +2643,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
       source: fakeSource(5000),
     });
     await scroller.openWindow({ kind: 'latest' });
-    scroller.scrollToIndex(11, 'center', true); // non-head album member → pre-fix: hasTarget=false → empty
+    scroller.smoothScrollToMessage(11, 0, true); // non-head album member → pre-fix: hasTarget=false → empty
     await flush();
     const info = scroller.getInfo();
     expect(info.mounted).toBeGreaterThan(0); // regression: was 0 (empty viewport) before fix
@@ -2763,7 +2783,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
     expect(content.querySelector('[data-cb-id="2500"]')).toBeTruthy();
   });
 
-  it('scrollToIndex highlight → target row gets cb-jump-highlight', async () => {
+  it('smoothScrollToMessage highlight → target row gets cb-jump-highlight', async () => {
     const { hooks } = controllableHooks();
     scroller = createKernel<number>({
       viewport,
@@ -2772,7 +2792,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
       source: fakeSource(500),
     });
     await scroller.openWindow({ kind: 'latest' });
-    scroller.scrollToIndex(450, 'top', true);
+    scroller.smoothScrollToMessage(450, 0, true);
     const el = content.querySelector<HTMLElement>('[data-cb-id="450"]');
     expect(el?.classList.contains('cb-jump-highlight')).toBe(true);
   });
@@ -2786,7 +2806,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
       source: fakeSource(500),
     });
     await scroller.openWindow({ kind: 'latest' });
-    await scroller.scrollToIndex(499, 'bottom', true);
+    await scroller.smoothScrollToMessage(499, 0, true);
     const newest = scroller.getInfo().newestId;
     const el = content.querySelector<HTMLElement>(`[data-cb-id="${newest}"]`);
     expect(el?.classList.contains('cb-jump-highlight')).toBe(true);
@@ -2819,7 +2839,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
     await scroller.openWindow({ kind: 'latest' });
     expect(() => scroller!.refresh()).not.toThrow();
     // still positionable (kernel intact)
-    scroller.scrollToIndex(scroller.getInfo().newestId!, 'top');
+    scroller.smoothScrollToMessage(scroller.getInfo().newestId!);
     expect(viewport.scrollTop).toBeGreaterThanOrEqual(0);
   });
 
@@ -3028,7 +3048,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
     viewport.scrollTop = 37;
     const newer = vi.spyOn(src, 'requestNewer');
     newer.mockClear();
-    await expect(scroller.scrollToIndex(9999, 'center')).resolves.toEqual(
+    await expect(scroller.smoothScrollToMessage(9999)).resolves.toEqual(
       false,
     );
     expect(scroller.getInfo().oldestId).toBe(1);
@@ -3083,8 +3103,8 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
       hooks,
       source: src,
     });
-    scroller.scrollToIndex(100, 'center'); // openAround #1: init pending (gen=1)
-    scroller.scrollToIndex(200, 'center'); // openAround #2: ++gen=2, reset, init pending
+    scroller.smoothScrollToMessage(100); // openAround #1: init pending (gen=1)
+    scroller.smoothScrollToMessage(200); // openAround #2: ++gen=2, reset, init pending
     expect(src.initPending()).toBe(2);
     src.resolveInit(src.batchAround(100)); // #1 resolve → gen(1)≠2 → dropped
     src.resolveInit(src.batchAround(200)); // #2 resolve → mounts m-151..m-250
@@ -3182,7 +3202,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
       source: fakeSource(500),
     });
     await scroller.openWindow({ kind: 'latest' }); // m-400..m-499
-    scroller.scrollToIndex(450, 'top'); // scrollTop = topOf(m-450) = 5000; viewport [5000,5600]
+    scroller.smoothScrollToMessage(450); // scrollTop = topOf(m-450) = 5000; viewport [5000,5600]
     expect(viewport.scrollTop).toBe(5000);
     scroller.insertAfter(480, { id: -1, data: -1 }); // ins top 8100, below the viewport
     expect(viewport.scrollTop).toBe(5000); // no compensation (insert is below the fold)
@@ -4470,6 +4490,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
       setHeight(499, 200);
       return { ...item };
     });
+    await new Promise(resolve => setTimeout(resolve, 130));
     expect(viewport.scrollTop).toBe(bottomBefore + 398);
     expect(scroller.getInfo().atBottom).toBe(true);
 
@@ -4508,7 +4529,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
       source: fakeSource(500),
     });
     await scroller.openWindow({ kind: 'latest' }); // noNewer=true → gap
-    scroller.scrollToIndex(100, 'center'); // re-seed mid-history → noNewer=false → loading
+    scroller.smoothScrollToMessage(100); // re-seed mid-history → noNewer=false → loading
     await flush();
     expect(scroller.getInfo().noNewer).toBe(false);
     expect(scroller.getMountedGeometry(scroller.getInfo().newestId!)!.el.classList.contains('cb-ghost')).toBe(true);
@@ -4547,7 +4568,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
     });
     await scroller.openWindow({ kind: 'latest' });
     expect(content.querySelectorAll('.cb-bottom-reserve').length).toBe(1);
-    scroller.scrollToIndex(100, 'center');
+    scroller.smoothScrollToMessage(100);
     await flush();
     expect(content.querySelectorAll('.cb-bottom-reserve').length).toBe(1); // reused, not duplicated
     expect(

@@ -20,7 +20,7 @@ import { MESSAGE_THREAD_ADAPTER } from '../message-thread/message-thread-adapter
  * collides with the floating date pill. Debounced input drives a server-side substring search
  * (message text and uploaded filenames); the lightweight {seq} matches are stored newest-first.
  * The prev/next arrows jump the parent kernel to each via `jumpTo`. The parent owns the kernel + calls
- * scrollToIndex(seq, 'center', true) — the kernel flashes the row.
+ * smoothScrollToMessage(seq, 20, true) — the kernel reveals context and flashes the row.
  *
  * Loads 50 matches at a time. Older matches are fetched by cursor when Previous reaches the
  * loaded boundary; the counter uses the server's total visible match count.
@@ -175,7 +175,7 @@ import { MESSAGE_THREAD_ADAPTER } from '../message-thread/message-thread-adapter
 export class MessageSearchComponent {
   readonly AppIconType = AppIconType;
   readonly threadId = input.required<number>();
-  /** Emits a message seq to center the kernel on (the parent calls scrollToIndex). */
+  /** Emits a message identity for the parent's shared scroll navigation. */
   readonly jumpTo = output<number>();
   readonly close = output<void>();
 

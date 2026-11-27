@@ -13,6 +13,8 @@ export default defineConfig({
       'src/playground/sha256-fallback.spec.ts',
       'src/playground/playground-conversation-list.mock.spec.ts',
       'src/playground/playground-social-state.spec.ts',
+      'src/app/lib/chat-box/offset-scroll-motion.spec.ts',
+      'src/app/lib/chat-box/scroll-layout.spec.ts',
       'src/app/services/thread-list-order.spec.ts',
       'src/app/services/thread-resource-scheduler.spec.ts',
       'src/app/services/thread-resource-sync.spec.ts',

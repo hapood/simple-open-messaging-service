@@ -21,12 +21,15 @@
  *
  * Development diagnostics are guarded by Angular's public `isDevMode()` API.
  */
-import { MountedMessageScroll } from './mounted-message-scroll';
-import { SmoothScrollAnimator } from './smooth-scroll-animator';
+import { OffsetScrollMotion } from './offset-scroll-motion';
+import {
+  captureScrollLayout,
+  compensateScrollLayout,
+  visualOffsetOf,
+  type ScrollLayoutSnapshot,
+} from './scroll-layout';
 import { CbLayoutScheduler } from './cb-layout-scheduler';
 import { CbGapCoordinator } from './cb-gap-coordinator';
-import { planArrivalDisplacement } from './cb-arrival-displacement';
-import { shouldFollowArrival } from './arrival-follow';
 import {
   Observable,
   Subscriber,
@@ -46,9 +49,7 @@ import { renderGhostState } from './ghost-renderer';
 import { EdgeDemandState } from './edge-demand-state';
 import {
   alignedItemOffset,
-  clampScrollTop,
   distanceToViewportCenter,
-  type WindowPositionScenario,
   type ViewportAnchor,
 } from './viewport-anchor';
 
@@ -75,7 +76,7 @@ export interface CbItem<T = unknown> {
   /**
    * All member msgIds an aggregated item (e.g. album) represents — populated by the mergeItems hook
    * when it merges several msgs into one item (the first member equals {@link id}). Single (non-merged)
-   * items leave this undefined. Purpose: id resolution for jump/positioning (scrollToIndex, indexOfId)
+   * items leave this undefined. Purpose: id resolution for jump/positioning (smoothScrollToMessage, indexOfId)
    * must land on the album item when the target is any album member — otherwise jumping to a non-head
    * image's msgId fails to find it (item.id only carries the head) and the viewport ends up empty
    * (jump-to-id bug). Read-only in the kernel; the source returns raw msgs and never sets this.
@@ -242,34 +243,6 @@ export interface CbViewportGeometry {
   readonly contentAlignmentOffset: number;
 }
 
-/** Pure geometry behind the fully-visible callback. `totalHeight` includes the tail cap; when it is shorter
- *  than the viewport, the returned positions include the flex-end offset used by the chat content column. */
-export function fullyVisibleIndexes(
-  heights: readonly number[],
-  scrollTop: number,
-  viewportHeight: number,
-  totalHeight: number,
-): number[] {
-  const visibleTop = scrollTop;
-  const visibleBottom = scrollTop + viewportHeight;
-  const bottomAlignOffset = Math.max(0, viewportHeight - totalHeight);
-  const visible: number[] = [];
-  let top = bottomAlignOffset;
-  for (let i = 0; i < heights.length; i++) {
-    const height = heights[i];
-    const bottom = top + height;
-    if (
-      height > 0 &&
-      top >= visibleTop - 0.5 &&
-      bottom <= visibleBottom + 0.5
-    ) {
-      visible.push(i);
-    }
-    top = bottom;
-  }
-  return visible;
-}
-
 /** Explicit window presentation intent. Message IDs are coordinates, never mode flags. */
 export type CbWindowRequest<T> =
   | { kind: 'cached' }
@@ -309,17 +282,14 @@ export interface ScrollerApi<T = unknown> {
   retryNewer?(): void;
   /** Load an arrival only if the pre-arrival latest real message is still mounted. */
   notifyNewerAvailable?(previousLatestSeq?: number): void;
-  /** Pin to the global newest edge. highlight flashes the newest message once it is reached. */
-  /** Navigate through the window owner only when newest history is not mounted. */
+  /** Pin to the global newest edge; navigate through the window owner only when newest history is not mounted. */
   goToLatest(): Promise<boolean>;
+  /** Resolve a stable message/member ID, loading its window if needed. Reveal the
+   * nearest edge; a visible message stays put unless overscroll is positive.
+   * Returns whether this request still owns a mounted target after navigation. */
+  smoothScrollToMessage(id: number, overscroll?: number, highlight?: boolean): Promise<boolean>;
   setFollowBottom(enabled: boolean): void;
   scrollToTop(): void;
-  /** Jump to id: if mounted, position directly; if not, reset the window around the id (re-seed) then position. anchor defaults to 'center'. highlight adds a one-shot flash to the target. */
-  scrollToIndex(
-    id: number,
-    anchor?: 'top' | 'center' | 'bottom',
-    highlight?: boolean,
-  ): Promise<boolean>;
   /** Insert a single item immediately after the mounted entry representing afterId. No-op (returns false) if afterId
    *  is not currently mounted or a re-seed is in progress. Does NOT trigger balance (no checkpoint load, no trim) —
    *  Compensates scrollTop for any growth above the viewport so the viewport stays put. By default the inserted item
@@ -466,10 +436,25 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     }
   }
   private viewportWidth = 0;
+  private committedLayout: ScrollLayoutSnapshot | null = null;
+  private cachedLayoutRows: ScrollLayoutSnapshot['rows'] | null = null;
+  private resizeLayout: ScrollLayoutSnapshot | null = null;
+  private resizeAttached = false;
 
   /** External CSS reflow: wait for quiet, then refresh geometry without moving the reader. */
   scheduleLayoutRemeasure(): void {
     if (this.inactive) return;
+    if (!this.resizeLayout) {
+      this.resizeAttached = this.isFollowingBottom();
+      const current = this.snapshotLayout();
+      const committed = this.committedLayout;
+      const domMax = Math.max(0, this.content.scrollHeight - this.vh);
+      this.resizeLayout = committed && committed.scrollTop > domMax &&
+        Math.abs(current.scrollTop - domMax) < 1 ? committed : current;
+    }
+    this.cancelArrivalWindow();
+    this.cancelMotion();
+    this.settlePresentation(this.visualOffset);
     this.scheduler?.enterResizing();
     if (this.layoutSettleTimer !== undefined) clearTimeout(this.layoutSettleTimer);
     this.layoutSettleTimer = setTimeout(() => {
@@ -483,11 +468,18 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     if (this.layoutSettleTimer === undefined) return;
     clearTimeout(this.layoutSettleTimer);
     this.layoutSettleTimer = undefined;
+    const before = this.resizeLayout ?? this.snapshotLayout();
+    this.resizeLayout = null;
+    const attached = this.resizeAttached;
+    this.resizeAttached = false;
     for (const entry of this.mounted) {
       entry.height = entry.el.offsetHeight;
       entry.tailHeight = entry.vs.measureTailHeight?.() ?? 0;
     }
     this.dirtyPrefix = true;
+    const offset = attached ? this.clampOffset(Infinity)
+      : compensateScrollLayout(before, this.snapshotLayout()) ?? visualOffsetOf(before);
+    this.settlePresentation(offset);
     this.scheduler?.leaveResizing();
   }
 
@@ -557,12 +549,39 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
   private readonly gapEntries = new Map<string, Entry<T>>();
   private pendingOlderDelivery: CbDemandResult<T> | null = null;
   private pendingNewerDelivery: CbDemandResult<T> | null = null;
-  private readonly animator = new SmoothScrollAnimator();
-  private animatedBottomFollow = false;
+  private readonly animator: OffsetScrollMotion;
+  private translateY = 0;
+  /** Logical compensation, independent of the browser's subpixel scroll rounding. */
+  private outOfBounds = false;
+  private lockedScrollTop = 0;
+  private savedOverflowY: string | null = null;
+  private savedScrollbarGutter: string | null = null;
+  private followIntent = false;
+  private motionRequest: {
+    id: number;
+    clientMessageId?: string;
+    anchor: 'top' | 'bottom';
+    overscroll: number;
+    direction: number;
+    pinned: boolean;
+    offsetFromTop?: number;
+  } | null = null;
+  private navigationGeneration = 0;
+  private navigationChatId: number | undefined;
+  private motionGeneration = 0;
+  private readonly layoutMotion = new WeakMap<ScrollLayoutSnapshot, {
+    generation: number;
+    arrivalTimer: ReturnType<typeof setTimeout> | null;
+    acceptedOffset: number;
+  }>();
   private programmaticScrollTop: number | null = null;
   private arrivalWindowTimer: ReturnType<typeof setTimeout> | null = null;
   private arrivalWindowWasPinned = false;
   private arrivalWindowAddedH = 0;
+  private arrivalWindowBaseline: ScrollLayoutSnapshot | null = null;
+  private arrivalWindowAcceptedOffset = 0;
+  // Oversized bursts reveal a small fixed peek, never the full rejected growth.
+  private readonly arrivalOversizeReveal = 20;
   private lastScrollTop = 0;
   /** Set during reconcileOptimistic. Reconcile is synchronous (no slide animation) and never spans an await, so this is
    *  never observed true by a deferred trim — kept so trimOlder/trimNewer (rule 4a) stay self-documenting. */
@@ -583,14 +602,24 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     });
   };
 
-  private readonly mountedScroll: MountedMessageScroll;
   private readonly onWindowJump?: CbOptions<T>['onWindowJump'];
 
   constructor(opts: CbOptions<T>) {
     this.viewport = opts.viewport;
     this.onWindowJump = opts.onWindowJump;
-    this.mountedScroll = new MountedMessageScroll(opts.viewport);
     this.content = opts.content;
+    this.animator = new OffsetScrollMotion({
+      getOffset: () => this.visualOffset,
+      setOffset: (offset) => {
+        this.setVisualOffset(offset);
+        this.onViewportPaint?.();
+        this.emit();
+        this.onViewportStateChanged();
+      },
+      onFinish: () => {
+        this.motionRequest = null;
+      },
+    });
     this.hooks = opts.hooks;
     this.onScroll = opts.onScroll;
     this.onViewportPaint = opts.onViewportPaint;
@@ -609,6 +638,8 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
       throw new Error('chat-box kernel is disposed');
     if (this.state !== 'ready')
       throw new Error('unbind the current chat-box source first');
+    if (this.navigationChatId !== windowContext.chatId) this.navigationGeneration++;
+    this.navigationChatId = windowContext.chatId;
     this.boundSource = source;
     this.bindingAbort = new AbortController();
     this.windowContext = { ...windowContext, signal: this.bindingAbort.signal };
@@ -628,9 +659,9 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     this.viewport.addEventListener('scroll', this.onNativeScroll, {
       passive: true,
     });
-    this.viewport.addEventListener('wheel', this.onScrollIntent, { passive: true });
-    this.viewport.addEventListener('touchstart', this.onScrollIntent, { passive: true });
-    this.viewport.addEventListener('pointerdown', this.onScrollIntent, { passive: true });
+    this.viewport.addEventListener('wheel', this.onScrollIntent, { passive: false });
+    this.viewport.addEventListener('touchmove', this.onScrollIntent, { passive: false });
+    this.viewport.addEventListener('pointerdown', this.onScrollIntent, { passive: false });
     this.viewport.addEventListener('keydown', this.onScrollIntent);
     // visualViewport: the definitive keyboard-show/hide signal (see onVisualViewportChange). The viewport element's
     // own ResizeObserver fires only when its border-box changes, which on mobile keyboards it often does not (or does
@@ -744,7 +775,7 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
         if (merged.length === 0) {
           this.noOlder = true;
           this.noNewer = true;
-          this.applyAnchor(this.selectPosition({ kind: 'goToLatest' }));
+          this.positionAtBottom();
           this.updateHistoryEdges();
           return of(undefined);
         }
@@ -758,7 +789,7 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
       tap(() => {
         this.measurePending();
         this.updateHistoryEdges();
-        this.applyAnchor(this.selectPosition({ kind: 'goToLatest' }));
+        this.positionAtBottom();
       }),
     );
   }
@@ -793,14 +824,14 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     // first-message-in-an-empty-thread path — afterId is irrelevant there (and typically '' / the optimistic's own id,
     // since tailAnchorId() is empty when nothing is mounted).
     if (this.mounted.length === 0) {
-      const anchor = this.captureAnchor();
+      const layout = this.captureLayoutChange();
       const entry = this.createEntry(item, null, null, null);
       if (opts?.optimistic) entry.optimistic = true;
       else entry.transient = true;
       this.mounted.push(entry);
       this.dirtyPrefix = true;
       this.measurePending();
-      this.applyAnchor(anchor);
+      this.finishLayoutChange(layout);
       this.updateHistoryEdges(); // mounted 0→1 (e.g. first pending in an empty thread): flip the cap hidden→gap so the bottom padding shows
       return true;
     }
@@ -809,7 +840,7 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     // Capture the anchor BEFORE the insert: an insert above the topmost-visible item pushes it down, and applyAnchor
     // follows (the fold content stays put); an insert at/below the fold leaves the anchor's topOf unchanged → no shift.
     // This replaces the two per-delta compensateAbove checks (new item + successor rebuild) with one anchor re-apply.
-    const anchor = this.captureAnchor();
+    const layout = this.captureLayoutChange();
     const target = this.mounted[idx];
     const successor = this.mounted[idx + 1] ?? null;
     const anchorEl = successor ? successor.el : null;
@@ -831,7 +862,7 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
 
     this.dirtyPrefix = true;
     this.measurePending(); // `measuring` suppresses onElHeight → unified applyAnchor below
-    this.applyAnchor(anchor); // above-fold insert pushed the fold → anchor follows; below-fold → no-op
+    this.finishLayoutChange(layout);
     this.updateHistoryEdges(); // keep the newer-edge cap in sync after a mounted mutation
     return true;
   }
@@ -848,13 +879,14 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
       if (!targets.includes(e)) targets.push(e);
     }
     const binding = this.bindingAbort;
+    if (targets.length && this.isFollowingBottom()) this.followIntent = true;
     const errors: unknown[] = [];
     let removed = 0;
     for (const entry of targets) {
       if (this.bindingAbort !== binding || this.inactive) break;
       const index = this.mounted.indexOf(entry);
       if (index < 0) continue;
-      const anchor = this.captureAnchor();
+      const before = this.snapshotLayout();
       try {
         this.unmountAt(index);
       } catch (error) {
@@ -862,7 +894,7 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
       }
       removed++;
       // Cleanup may synchronously replace the binding. Never reposition its successor.
-      if (this.bindingAbort === binding && !this.inactive) this.applyAnchor(anchor);
+      if (this.bindingAbort === binding && !this.inactive) this.restoreLayout(before);
     }
     if (removed && this.bindingAbort === binding && !this.inactive) this.emit();
     if (errors.length) throw new AggregateError(errors, 'Chat item removal failed');
@@ -907,85 +939,234 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
 
   setFollowBottom(enabled: boolean): void {
     this.cfg.followBottom = enabled;
+    if (!enabled) {
+      this.followIntent = false;
+      this.cancelArrivalWindow();
+    }
   }
 
   async goToLatest(): Promise<boolean> {
     if (this.inactive || !this.steady) return false;
+    const generation = ++this.navigationGeneration;
+    const chatId = this.windowContext.chatId;
     if (!this.noNewer) {
       if (!this.onWindowJump) return false;
-      return this.onWindowJump({ kind: 'latest' });
+      const opened = await this.onWindowJump({ kind: 'latest' });
+      if (!opened || this.inactive || generation !== this.navigationGeneration ||
+          chatId !== this.windowContext.chatId || !this.noNewer) return false;
     }
     this.measurePending();
     this.updateHistoryEdges();
-    this.applyAnchor(this.selectPosition({ kind: 'goToLatest' }));
+    this.cancelArrivalWindow();
+    this.followAcceptedBottom();
     this.onViewportStateChanged();
     return true;
   }
 
-  /** Position the viewport at the content bottom — the bottom {@link Anchor}, applied via {@link applyAnchor}
-   *  (compensation-safe via `shifting`; suppresses its own async scroll event). */
-  /** One scenario table for window positioning. Edge deliveries capture the old
-   * identity; explicit pinning resolves the newest identity only after measurement. */
-  private selectPosition(scenario: WindowPositionScenario): Anchor {
-    this.flushLayoutRemeasure();
-    switch (scenario.kind) {
-      case 'olderDelivery':
-        return this.captureHistoryEdgeAnchor('older');
-      case 'newerDelivery':
-        return this.captureHistoryEdgeAnchor('newer');
-      case 'pendingUpdate':
-        return this.hasBottomHistoryLoading
-          ? this.captureHistoryEdgeAnchor('newer')
-          : this.captureAnchor();
-      case 'viewportResize':
-        return this.captureComposerAnchor();
-      case 'preserveReading':
-        return this.captureAnchor();
-      case 'goToLatest':
-      case 'pinLatest':
-        return { mode: 'bottom' };
-    }
-  }
-
+  /** Position at the measured content bottom after settling any deferred geometry. */
   private positionAtBottom(): void {
-    this.applyAnchor(this.selectPosition({ kind: 'pinLatest' }));
+    this.flushLayoutRemeasure();
+    this.applyAnchor({ mode: 'bottom' });
   }
 
   private cancelArrivalWindow(): void {
-    if (this.arrivalWindowTimer !== null) {
-      clearTimeout(this.arrivalWindowTimer);
-      this.arrivalWindowTimer = null;
-    }
+    if (this.arrivalWindowTimer !== null) clearTimeout(this.arrivalWindowTimer);
+    this.arrivalWindowTimer = null;
     this.arrivalWindowWasPinned = false;
     this.arrivalWindowAddedH = 0;
+    this.arrivalWindowBaseline = null;
   }
 
-  private scheduleArrivalWindow(wasPinned: boolean, addedHeight: number): void {
+  private scheduleArrivalWindow(
+    wasPinned: boolean,
+    addedHeight: number,
+    baseline: ScrollLayoutSnapshot,
+  ): void {
+    if (!wasPinned || addedHeight <= 0) return;
+    this.followIntent = true;
     if (this.arrivalWindowTimer === null) {
       this.arrivalWindowWasPinned = wasPinned;
       this.arrivalWindowAddedH = 0;
+      this.arrivalWindowBaseline = baseline;
+      const preserved = compensateScrollLayout(baseline, this.snapshotLayout());
+      this.arrivalWindowAcceptedOffset = (baseline.targetOffset ?? visualOffsetOf(baseline)) +
+        (preserved === null ? 0 : preserved - visualOffsetOf(baseline));
+      const binding = this.bindingAbort;
       this.arrivalWindowTimer = setTimeout(() => {
+        if (binding !== this.bindingAbort || this.inactive) return;
         this.settleArrivalWindow();
       }, ARRIVAL_FOLLOW_WINDOW_MS);
     }
     this.arrivalWindowAddedH += Math.max(0, addedHeight);
-    // A running bottom target is dynamic; stop it before it can follow a newly
-    // oversized batch that the burst policy would reject at settlement.
-    if (this.arrivalWindowAddedH > this.vh * ARRIVAL_FOLLOW_MAX_VIEWPORT_RATIO &&
-        this.animatedBottomFollow) this.animator.cancel();
   }
 
   private settleArrivalWindow(): void {
-    this.arrivalWindowTimer = null;
-    const wasPinned = this.arrivalWindowWasPinned;
+    const baseline = this.arrivalWindowBaseline;
     const addedH = this.arrivalWindowAddedH;
-    this.arrivalWindowWasPinned = false;
-    this.arrivalWindowAddedH = 0;
-
-    if (!wasPinned || this.inactive) return;
-    if (addedH <= this.vh * ARRIVAL_FOLLOW_MAX_VIEWPORT_RATIO) {
-      this.smoothScrollToBottom();
+    const accepted = this.arrivalWindowAcceptedOffset;
+    const pinned = this.arrivalWindowWasPinned;
+    this.cancelArrivalWindow();
+    if (!pinned || !baseline || this.inactive) return;
+    if (addedH <= baseline.viewportHeight * ARRIVAL_FOLLOW_MAX_VIEWPORT_RATIO) {
+      this.followAcceptedBottom();
+    } else {
+      // Retarget, rather than cancel: an already approved flight keeps its velocity.
+      this.motionRequest = null;
+      this.moveToOffset(this.clampOffset(accepted + this.arrivalOversizeReveal));
     }
+  }
+
+  private get visualOffset(): number {
+    return this.viewport.scrollTop - this.translateY;
+  }
+
+  private clampOffset(offset: number): number {
+    return Math.max(0, Math.min(offset, Math.max(0, this.totalH() - this.vh)));
+  }
+
+  /** Only physical input is locked during compensation; layout/demand keep running. */
+  private setVisualOffset(offset: number): void {
+    const top = this.clampOffset(offset);
+    this.outOfBounds = Math.abs(top - offset) >= 0.001;
+    this.setScrollTopProgrammatic(top);
+    this.lockedScrollTop = this.viewport.scrollTop;
+    this.translateY = this.lockedScrollTop - offset;
+    this.content.style.transform = Math.abs(this.translateY) < 0.001
+      ? '' : `translateY(${this.translateY}px)`;
+    if (this.outOfBounds) {
+      if (this.savedOverflowY === null) {
+        this.savedOverflowY = this.viewport.style.overflowY;
+        this.savedScrollbarGutter = this.viewport.style.scrollbarGutter;
+        const style = getComputedStyle(this.viewport);
+        const borders = (parseFloat(style.borderLeftWidth) || 0) +
+          (parseFloat(style.borderRightWidth) || 0);
+        // Preserve an existing classic scrollbar, but never introduce a new
+        // gutter for a short stack or an overlay-scrollbar host.
+        if (this.viewport.offsetWidth - this.viewport.clientWidth - borders > 0) {
+          this.viewport.style.scrollbarGutter = 'stable';
+        }
+      }
+      this.viewport.style.overflowY = 'hidden';
+    } else {
+      this.releaseInputLock();
+    }
+  }
+
+  private releaseInputLock(): void {
+    if (this.savedOverflowY !== null) {
+      this.viewport.style.overflowY = this.savedOverflowY;
+      this.viewport.style.scrollbarGutter = this.savedScrollbarGutter ?? '';
+      this.savedOverflowY = null;
+      this.savedScrollbarGutter = null;
+    }
+  }
+
+  /** Release presentation without relying on DOM clamping (hidden hosts read back zero). */
+  private releasePresentation(): void {
+    this.translateY = 0;
+    this.outOfBounds = false;
+    this.lockedScrollTop = 0;
+    this.content.style.transform = '';
+    this.releaseInputLock();
+  }
+
+  /** Resizes end motion at the browser-representable position, without compensation. */
+  private settlePresentation(offset: number): void {
+    this.releasePresentation();
+    this.setScrollTopProgrammatic(this.clampOffset(offset));
+  }
+
+  private moveToOffset(offset: number): void {
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      this.animator.snap(offset);
+    } else {
+      this.animator.setTarget(offset);
+    }
+  }
+
+  private cancelMotion(): void {
+    this.motionGeneration++;
+    this.animator.cancel();
+    this.motionRequest = null;
+    // A legal fractional coordinate only needs paint interpolation while owned.
+    // Hand input back at the DOM's rounded position, never with a stranded transform.
+    if (!this.outOfBounds) this.releasePresentation();
+  }
+
+  private snapshotLayout(): ScrollLayoutSnapshot {
+    const alignment = Math.max(0, this.vh - this.totalH());
+    const previousRows = this.cachedLayoutRows;
+    const unchanged = previousRows?.length === this.mounted.length && this.mounted.every((entry, index) => {
+      const row = previousRows[index];
+      const ids = entry.item.displayInterval ? [] : entry.item.ids ?? [entry.item.id];
+      return row.top === alignment + this.topOf(index) && row.height === entry.height &&
+        row.tailHeight === entry.tailHeight && row.ids.length === ids.length &&
+        row.ids.every((id, member) => id === ids[member]);
+    });
+    if (!unchanged) {
+      // Freeze only scalar geometry, never renderer/Entry objects. Reuse this
+      // exact row array throughout a flight until committed geometry changes.
+      this.cachedLayoutRows = captureScrollLayout({
+        rows: this.mounted.map((entry, index) => ({
+          ids: entry.item.displayInterval ? [] : entry.item.ids ?? [entry.item.id],
+          top: alignment + this.topOf(index),
+          height: entry.height,
+          tailHeight: entry.tailHeight,
+        })),
+        viewportHeight: this.vh, scrollTop: 0, translateY: 0, totalHeight: this.totalH(),
+      }).rows;
+    }
+    const snapshot: ScrollLayoutSnapshot = Object.freeze({
+      rows: this.cachedLayoutRows!,
+      viewportHeight: this.vh,
+      scrollTop: this.viewport.scrollTop,
+      translateY: this.translateY,
+      totalHeight: this.totalH(),
+      targetOffset: this.animator.isRunning ? this.animator.targetOffset ?? undefined : undefined,
+    });
+    this.layoutMotion.set(snapshot, {
+      generation: this.motionGeneration,
+      arrivalTimer: this.arrivalWindowTimer,
+      acceptedOffset: this.arrivalWindowAcceptedOffset,
+    });
+    return snapshot;
+  }
+
+  private restoreLayout(before: ScrollLayoutSnapshot, targetDelta = 0): boolean {
+    const offset = compensateScrollLayout(before, this.snapshotLayout());
+    if (offset === null) {
+      const fallback = this.followIntent || this.motionRequest?.pinned
+        ? this.clampOffset(Infinity)
+        : this.clampOffset(before.targetOffset ?? visualOffsetOf(before));
+      this.cancelArrivalWindow();
+      this.cancelMotion();
+      this.setVisualOffset(fallback);
+      return false;
+    }
+    const delta = offset - visualOffsetOf(before);
+    this.setVisualOffset(offset);
+    const motion = this.layoutMotion.get(before);
+    // Nested renderer teardown may already have restored a sub-transaction.
+    // Derive the destination from the outer snapshot exactly once, unless a
+    // callback explicitly replaced/cancelled the request in the meantime.
+    if (motion?.generation === this.motionGeneration && before.targetOffset !== undefined && this.animator.isRunning) {
+      this.animator.setTarget(before.targetOffset + delta + targetDelta);
+    } else if (!motion || motion.generation === this.motionGeneration) {
+      this.animator.rebase(delta + targetDelta);
+    }
+    if (this.arrivalWindowTimer !== null) {
+      if (motion?.arrivalTimer === this.arrivalWindowTimer) {
+        this.arrivalWindowAcceptedOffset = motion.acceptedOffset + delta + targetDelta;
+      } else this.arrivalWindowAcceptedOffset += delta + targetDelta;
+    }
+    this.resolveMotionTarget();
+    if (this.animator.isRunning) {
+      const target = this.animator.targetOffset;
+      if (target !== null) this.animator.setTarget(this.clampOffset(target));
+    } else if (this.outOfBounds) {
+      this.moveToOffset(this.clampOffset(offset));
+    }
+    return true;
   }
 
   private setScrollTopProgrammatic(top: number): void {
@@ -1000,81 +1181,68 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     }
   }
 
-  /** Smoothly scroll to the current bottom edge, re-evaluating target each frame. */
-  smoothScrollToBottom(opts?: {
-    onComplete?: () => void;
-    onCancel?: () => void;
-  }): void {
-    this.animatedBottomFollow = true;
-    this.animator.start({
-      getTargetTop: () => Math.max(0, this.content.scrollHeight - this.vh),
-      getCurrentTop: () => this.viewport.scrollTop,
-      setTop: (top) => this.setScrollTopProgrammatic(top),
-      getBounds: () => ({
-        min: 0,
-        max: Math.max(0, this.content.scrollHeight - this.vh),
-      }),
-      onComplete: () => {
-        this.animatedBottomFollow = false;
-        this.emit();
-        opts?.onComplete?.();
-      },
-      onCancel: () => {
-        this.animatedBottomFollow = false;
-        opts?.onCancel?.();
-      },
-    });
+  /** Capture an approved bottom destination; later unapproved growth cannot chase it. */
+  private followAcceptedBottom(): void {
+    this.motionGeneration++;
+    const entry = [...this.mounted].reverse().find(row => !row.item.displayInterval);
+    this.followIntent = true;
+    this.motionRequest = entry ? {
+      id: entry.item.ids?.at(-1) ?? entry.item.id,
+      clientMessageId: entry.item.clientMessageId,
+      anchor: 'bottom', overscroll: 0, direction: 1, pinned: true,
+    } : null;
+    this.moveToOffset(this.clampOffset(Infinity));
   }
 
-  /** Smoothly scroll to a mounted item index with optional over-scroll peek when trailing items exist. */
-  smoothScrollToIndex(
-    index: number,
-    anchor: 'top' | 'center' | 'bottom' = 'center',
-    opts?: {
-      overPx?: number;
-      onComplete?: () => void;
-      onCancel?: () => void;
-    },
-  ): boolean {
-    const targetEntry = this.mounted[index];
-    if (!targetEntry) return false;
-    const targetId = targetEntry.item.id;
-    const overPx = Math.max(0, opts?.overPx ?? 0);
-    this.animatedBottomFollow = false;
-
-    this.animator.start({
-      getTargetTop: () => {
-        const idx = this.indexOfId(targetId);
-        if (idx < 0) return null;
-        const top = this.topOf(idx);
-        const h = this.mounted[idx].height;
-        let baseTop: number;
-        if (anchor === 'top') {
-          baseTop = top;
-        } else if (anchor === 'bottom') {
-          baseTop = top + h - this.vh;
-        } else {
-          baseTop = top + h / 2 - this.vh / 2;
-        }
-        const maxTop = Math.max(0, this.content.scrollHeight - this.vh);
-        if (overPx > 0 && idx < this.mounted.length - 1) {
-          baseTop = Math.min(maxTop, baseTop + overPx);
-        }
-        return Math.max(0, Math.min(maxTop, baseTop));
-      },
-      getCurrentTop: () => this.viewport.scrollTop,
-      setTop: (top) => this.setScrollTopProgrammatic(top),
-      getBounds: () => ({
-        min: 0,
-        max: Math.max(0, this.content.scrollHeight - this.vh),
-      }),
-      onComplete: () => {
-        this.emit();
-        opts?.onComplete?.();
-      },
-      onCancel: opts?.onCancel,
-    });
+  private startMessageMotion(id: number, overscroll: number): boolean {
+    if (!Number.isFinite(overscroll)) return false;
+    const index = this.indexOfId(id);
+    if (index < 0) return false;
+    this.motionGeneration++;
+    const entry = this.mounted[index];
+    const top = Math.max(0, this.vh - this.totalH()) + this.topOf(index);
+    const height = this.messageHeight(entry);
+    const current = this.visualOffset;
+    const direction = top + height / 2 < current + this.vh / 2 ? -1 : 1;
+    this.followIntent = false;
+    this.motionRequest = {
+      id, clientMessageId: entry.item.clientMessageId,
+      anchor: Math.abs(top - current) <= Math.abs(top + height - this.vh - current) ? 'top' : 'bottom',
+      overscroll: Math.max(0, overscroll), direction, pinned: false,
+    };
+    // A visible target is a no-op, including when it replaces an older request.
+    if (overscroll <= 0 && top >= current && top + height <= current + this.vh) {
+      this.cancelMotion();
+      // Visibility does not make an out-of-range visual coordinate legal.
+      if (this.outOfBounds) this.moveToOffset(this.clampOffset(current));
+      return true;
+    }
+    if (top >= current && top + height <= current + this.vh) {
+      this.motionRequest.offsetFromTop = current - top;
+    }
+    this.resolveMotionTarget();
     return true;
+  }
+
+  private resolveMotionTarget(): void {
+    const request = this.motionRequest;
+    if (!request || request.pinned) return;
+    let index = this.indexOfId(request.id);
+    if (index < 0 && request.clientMessageId) {
+      index = this.mounted.findIndex(entry => this.itemFulfilledCids(entry.item).includes(request.clientMessageId!));
+      if (index >= 0) request.id = this.mounted[index].item.id;
+    }
+    if (index < 0) {
+      this.cancelMotion();
+      this.moveToOffset(this.clampOffset(this.visualOffset));
+      return;
+    }
+    const entry = this.mounted[index];
+    const top = Math.max(0, this.vh - this.totalH()) + this.topOf(index);
+    const height = this.messageHeight(entry);
+    const aligned = request.offsetFromTop !== undefined ? top + request.offsetFromTop
+      : request.anchor === 'top' ? top : top + height - this.vh;
+    this.moveToOffset(this.clampOffset(aligned + request.direction * request.overscroll));
   }
 
   /**
@@ -1105,39 +1273,19 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     return this.captureAnchor();
   }
 
-  /** Replacements and row reflow retain the real message nearest the viewport midpoint. */
-  private captureCenterAnchor(): Anchor {
-    const middle = this.viewport.scrollTop + this.vh / 2;
-    let selected = -1;
-    let distance = Infinity;
-    for (let i = 0; i < this.mounted.length; i++) {
-      const entry = this.mounted[i];
-      if (entry === this.ghostEntry || !this.entrySeqs(entry.item).length) continue;
-      const top = this.topOf(i);
-      const bottom = top + this.messageHeight(entry);
-      const delta = Math.max(top - middle, middle - bottom, 0);
-      if (delta < distance) { selected = i; distance = delta; }
-    }
-    if (selected < 0) return { mode: 'offset', offset: this.viewport.scrollTop };
-    const entry = this.mounted[selected];
-    return { mode: 'item', id: entry.item.id,
-      offset: this.viewport.scrollTop - this.topOf(selected),
-      fallbackId: this.mounted.slice(selected + 1).find((entry) => this.entrySeqs(entry.item).length > 0)?.item.id ?? null };
-  }
-
   private isFollowingBottom(): boolean {
     return this.cfg.followBottom && this.pendingMeasure.length === 0 &&
-      (this.mountedScroll.followingBottom ||
-        (this.animatedBottomFollow && this.animator.isRunning) ||
+      (this.followIntent ||
         (this.arrivalWindowTimer !== null && this.arrivalWindowWasPinned) ||
-        this.viewport.scrollTop + this.vh >= this.totalH() - 1);
+        ((this.noNewer || this.arrivalDemand) &&
+          this.visualOffset + this.vh >= this.totalH() - 1));
   }
 
   /** Capture before renderer mutation; growth excludes attached presentation. */
   private captureLayoutChange() {
     this.flushLayoutRemeasure();
     return {
-      anchor: this.captureCenterAnchor(),
+      snapshot: this.snapshotLayout(),
       attached: this.isFollowingBottom(),
       heights: new Map(this.mounted.map(entry => [entry, this.messageHeight(entry)])),
       totals: new Map(this.mounted.map(entry => [entry, entry.height])),
@@ -1155,13 +1303,9 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
 
   private finishLayoutChange(before: ReturnType<ChatBoxScroller<T>['captureLayoutChange']>): void {
     this.measurePending();
-    let beforeTotalH = 0;
-    let afterTotalH = 0;
     let growth = 0;
     let tailDelta = 0;
-    for (const prevH of before.totals.values()) beforeTotalH += prevH;
     for (const entry of this.mounted) {
-      afterTotalH += entry.height;
       const prevMsgH = before.heights.get(entry) ?? 0;
       const prevTotalH = before.totals.get(entry) ?? prevMsgH;
       const prevTailH = Math.max(0, prevTotalH - prevMsgH);
@@ -1170,83 +1314,16 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     }
     if (before.totals.size === this.mounted.length &&
         this.mounted.every(entry => before.totals.get(entry) === entry.height)) return;
-    if (this.mountedScroll.followingBottom) this.mountedScroll.cancel();
-    this.applyAnchor(before.anchor);
-    if (tailDelta < 0 && growth === 0) {
-      // 3dot disappearance is immediate: remove only any blank space left below the last row.
-      this.content.style.transform = '';
-      const maxTop = Math.max(0, this.content.scrollHeight - this.vh);
-      if (this.viewport.scrollTop > maxTop) {
-        this.shifting = true;
-        this.viewport.scrollTop = maxTop;
-        this.shifting = false;
-      }
-      return;
-    }
-    if (shouldFollowArrival(before.attached, growth, this.vh)) {
-      const animate = !matchMedia('(prefers-reduced-motion: reduce)').matches;
-      const afterScrollH = this.content.scrollHeight;
-      const beforeScrollH = Math.max(0, afterScrollH - (afterTotalH - beforeTotalH));
-      const plan = planArrivalDisplacement({
-        beforeTotalH: beforeScrollH,
-        afterTotalH: afterScrollH,
-        viewportHeight: this.vh,
-        beforeScrollTop: this.viewport.scrollTop,
-        animate,
-      });
-      if (plan.mode === 'scrollTop') {
-        this.mountedScroll.start(plan.finalScrollTop, true, true);
-      } else if (plan.mode === 'transform') {
-        this.shifting = true;
-        this.viewport.scrollTop = plan.finalScrollTop;
-        this.shifting = false;
-        const startY = plan.startTranslateY;
-        const clear = () => {
-          this.content.style.transform = '';
-        };
-        const started = this.scheduler?.startAnimation({
-          durationMs: 180,
-          render: (progress) => {
-            const eased = 1 - Math.pow(1 - progress, 3);
-            const y = startY * (1 - eased);
-            this.content.style.transform =
-              Math.abs(y) < 0.25 ? '' : `translateY(${y.toFixed(2)}px)`;
-          },
-          finish: clear,
-          cancel: clear,
-        });
-        if (!started) clear();
-      } else {
-        this.content.style.transform = '';
-        this.mountedScroll.start(plan.finalScrollTop, false, true);
-      }
+    const survived = this.restoreLayout(before.snapshot);
+    if (!survived) return;
+    if (growth > 0) this.scheduleArrivalWindow(before.attached, growth, before.snapshot);
+    else if (tailDelta !== 0 && before.attached && this.arrivalWindowTimer === null) {
+      this.followAcceptedBottom();
     }
   }
 
   private messageHeight(entry: Entry<T>): number {
     return Math.max(0, entry.height - entry.tailHeight);
-  }
-
-  /** Capture before an edge mutation: older uses the original top message's top;
-   * newer uses the original bottom message's bottom, excluding attached tail presentation.
-   * Keep its identity through mounting; never select the newly inserted edge on restore. */
-  private captureHistoryEdgeAnchor(direction: 'older' | 'newer'): Anchor {
-    const entry = selectHistoryEdges(
-      this.mounted,
-      (entry) => this.entrySeqs(entry.item).length > 0 &&
-        this.rowPresentations.get(entry.vs)?.kind === 'message',
-    )[direction];
-    if (!entry) return { mode: 'offset', offset: this.viewport.scrollTop };
-    const index = this.mounted.indexOf(entry);
-    return {
-      mode: direction === 'older' ? 'item' : 'message-bottom',
-      id: entry.item.id,
-      offset:
-        this.viewport.scrollTop -
-        this.topOf(index) -
-        (direction === 'newer' ? this.messageHeight(entry) : 0),
-      fallbackId: null,
-    };
   }
 
   /** Preserve the visible message across content mutations; new-message following is a separate decision. */
@@ -1272,17 +1349,17 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     return {
       mode: 'item',
       id: this.mounted[idx].item.id,
-      offset: this.viewport.scrollTop - this.topOf(idx),
+      offset: this.visualOffset - this.topOf(idx),
       fallbackId: this.mounted.slice(idx + 1).find((entry) => this.entrySeqs(entry.item).length > 0)?.item.id ?? null,
     };
   }
 
   /**
    * The ONE place `scrollTop` is written for stabilization/positioning. Derives it from the anchor:
-   *  - `bottom` ⇒ content.scrollHeight - vh (LIVE DOM — immune to prefix staleness; matches the old positionAtBottom).
+   *  - `bottom` ⇒ content.scrollHeight - vh (live DOM, independent of prefix staleness).
    *  - `item`  ⇒ topOf(id) + offset (prefix[]). If the anchored id was removed, fall back to fallbackId (the successor
    *    that shifted into its slot) with the same offset; if that is gone too, leave scrollTop unchanged.
-   * Clamps to [0, content.scrollHeight - vh] (matches the old positionMounted clamp). Guarded against the destroyed state.
+   * Clamps to the measured scroll range. Guarded against the destroyed state.
    *
    * Initial explicit positioning also runs while `filling`. Ordinary edge demand starts only after the
    * complete first-batch transaction. Measurement uses its own guard to avoid intermediate stabilization.
@@ -1294,7 +1371,7 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
    * and jump). The resize pin's own scroll event consumes that flag; suppressing every anchor write here could
    * instead swallow the next region check after a user scroll.
    */
-  private applyAnchor(a: Anchor): void {
+  private applyAnchor(a: Anchor, previousOffset = this.visualOffset): void {
     if (this.inactive) return;
     let target: number;
     if (a.mode === 'bottom') {
@@ -1307,17 +1384,14 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
       target =
         idx >= 0
           ? this.topOf(idx) +
-            (a.mode === 'message-bottom' ? this.messageHeight(this.mounted[idx]) : 0) +
             a.offset
           : this.viewport.scrollTop;
     }
-    this.shifting = true;
-    this.viewport.scrollTop = clampScrollTop(
-      target,
-      this.content.scrollHeight,
-      this.vh,
-    );
-    this.shifting = false;
+    this.setVisualOffset(this.clampOffset(target));
+    const delta = this.visualOffset - previousOffset;
+    this.animator.rebase(delta);
+    if (this.arrivalWindowTimer !== null) this.arrivalWindowAcceptedOffset += delta;
+    this.resolveMotionTarget();
     this.lastScrollTop = this.viewport.scrollTop;
     this.emit();
   }
@@ -1339,50 +1413,33 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
 
   scrollToTop(): void {
     if (this.inactive) return;
-    // The content origin: the oldest item's top is always prefix[0] = 0, so this is the intentional absolute write
-    // (the one non-anchor write — "go to origin", not "stabilize/position relative to content").
-    this.shifting = true;
-    this.viewport.scrollTop = 0;
-    this.shifting = false;
+    this.navigationGeneration++;
+    this.followIntent = false;
+    this.cancelArrivalWindow();
+    this.cancelMotion();
+    this.setVisualOffset(0);
     this.lastScrollTop = 0;
     this.emit();
   }
 
-  async scrollToIndex(
-    id: number,
-    anchor: 'top' | 'center' | 'bottom' = 'center',
-    highlight = false,
-  ): Promise<boolean> {
+  async smoothScrollToMessage(id: number, overscroll = 0, highlight = false): Promise<boolean> {
+    if (!Number.isFinite(overscroll)) throw new RangeError('Overscroll must be finite');
     if (this.inactive) return false;
-    this.mountedScroll.cancel();
-    const idx = this.indexOfId(id);
-    if (idx >= 0) {
-      const offset = alignedItemOffset(
-        this.mounted[idx].height,
-        this.vh,
-        anchor,
-      );
-      const top = clampScrollTop(
-        this.topOf(idx) + offset,
-        this.content.scrollHeight,
-        this.vh,
-      );
-      const reducedMotion = window.matchMedia(
-        '(prefers-reduced-motion: reduce)',
-      ).matches;
-      this.mountedScroll.start(top, !reducedMotion);
-      if (highlight) this.flashHighlight(idx, id);
-      return true;
+    const generation = ++this.navigationGeneration;
+    const chatId = this.windowContext.chatId;
+    this.cancelArrivalWindow();
+    if (this.indexOfId(id) < 0) {
+      if (!this.onWindowJump) return false;
+      // The host can rebind this kernel to the requested window. Only that
+      // same-conversation successor may finish this request after the await.
+      const opened = await this.onWindowJump({ kind: 'message', messageId: id,
+        anchor: 'center', highlight });
+      if (!opened || this.inactive || generation !== this.navigationGeneration ||
+          chatId !== this.windowContext.chatId) return false;
     }
-    if (this.onWindowJump)
-      return this.onWindowJump({
-        kind: 'message',
-        messageId: id,
-        anchor,
-        highlight,
-      });
-    // Callers without a window owner only support mounted targets.
-    return false; // Window ownership belongs to the caller, not the kernel.
+    const started = this.startMessageMotion(id, overscroll);
+    if (started && highlight) this.flashHighlight(this.indexOfId(id), id);
+    return started;
   }
 
   /** Mount and explicitly position one batch; ordinary edge demand owns subsequent pages. */
@@ -1419,9 +1476,8 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     );
   }
 
-  /** Positioning math for a mounted idx (shared by scrollToIndex / initializeAround) — now an explicit item {@link Anchor}
-   *  applied via {@link applyAnchor}. offset is derived from the alignment + current vh each call (so a resize between
-   *  calls is honored). `shifting` (inside applyAnchor) suppresses direction misdetection. */
+  /** Position the initial window's target using its explicit alignment and current viewport height.
+   * `shifting` inside applyAnchor suppresses direction misdetection. */
   private positionMounted(
     idx: number,
     anchor: 'top' | 'center' | 'bottom',
@@ -1439,7 +1495,8 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
   /** Clear all mounted rows and load/boundary state before initializing the new window. */
   private resetWindowState(): void {
     this.cancelArrivalWindow();
-    this.animator.cancel();
+    this.cancelMotion();
+    this.setVisualOffset(0);
     this.programmaticScrollTop = null;
     this.arrivalDemand = false;
     this.scheduler?.cancelPending();
@@ -1488,7 +1545,7 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     visitor: (geometry: CbMountedGeometry<T>) => boolean | void,
   ): CbViewportGeometry {
     this.flushPrefix();
-    const scrollTop = this.viewport.scrollTop;
+    const scrollTop = this.visualOffset;
     const contentAlignmentOffset = Math.max(0, this.vh - this.totalH());
     for (let index = 0; index < this.mounted.length; index += 1) {
       const entry = this.mounted[index];
@@ -1521,7 +1578,7 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     const top =
       Math.max(0, this.vh - this.totalH()) +
       (this.prefix[index] ?? 0) -
-      this.viewport.scrollTop;
+      this.visualOffset;
     return {
       index,
       item: entry.item,
@@ -1575,8 +1632,16 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     this.tombApplied = new WeakMap();
     if (this.layoutSettleTimer !== undefined) clearTimeout(this.layoutSettleTimer);
     this.layoutSettleTimer = undefined;
+    this.cancelArrivalWindow();
+    this.cancelMotion();
+    this.releasePresentation();
+    this.programmaticScrollTop = null;
     if (this.inactive) return;
-    this.mountedScroll.cancel();
+    this.followIntent = false;
+    this.committedLayout = null;
+    this.cachedLayoutRows = null;
+    this.resizeLayout = null;
+    this.resizeAttached = false;
     this.state = 'ready';
     this.cancelInitialization();
     this.cancelOlderDemand();
@@ -1607,7 +1672,7 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     this.bottomReserveH = 0;
     this.viewport.removeEventListener('scroll', this.onNativeScroll);
     this.viewport.removeEventListener('wheel', this.onScrollIntent);
-    this.viewport.removeEventListener('touchstart', this.onScrollIntent);
+    this.viewport.removeEventListener('touchmove', this.onScrollIntent);
     this.viewport.removeEventListener('pointerdown', this.onScrollIntent);
     this.viewport.removeEventListener('keydown', this.onScrollIntent);
     const errors: unknown[] = [];
@@ -1634,8 +1699,8 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
 
   destroy(): void {
     this.cancelArrivalWindow();
-    this.animator.dispose();
-    this.animatedBottomFollow = false;
+    this.cancelMotion();
+    this.releasePresentation();
     this.programmaticScrollTop = null;
     if (this.state === 'destroyed') return;
     try { this.unbind(); } finally { this.state = 'destroyed'; }
@@ -1890,7 +1955,9 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     const interval = entry.item.displayInterval;
     if (this.inactive || index < 0 || !interval) return;
     if (items.length === 1 && items[0].id === entry.item.id) return;
-    const anchor = this.captureAnchor();
+    const before = this.captureLayoutChange();
+    const latestGap = !this.mounted.slice(index + 1).some(row => !row.optimistic && !row.transient) &&
+      (entry.item.boundary === 'newest' || entry.item.boundary === 'both');
     const successor = this.mounted[index + 1];
     this.releaseInterval(entry);
     this.disposeEntry(entry);
@@ -1915,11 +1982,11 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     }
     this.dirtyPrefix = true;
     this.measurePending();
-    this.applyAnchor(anchor);
+    this.updateHistoryEdges();
+    if (latestGap) this.finishLayoutChange(before);
+    else this.restoreLayout(before.snapshot);
     this.trimOlder();
     this.trimNewer();
-    this.updateHistoryEdges();
-    this.applyAnchor(anchor);
     this.emit();
     this.onViewportStateChanged();
   }
@@ -2141,6 +2208,12 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
   private onViewportResize(): void {
     if (this.inactive) return;
     const width = this.viewport.clientWidth;
+    if (width === this.viewportWidth && this.viewport.clientHeight === this.vh) return;
+    if (this.viewport.clientHeight === 0) {
+      this.cancelArrivalWindow();
+      this.cancelMotion();
+      this.releasePresentation();
+    }
     if (width !== this.viewportWidth) {
       this.viewportWidth = width;
       this.scheduleLayoutRemeasure();
@@ -2155,10 +2228,16 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
       this.resizeDeferred = true;
       return;
     }
-    const anchor = this.captureComposerAnchor(); // BEFORE measureVh (at-bottom test uses the OLD vh + kernel totalH)
-    this.measureVh(); // apply the new vh
+    const anchor = this.isFollowingBottom() ? { mode: 'bottom' as const } : this.captureComposerAnchor();
+    const before = this.snapshotLayout();
+    this.cancelArrivalWindow();
+    this.cancelMotion();
+    this.measureVh();
+    const offset = compensateScrollLayout(before, this.snapshotLayout()) ?? visualOffsetOf(before);
+    this.settlePresentation(offset);
     if (anchor.mode === 'bottom' && this.mounted.length > 0) {
       this.applyAnchor(anchor); // re-pin to the new bottom (new vh)
+      this.releasePresentation();
       // applyAnchor wrote scrollTop under shifting, but that guard resets synchronously — before the async scroll event
       // is dispatched. Set the one-shot flag so onNativeScroll swallows that event. This is the ONE site that needs it:
       // a shrink can pin at a bottom whose newer end is trimmed (noNewer=false), where an armed balance would loadNewer
@@ -2170,10 +2249,23 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
   }
 
   private onScrollIntent = (event: Event) => {
-    if (event instanceof KeyboardEvent &&
-        !['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' '].includes(event.key)) return;
+    if (event.type === 'pointerdown') return; // Scrollbars are hidden while locked; links and taps stay usable.
+    if (event instanceof KeyboardEvent) {
+      const target = event.target;
+      if (target instanceof HTMLElement && target.closest('input, textarea, select, [contenteditable="true"]')) return;
+      if (!['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' '].includes(event.key)) return;
+    }
+    if (this.outOfBounds) {
+      event.preventDefault();
+      return;
+    }
+    this.navigationGeneration++;
+    const upward = event instanceof WheelEvent ? event.deltaY < 0
+      : event instanceof KeyboardEvent ? ['ArrowUp', 'PageUp', 'Home'].includes(event.key) || (event.key === ' ' && event.shiftKey)
+        : false;
+    if (upward) this.followIntent = false;
     this.cancelArrivalWindow();
-    this.animator.cancel();
+    this.cancelMotion();
     this.programmaticScrollTop = null;
   };
 
@@ -2181,18 +2273,26 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     if (this.shifting || this.inactive) return;
     if (this.suppressScrollBalance) {
       this.suppressScrollBalance = false;
-      return;
-    } // consume the reflow-pin's scroll event
+      if (this.programmaticScrollTop !== null &&
+          Math.abs(this.viewport.scrollTop - this.programmaticScrollTop) < 0.001) return;
+    } // Only consume the actual reflow write, never a later user scroll.
     // Native scroll events arrive after the synchronous write guard has reset.
     // Ignore only our actual last offset, not arbitrary scrolls during animation.
     const programmed = this.programmaticScrollTop;
     this.programmaticScrollTop = null;
-    if (programmed !== null && Math.abs(this.viewport.scrollTop - programmed) < 1) {
+    if (programmed !== null && Math.abs(this.viewport.scrollTop - programmed) < 0.001) {
       this.onViewportStateChanged();
       return;
     }
+    if (this.outOfBounds) {
+      this.setScrollTopProgrammatic(this.lockedScrollTop);
+      this.onViewportStateChanged();
+      return;
+    }
+    this.navigationGeneration++;
+    this.followIntent = false;
     this.cancelArrivalWindow();
-    this.animator.cancel();
+    this.cancelMotion();
     this.programmaticScrollTop = null;
     this.onViewportStateChanged();
   };
@@ -2270,6 +2370,7 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     ) {
       this.scheduler?.requestBalance();
     }
+    this.resolveMotionTarget();
     this.emit();
   }
 
@@ -2339,9 +2440,9 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
   }
 
   private commitNewerDelivery(result: CbDemandResult<T>): void {
-    const anchor = this.selectPosition({ kind: 'newerDelivery' });
+    const layout = this.snapshotLayout();
     const before = this.mounted.map((entry) => ({
-      entry, height: this.messageHeight(entry), seqs: this.entrySeqs(entry.item),
+      entry, height: this.messageHeight(entry), seqs: [...this.entrySeqs(entry.item)],
     }));
     const known = new Set(before.flatMap((row) => [...row.seqs]));
     const attached = this.isFollowingBottom();
@@ -2360,11 +2461,10 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
       const old = before.find((row) => row.entry === entry);
       return height + Math.max(0, this.messageHeight(entry) - (old?.height ?? 0));
     }, 0);
+    const survived = this.restoreLayout(layout);
     this.trimOlder();
-    if (this.mountedScroll.followingBottom) this.mountedScroll.cancel();
-    this.applyAnchor(anchor);
-    if (attached && addedHeight > 0) {
-      this.scheduleArrivalWindow(attached, addedHeight);
+    if (survived && attached && addedHeight > 0) {
+      this.scheduleArrivalWindow(attached, addedHeight, layout);
     }
     this.consumeMountedTombs();
     this.emit();
@@ -2403,16 +2503,15 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
       return true;
     }
     this.absorbBoundary(merged); // phase 0: absorb boundary only after passing
-    // Capture the anchor AFTER revalidate (the user's current position — they may have scrolled during the await),
-    // BEFORE the prepend. The prepended batch + ghost-reveal push the anchor item down; applyAnchor follows so the
-    // fold content stays put. Replaces the single compensateAbove(addedPx + rebuildDelta) with one anchor re-apply.
-    // Flush unobserved composer geometry before capturing the delivery-time position.
+    // Flush unobserved composer geometry before capturing the delivery-time
+    // layout. Restore the surviving messages' painted position after prepend,
+    // retaining any active transform instead of clamping it away.
     this.onRegionResize();
-    const anchor = this.selectPosition({ kind: 'olderDelivery' });
+    const before = this.snapshotLayout();
     this.mountBatch(merged, 'older');
     this.updateHistoryEdges();
     this.measurePending();
-    this.applyAnchor(anchor);
+    this.restoreLayout(before);
     return true;
   }
 
@@ -2614,18 +2713,21 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     if (toRemove.length === 0) return;
     this.resorting = true;
     try {
-      // Capture once before removing the optimistic duplicates (a single synchronous batch before paint): an above-fold
-      // removal shifts content up (the anchor follows, fold stays put); a tail removal while pinned re-pins to the new
-      // bottom. Per-source compensateAbove + the above-fold check collapse to one anchor re-apply.
-      const anchor = this.captureAnchor();
+      // The enclosing newer-delivery transaction restores its immutable layout
+      // once after reconciliation, avoiding a second motion-target rebase here.
       for (const source of toRemove) {
         const i = this.mounted.indexOf(source);
         if (i < 0) continue;
+        if (this.motionRequest && this.itemHasId(source.item, this.motionRequest.id)) {
+          const real = this.mounted.find(row => !row.optimistic && !row.transient &&
+            source.item.clientMessageId !== undefined &&
+            this.itemFulfilledCids(row.item).includes(source.item.clientMessageId));
+          if (real) this.motionRequest.id = real.item.id;
+        }
         this.unmountAt(i);
       }
       this.dirtyPrefix = true;
       this.measurePending();
-      this.applyAnchor(anchor);
     } finally {
       this.resorting = false;
     }
@@ -2674,6 +2776,7 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
   private trimOlder(): void {
     if (this.resorting) return; // rule 4a: never trim during a resort
     const anchor = this.captureAnchor();
+    const previousOffset = this.visualOffset;
     let trimmed = false;
     let cumH = 0;
     while (this.mounted.length > 1) {
@@ -2699,7 +2802,7 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     }
     if (trimmed) {
       this.noOlder = false;
-      this.applyAnchor(anchor); // follows the trimmed-above delta; no-op-ish shift that keeps the fold put
+      this.applyAnchor(anchor, previousOffset); // Rebase from pre-removal geometry, before browser clamping.
     }
   }
 
@@ -2724,7 +2827,7 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     return ids !== undefined && ids.includes(id);
   }
 
-  /** Current index of the entry representing id (onElHeight/scrollToIndex/initializeAround). O(n), low frequency. */
+  /** Resolve a message or album-member identity to its current mounted index. O(n). */
   private indexOfId(id: number): number {
     return this.mounted.findIndex((e) => this.itemHasId(e.item, id));
   }
@@ -2836,11 +2939,21 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
 
   private onRegionResize(): void {
     if (this.inactive) return;
-    const anchor = this.hasBottomHistoryLoading
-      ? this.selectPosition({ kind: 'pendingUpdate' })
-      : this.captureComposerAnchor();
+    const before = this.snapshotLayout();
+    const oldReserve = this.bottomReserveH;
+    const attached = this.captureComposerAnchor().mode === 'bottom';
     this.measurePending();
-    this.applyAnchor(anchor);
+    const reserveDelta = this.bottomReserveH - oldReserve;
+    if (this.arrivalWindowTimer !== null || this.animator.isRunning) {
+      // Adjust the captured destination before clamping it to the new range.
+      // Clamping first would count a reserve shrink twice.
+      this.restoreLayout(before, attached || this.followIntent ? reserveDelta : 0);
+    } else if (attached) {
+      this.setVisualOffset(this.clampOffset(Infinity));
+    } else {
+      this.restoreLayout(before);
+    }
+    this.lastScrollTop = this.viewport.scrollTop;
     this.emit();
   }
 
@@ -2899,96 +3012,20 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
         const expectedDomHeight = t + (sentinel?.offsetHeight ?? 0);
         const d = Math.round(expectedDomHeight - sh);
         if (Math.abs(d) > VS_DRIFT_TOLERANCE_PX) {
-          const measuredRows = this.mounted.map((entry, index) => ({
-            index,
-            id: entry.item.id,
-            cached: entry.height,
-            actual: entry.el.offsetHeight,
-          }));
-          const rowMismatches = measuredRows.filter(
-            (row) => row.cached !== row.actual,
-          );
-          const actualRowsH = measuredRows.reduce(
-            (sum, row) => sum + row.actual,
-            0,
-          );
-          // offsetHeight is intentionally integer, so cached===actual cannot expose a repeated fractional
-          // border-box height. Rects retain that fraction; exclude active transform animations because their
-          // scale is paint-only and would create false suspects. Largest residues first makes the offending card
-          // type visible without expanding all mounted rows in DevTools.
-          const fractionalRows = this.mounted
-            .map((entry, index) => {
-              const style = getComputedStyle(entry.el);
-              const rectHeight = entry.el.getBoundingClientRect().height;
-              const inspectPart = (selector: string) => {
-                const element = entry.el.querySelector<HTMLElement>(selector);
-                if (!element) return null;
-                const computed = getComputedStyle(element);
-                return {
-                  selector,
-                  offsetHeight: element.offsetHeight,
-                  rectHeight: Number(
-                    element.getBoundingClientRect().height.toFixed(4),
-                  ),
-                  lineHeight: computed.lineHeight,
-                  paddingTop: computed.paddingTop,
-                  paddingBottom: computed.paddingBottom,
-                  borderTop: computed.borderTopWidth,
-                  borderBottom: computed.borderBottomWidth,
-                };
-              };
-              return {
-                index,
-                id: entry.item.id,
-                tag: entry.el.tagName.toLowerCase(),
-                className: entry.el.className,
-                offsetHeight: entry.el.offsetHeight,
-                rectHeight: Number(rectHeight.toFixed(4)),
-                fraction: Number(
-                  (rectHeight - entry.el.offsetHeight).toFixed(4),
-                ),
-                animated: style.transform !== 'none',
-                parts: [
-                  inspectPart('.msg-row'),
-                  inspectPart('.msg-col'),
-                  inspectPart('.msg-bubble'),
-                  inspectPart('.msg-bubble-text'),
-                  inspectPart('app-msg-date-row'),
-                ].filter((part) => part !== null),
-              };
-            })
-            .filter((row) => !row.animated && Math.abs(row.fraction) >= 0.01)
-            .sort((a, b) => Math.abs(b.fraction) - Math.abs(a.fraction))
-            .slice(0, 20);
-          const regionActualH = this.bottomReserveView?.measure() ?? 0;
-          console.warn(
-            `[vs.measure] height model drifted ${d}px past tolerance (n=${entries.length} mount=${this.mounted.length} expected=${Math.round(expectedDomHeight)} totalH=${Math.round(t)} sh=${sh} vh=${this.vh}) — inspect row fractional heights and unmodeled content children`,
-            {
-              rows: {
-                cachedTotal: this.mounted.reduce(
-                  (sum, entry) => sum + entry.height,
-                  0,
-                ),
-                actualTotal: actualRowsH,
-                mismatches: rowMismatches,
-                fractional: fractionalRows,
-              },
-              regions: {
-                cachedHeight: this.bottomReserveH,
-                actualHeight: regionActualH,
-              },
-              sentinel: {
-                className: sentinel?.className ?? null,
-                offsetHeight: sentinel?.offsetHeight ?? 0,
-              },
-            },
-          );
+          console.warn('[vs.measure] height model drift', {
+            model: expectedDomHeight,
+            dom: sh,
+            delta: d,
+            viewport: this.vh,
+            count: this.mounted.length,
+          });
         }
       }
     }
   }
 
   private emit(): void {
+    if (!this.inactive && this.pendingMeasure.length === 0) this.committedLayout = this.snapshotLayout();
     this.emitFullyVisibleEnter();
     this.onScroll?.(this.getInfo());
   }
@@ -2996,7 +3033,7 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
   private fullyVisibleEntries(): Array<{ item: CbItem<T>; el: HTMLElement }> {
     const alignment = Math.max(0, this.vh - this.totalH());
     const indexes = this.mounted.flatMap((entry, index) => {
-      const top = alignment + this.topOf(index) - this.viewport.scrollTop;
+      const top = alignment + this.topOf(index) - this.visualOffset;
       return entry.height > 0 &&
         top >= -0.5 &&
         top + entry.height <= this.vh + 0.5
