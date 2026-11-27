@@ -59,7 +59,7 @@ describe('ClientStateFeed request-head transport', () => {
     });
   }
 
-  it('appends complete versions and allocates nothing for an unchanged head', async () => {
+  it('compacts complete heads and allocates nothing for an unchanged head', async () => {
     const user = await owner();
     expect(await publish(user, 9007199254740993n, 0n)).toBe(1);
     expect(await publish(user, 9007199254740993n, 0n)).toBeNull();
@@ -73,10 +73,6 @@ describe('ClientStateFeed request-head transport', () => {
           body: row.body,
         })),
     ).toEqual([
-      {
-        feedId: 1,
-        body: { requestEndId: '9007199254740993', requestReadId: '0' },
-      },
       {
         feedId: 2,
         body: {
@@ -167,11 +163,18 @@ describe('ClientStateFeed request-head transport', () => {
       .update(clientStateFeed)
       .set({ updatedAt: sql`CURRENT_TIMESTAMP - INTERVAL '8 days'` })
       .where(eq(clientStateFeed.userId, user.id));
+    for (const mode of ['full', 'delta'] as const) {
+      const retained = await feed.query(user.id, mode, 0, 1);
+      expect(retained.map((row) => row.feedId)).toEqual([1]);
+      expect(retained[0].body).toEqual({
+        requestEndId: '10',
+        requestReadId: '0',
+      });
+    }
     await publish(user, 11n, 0n);
     for (const mode of ['full', 'delta'] as const) {
-      const old = await feed.query(user.id, mode, 0, 1);
-      expect(old.map((row) => row.feedId)).toEqual([1]);
-      expect(old[0].body).toEqual({ requestEndId: '10', requestReadId: '0' });
+      // Compaction moves this key beyond the frozen target. It is delivered in the next range.
+      expect(await feed.query(user.id, mode, 0, 1)).toEqual([]);
       expect(
         (await feed.query(user.id, mode, 1, 2)).map((row) => row.feedId),
       ).toEqual([2]);
@@ -179,7 +182,7 @@ describe('ClientStateFeed request-head transport', () => {
     }
   });
 
-  it('rolls back the head, allocator and appended row together', async () => {
+  it('rolls back the head, allocator and compacted row together', async () => {
     const user = await owner();
     await expect(
       database.db.transaction(async (tx) => {

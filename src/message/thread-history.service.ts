@@ -41,14 +41,13 @@ export class ThreadHistoryService {
       const states = await tx.execute<{
         accountId: number;
         messageEndSeq: number;
-        tombstoneEndSeq: number;
       }>(sql`
-        SELECT "accountId", "messageEndSeq", "tombstoneEndSeq"
+        SELECT "accountId", "messageEndSeq"
         FROM "AccountThreadState" WHERE "threadId" = ${threadId} ORDER BY "accountId"`);
       for (const state of states.rows) {
         await ThreadFeedHeadWriter.advanceInTx(tx, state.accountId, {
           threadId,
-          ...state,
+          messageEndSeq: state.messageEndSeq,
         });
       }
     });

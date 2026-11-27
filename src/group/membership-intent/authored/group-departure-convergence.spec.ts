@@ -16,6 +16,13 @@ vi.mock('../shared/group-membership-revocation-sql.js', () => ({
   groupMembershipRevocationIntentWrite: () => ({}),
   groupMembershipRevocationSql: () => ({}),
 }));
+vi.mock('../../../group/meta/reconcile-client-member-count-in-tx.js', () => ({
+  reconcileClientMemberCountInTx: vi.fn().mockResolvedValue({
+    changed: false,
+    feedId: 0,
+    memberCount: 0,
+  }),
+}));
 
 describe('group-authored departure request convergence', () => {
   beforeEach(() => vi.clearAllMocks());

@@ -3,7 +3,7 @@ import {
   groupStateSql,
 } from '../group/shared/group-state.js';
 import {
-  applyDeltaMirrorMetaItemInTx,
+  applyDeltaMirrorMetaPageInTx,
   finalizeDeltaMirrorMetaRoundInTx,
 } from '../group/meta/apply-delta-mirror-meta-item-in-tx.js';
 import { applyFullMirrorMetaBatchInTx } from '../group/meta/apply-full-mirror-meta-batch-in-tx.js';
@@ -178,29 +178,24 @@ export class FederationThreadMetaRoundExecutorService {
 
         return false;
       }
-      for (const [index, item] of items.entries()) {
+      signal.throwIfAborted();
+      const effect = await this.database.db.transaction(async (tx) => {
         signal.throwIfAborted();
-        const effect = await this.database.db.transaction(async (tx) => {
-          signal.throwIfAborted();
-          const applied = await applyDeltaMirrorMetaItemInTx(tx, {
-            group,
-            item,
-            through: plan.metaTargetId,
-            reachedBoundary: reachedBoundary && index === items.length - 1,
-            messages: this.messages,
-          });
-          signal.throwIfAborted();
-          return applied;
+        const applied = await applyDeltaMirrorMetaPageInTx(tx, {
+          group,
+          items,
+          through: plan.metaTargetId,
+          scannedThrough: fetched.scannedThrough,
+          reachedBoundary,
+          messages: this.messages,
         });
-        if (signal.aborted) return false;
-        await this.prefetchProfiles(
-          effect.profileDemand ? [effect.profileDemand] : [],
-        );
-        if (effect.systemMessageProfileWork)
-          this.events.emit(
-            MESSAGE_PROFILE_WORK_COMMITTED,
-            effect.systemMessageProfileWork,
-          );
+        signal.throwIfAborted();
+        return applied;
+      });
+      if (signal.aborted) return false;
+      await this.prefetchProfiles(effect.profileDemands);
+      for (const work of effect.systemMessageProfileWorks) {
+        this.events.emit(MESSAGE_PROFILE_WORK_COMMITTED, work);
       }
       after = fetched.scannedThrough;
       if (!fetched.hasMore) return false;
@@ -245,12 +240,16 @@ export class FederationThreadMetaRoundExecutorService {
             through,
             scannedThrough: page.scannedThrough,
             reachedBoundary: true,
+            messages: this.messages,
           });
           signal.throwIfAborted();
           return applied;
         });
         if (signal.aborted) return;
         await this.prefetchProfiles(effect.profileDemands);
+        for (const work of effect.systemMessageProfileWorks) {
+          this.events.emit(MESSAGE_PROFILE_WORK_COMMITTED, work);
+        }
 
         return;
       }

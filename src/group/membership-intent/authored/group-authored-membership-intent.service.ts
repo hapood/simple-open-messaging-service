@@ -701,11 +701,9 @@ export class GroupAuthoredMembershipIntentService {
         // An application keeps the applicant's note unless the manager supplies one;
         // completing an invitation preserves the group's own invitation note.
         note:
-          params.note !== undefined
-            ? params.note.slice(0, 255)
-            : row.memberIntentStatus === 'REQUESTED'
-              ? memberNote
-              : (row.groupIntentNote ?? ''),
+          row.memberIntentStatus === 'REQUESTED'
+            ? (params.note?.slice(0, 255) ?? memberNote)
+            : (row.groupIntentNote ?? ''),
         acceptedAt: new Date(),
       },
     });

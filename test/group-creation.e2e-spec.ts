@@ -6,6 +6,8 @@ import { AppModule } from '../src/app.module.js';
 import { DatabaseService } from '../src/database/database.service.js';
 import {
   accountThreadState,
+  clientGroupMetaFeed,
+  durableTask,
   groupMeta,
   groupMetaMemberFeed,
   message,
@@ -400,7 +402,10 @@ describe('group creation', () => {
     });
 
     const [meta] = await database.db
-      .select({ metaEndId: groupMeta.metaEndId })
+      .select({
+        metaEndId: groupMeta.metaEndId,
+        clientMetaEndId: groupMeta.clientMetaEndId,
+      })
       .from(groupMeta)
       .where(eq(groupMeta.threadId, created.threadId));
     const facts = await database.db
@@ -435,13 +440,29 @@ describe('group creation', () => {
       ]),
     );
     expect(
-      await database.db.query.accountThreadState.findFirst({
+      await database.db.query.clientGroupMetaFeed.findFirst({
         where: and(
-          eq(accountThreadState.accountId, owner.id),
-          eq(accountThreadState.threadId, created.threadId),
+          eq(clientGroupMetaFeed.threadId, created.threadId),
+          eq(clientGroupMetaFeed.operation, 'GROUP_ANNOUNCEMENT'),
         ),
       }),
-    ).toMatchObject({ groupMetaFeedEndId: meta?.metaEndId });
+    ).toMatchObject({ sourceFeedId: 1, body: { text: null } });
+    expect(
+      await database.db.query.durableTask.findFirst({
+        where: and(
+          eq(
+            durableTask.scopeKey,
+            JSON.stringify(['THREAD_META_FANOUT', created.threadId]),
+          ),
+          eq(durableTask.status, 'PENDING'),
+        ),
+      }),
+    ).toMatchObject({
+      payload: {
+        threadId: created.threadId,
+        groupMetaFeedEndId: meta?.clientMetaEndId,
+      },
+    });
     await expect(
       database.db.transaction((tx) =>
         readCurrentGroupRosterInTx(tx, created.threadId),

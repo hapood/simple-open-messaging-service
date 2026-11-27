@@ -12,7 +12,7 @@ import { AdminRole, MessageDeleteType } from '../src/database/enums.js';
 import {
   admin,
   adminActionLog,
-  messageTombstone,
+  deletedMessage,
   message,
   messageReport,
   messageThread,
@@ -143,7 +143,7 @@ describe('message report HTTP workflow', () => {
       });
       expect(forbidden.body.code).toBe(BusinessCode.FORBIDDEN);
     }
-    expect(await database.db.select().from(messageTombstone)).toHaveLength(0);
+    expect(await database.db.select().from(deletedMessage)).toHaveLength(0);
   });
 
   it('accepts only one target and returns no report or processing result to the consumer', async () => {
@@ -227,7 +227,7 @@ describe('message report HTTP workflow', () => {
     expect(durable.body.data.tombstones[0].type).toBe(
       MessageDeleteType.MODERATION_REMOVAL,
     );
-    expect(await database.db.select().from(messageTombstone)).toHaveLength(2);
+    expect(await database.db.select().from(deletedMessage)).toHaveLength(2);
     const removed = await adminPost(moderator.cookie, 'message-reports', {
       isDeleted: true,
     });

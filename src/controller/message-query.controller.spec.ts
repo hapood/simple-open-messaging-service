@@ -175,13 +175,14 @@ describe('MessageController.queryMessages cursor contract', () => {
 describe('MessageController.queryDeletedMessages cursor contract', () => {
   it('passes an exclusive reverse cursor and inclusive through boundary', async () => {
     const { controller, queryTombstones } = setup();
-    await controller.queryDeletedMessages({
+    await controller.queryDeletedMessages({ user: { accountId: 1 } } as never, {
       threadId: 42,
       before: 10,
       through: 2,
       take: 20,
     });
     expect(queryTombstones).toHaveBeenCalledWith(
+      undefined,
       42,
       undefined,
       20,
@@ -194,7 +195,7 @@ describe('MessageController.queryDeletedMessages cursor contract', () => {
   it('rejects supplying both tombstone cursors', async () => {
     const { controller, queryTombstones } = setup();
     await expect(
-      controller.queryDeletedMessages({
+      controller.queryDeletedMessages({ user: { accountId: 1 } } as never, {
         threadId: 42,
         after: 1,
         before: 10,

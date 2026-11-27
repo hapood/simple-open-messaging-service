@@ -39,7 +39,7 @@ describe('system message content', () => {
         participants: [me, peer],
       },
       { type: SystemMessageType.GROUP_CREATED, creator: me },
-      { type: SystemMessageType.GROUP_LEFT, member: peer },
+      { type: SystemMessageType.GROUP_LEFT, members: [peer], totalCount: 1 },
       {
         type: SystemMessageType.GROUP_OWNER_TRANSFERRED,
         previousOwner: me,
@@ -63,10 +63,15 @@ describe('system message content', () => {
       parseSystemMessageContent(
         JSON.stringify({
           type: SystemMessageType.GROUP_LEFT,
-          member: { ...peer, domain: 'peer.test' },
+          members: [{ ...peer, domain: 'peer.test' }],
+          totalCount: 1,
         }),
       ),
-    ).toEqual({ type: SystemMessageType.GROUP_LEFT, member: peer });
+    ).toEqual({
+      type: SystemMessageType.GROUP_LEFT,
+      members: [peer],
+      totalCount: 1,
+    });
   });
 
   it.each([

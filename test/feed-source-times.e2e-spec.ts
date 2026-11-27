@@ -64,7 +64,7 @@ describe('persisted feed item source times', () => {
         fail = false,
       ) => {
         if (kind === 'state') {
-          return state.run(domain, id, {
+          return state.run(id, new AbortController().signal, {
             fetch: async () => ({
               items: items.map((item) => ({
                 ...item,

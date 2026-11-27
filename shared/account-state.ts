@@ -1,7 +1,6 @@
 /** One fixed record per account cache. Null means that coordinate has not been observed.
  * Request IDs are decimal PostgreSQL bigint strings, never JavaScript numbers. */
 export interface AccountState {
-  schemaVersion: 1;
   selfProfile: AccountSelfProfile | null;
   selfIdentity: { account: string } | null;
   composerDrafts: AccountComposerDraft[];

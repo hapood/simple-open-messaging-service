@@ -36,6 +36,7 @@ import {
 import * as tables from '../src/database/schema.js';
 import { BusinessCode } from '../src/common/business-code.js';
 import { GroupRole } from '../src/database/enums.js';
+import { GroupMetaFeedService } from '../src/group/meta/group-meta-feed.service.js';
 import { GroupService } from '../src/group/group.service.js';
 import { GroupAuthoredMembershipIntentService } from '../src/group/membership-intent/authored/group-authored-membership-intent.service.js';
 import { MemberAuthoredGroupMembershipIntentService } from '../src/group/membership-intent/authored/member-authored-group-membership-intent.service.js';
@@ -180,6 +181,7 @@ describe('group join decision', () => {
       services.federation,
       services.mutations,
       { tick: vi.fn().mockResolvedValue(undefined) } as never,
+      app.get(GroupMetaFeedService),
     );
   });
   afterEach(async () => {
@@ -363,7 +365,18 @@ describe('group join decision', () => {
         [f.group.threadId],
       )
     ).rows[0];
-    expect(joined.content.type).toBe('GROUP_JOINED');
+    expect(joined.content).toEqual({
+      type: 'GROUP_JOINED',
+      members: [
+        {
+          account: f.applicant.account,
+          publisherNamespaceId: 0,
+          profileNamespaceId: 0,
+          profileRev: 1,
+        },
+      ],
+      totalCount: 1,
+    });
   });
 
   it('rejects an inactive source application without a departure even when the roster is stale', async () => {
@@ -1058,7 +1071,8 @@ describe('group join decision', () => {
       });
       expect(task.checkpoint).toEqual({});
     }
-    // The new member's row publishes the client projection head, not the S2S allocator.
+    // Resource heads have independent fanout tasks; the participant retains only
+    // its profile pointer, not the client meta watermark.
     const participant = await database.db.query.accountThreadState.findFirst({
       where: and(
         eq(tables.accountThreadState.threadId, f.group.threadId),
@@ -1071,7 +1085,19 @@ describe('group join decision', () => {
         [f.group.threadId],
       )
     ).rows;
-    expect(participant?.groupMetaFeedEndId).toBe(Number(meta.clientMetaEndId));
+    expect(
+      after.find(
+        (task) =>
+          task.scopeKey ===
+          JSON.stringify(['THREAD_META_FANOUT', f.group.threadId]),
+      ),
+    ).toMatchObject({
+      taskType: 'FAN_OUT_THREAD_META',
+      payload: {
+        threadId: f.group.threadId,
+        groupMetaFeedEndId: Number(meta.clientMetaEndId),
+      },
+    });
     const [profileFact] = (
       await database.pool.query(
         `SELECT "feedId", body -> 'profileRev' AS rev
@@ -1493,11 +1519,17 @@ describe('group join decision', () => {
         [f.group.threadId],
       )
     ).rows;
-    expect(message.content).toMatchObject({
+    expect(message.content).toEqual({
       type: 'GROUP_LEFT',
-      member: {
-        account: f.applicant.account,
-      },
+      members: [
+        {
+          account: f.applicant.account,
+          publisherNamespaceId: 0,
+          profileNamespaceId: 0,
+          profileRev: 1,
+        },
+      ],
+      totalCount: 1,
     });
     const { rows: watermark } = await database.pool.query(
       `SELECT "messageVisibleThroughSeq" FROM "AccountThreadState"
@@ -2440,6 +2472,7 @@ describe('group join decision', () => {
         services.mutations,
         services.federation,
         { tick: vi.fn().mockResolvedValue(undefined) } as never,
+        app.get(GroupMetaFeedService),
       );
     });
 

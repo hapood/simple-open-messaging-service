@@ -41,6 +41,8 @@ describe('thread feed database previews', () => {
                 threadProfileRev: 3,
                 profileSourceId: 12,
                 messageEndSeq: 4,
+                authorAccount: 'reader',
+                authorNamespaceId: 0,
                 tombstoneEndSeq: 2,
                 groupMetaFeedEndId: 4,
                 announcementReadFeedId: 2,
@@ -51,12 +53,11 @@ describe('thread feed database previews', () => {
             ],
           },
     );
-    const db = {
-      db: { transaction: (run: (tx: unknown) => unknown) => run({ execute }) },
-    };
+    const transaction = vi.fn((run: (tx: unknown) => unknown) => run({ execute }));
+    const db = { db: { transaction } };
     const service = new ThreadFeedService(db as never);
     Object.assign(service, { previews: { limit: 3, readInTx: read } });
-    return { service, read, execute };
+    return { service, read, execute, transaction };
   }
 
   it('omits previews by default and never queries previews for zero', async () => {
@@ -65,7 +66,6 @@ describe('thread feed database previews', () => {
     expect(result.items[0]).not.toHaveProperty('previews');
     expect(result.items[0]).not.toHaveProperty('establishedAt');
     expect(result.items[0]).toMatchObject({
-      groupMetaFeedEndId: '4',
       announcementReadFeedId: 2,
       type: 'P2P',
       blocked: false,
@@ -73,7 +73,10 @@ describe('thread feed database previews', () => {
       profileAccount: 'peer',
       publisherNamespaceId: 0,
       profileRev: 3,
+      author: { account: 'reader', namespaceId: 0 },
     });
+    expect(result.items[0]).not.toHaveProperty('authorAccount');
+    expect(result.items[0]).not.toHaveProperty('authorNamespaceId');
     expect(read).not.toHaveBeenCalled();
   });
 
@@ -120,6 +123,9 @@ describe('thread feed database previews', () => {
             publisherNamespaceId: 7,
             profileAccount: '!group',
             profileRev: 3,
+            messageEndSeq: 8,
+            authorAccount: 'author',
+            authorNamespaceId: 12,
             groupMetaFeedEndId: null,
           },
         ],
@@ -143,11 +149,47 @@ describe('thread feed database previews', () => {
       previewCount: 2,
     });
     expect(result.items[0].publisherNamespaceId).toBe(7);
+    expect(result.items[0].author).toEqual({ account: 'author', namespaceId: 12 });
     expect(result.items[0]).not.toHaveProperty('domain');
     expect(result.items[0].previews?.map((preview) => preview.sender)).toEqual([
       { account: 'peer', profileNamespaceId: 0, profileRev: 3 },
       { account: 'peer', profileNamespaceId: 7, profileRev: 3 },
     ]);
+  });
+
+  it('omits author at zero and reads head author in the same read-only snapshot', async () => {
+    const { service, execute, transaction } = setup();
+    execute.mockResolvedValueOnce({ rows: [{ threadFeedEndId: 10 }] })
+      .mockResolvedValueOnce({ rows: [{
+        threadId: 7, threadFeedId: 10, messageEndSeq: 0,
+        authorAccount: null, authorNamespaceId: null,
+      }] });
+    const result = await service.queryThreadFeedDelta(1, { after: 0 });
+    expect(result.items[0]).not.toHaveProperty('author');
+    expect(transaction).toHaveBeenCalledWith(expect.any(Function), {
+      isolationLevel: 'repeatable read', accessMode: 'read only',
+    });
+  });
+
+  it('returns the system author rather than filtering it or falling back to a peer', async () => {
+    const { service, execute } = setup();
+    execute.mockResolvedValueOnce({ rows: [{ threadFeedEndId: 10 }] })
+      .mockResolvedValueOnce({ rows: [{
+        threadId: 7, threadFeedId: 10, messageEndSeq: 3,
+        authorAccount: '$system', authorNamespaceId: 0,
+      }] });
+    const result = await service.queryThreadFeedDelta(1, { after: 0 });
+    expect(result.items[0].author).toEqual({ account: '$system', namespaceId: 0 });
+  });
+
+  it('rejects a nonzero head whose exact author is missing', async () => {
+    const { service, execute } = setup();
+    execute.mockResolvedValueOnce({ rows: [{ threadFeedEndId: 10 }] })
+      .mockResolvedValueOnce({ rows: [{
+        threadId: 7, threadFeedId: 10, messageEndSeq: 4,
+        authorAccount: null, authorNamespaceId: null,
+      }] });
+    await expect(service.queryThreadFeedDelta(1, { after: 0 })).rejects.toThrow('author');
   });
 
   it('renders mention entities as display text in previews, not wire markup', async () => {

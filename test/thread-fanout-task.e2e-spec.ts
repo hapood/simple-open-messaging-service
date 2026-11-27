@@ -1,3 +1,4 @@
+import { ClientStateFeedService } from '../src/client-state-feed/client-state-feed.service.js';
 import { parseAccountThreadFanoutTarget } from '../src/message/account-thread-fanout-task.js';
 import type { ProfiledAddress } from '../shared/profiled-address.js';
 import type { SystemMessageInput } from '../src/message/system-message.js';
@@ -27,6 +28,9 @@ import { DurableTaskType } from '../src/durable-task/durable-task.constants.js';
 import { acquireThreadContentLockInTx } from '../src/common/locks/thread-content-lock.js';
 import {
   enqueueThreadFanoutInTx,
+  enqueueFederationThreadFanoutInTx,
+  enqueueThreadTombFanoutInTx,
+  enqueueThreadMetaFanoutInTx,
   enqueueMessageFanoutsInTx,
   threadFanoutScope,
 } from '../src/message/thread-fanout-task.js';
@@ -46,6 +50,7 @@ describe('transactional thread fanout queue', () => {
   const progress = new ThreadFanoutProgressService(
     database,
     new MessageVisibilityService(database),
+    new ClientStateFeedService(database, {} as never, {} as never),
   );
   const messages = new MessageService(database, {} as never, {} as never);
   let threadId: number;
@@ -63,13 +68,12 @@ describe('transactional thread fanout queue', () => {
       .returning();
     threadId = thread.id;
   });
-  const enqueue = (messageEndSeq: number, tombstoneEndSeq = 0) =>
+  const enqueue = (messageEndSeq: number) =>
     database.db.transaction(async (tx) => {
       const lock = (await acquireThreadContentLockInTx(tx, threadId))!;
       return enqueueThreadFanoutInTx(tx, lock, {
         threadId,
         messageEndSeq,
-        tombstoneEndSeq,
       });
     });
 
@@ -187,12 +191,17 @@ describe('transactional thread fanout queue', () => {
       expect(queued.payload.messageEndSeq).toBe(1);
       const task = (await store.claim(queued.id))!;
       const target = parseAccountThreadFanoutTarget(task.payload);
-      expect(await progress.projectAccount(task.id, target)).toHaveLength(1);
+      expect(
+        (await progress.projectAccount(task.id, target)).projected,
+      ).toHaveLength(1);
       const before = await database.db.query.accountThreadState.findFirst({
         where: eq(accountThreadState.accountId, target.accountId),
       });
       expect(before?.messageEndSeq).toBe(1);
-      expect(await progress.projectAccount(task.id, target)).toEqual([]);
+      expect(await progress.projectAccount(task.id, target)).toEqual({
+        projected: [],
+        clientUpdates: [],
+      });
       const after = await database.db.query.accountThreadState.findFirst({
         where: eq(accountThreadState.accountId, target.accountId),
       });
@@ -239,7 +248,10 @@ describe('transactional thread fanout queue', () => {
         .delete(messageThread)
         .where(eq(messageThread.id, threadId));
     }
-    expect(await progress.projectAccount(task.id, target)).toEqual([]);
+    expect(await progress.projectAccount(task.id, target)).toEqual({
+      projected: [],
+      clientUpdates: [],
+    });
     expect(
       (
         await database.db.query.durableTask.findFirst({
@@ -299,7 +311,8 @@ describe('transactional thread fanout queue', () => {
       .values({ accountId: member.id, threadId });
     await messages.writeSystemMessage(threadId, {
       type: 'GROUP_LEFT',
-      member: participant(member),
+      members: [participant(member)],
+      totalCount: 1,
     });
     const [first] = (await database.db.select().from(durableTask)).filter(
       (task) => task.taskType === directedType,
@@ -310,7 +323,7 @@ describe('transactional thread fanout queue', () => {
         firstTask.id,
         parseAccountThreadFanoutTarget(firstTask.payload),
       ),
-    ).toEqual([]);
+    ).toEqual({ projected: [], clientUpdates: [] });
     await database.db
       .update(durableTask)
       .set({ status: 'SUCCEEDED', completedAt: new Date() })
@@ -322,7 +335,8 @@ describe('transactional thread fanout queue', () => {
     await database.db.transaction(async (tx) => {
       const boundary = await messages.writeSystemMessageInTx(tx, threadId, {
         type: 'GROUP_LEFT',
-        member: participant(member),
+        members: [participant(member)],
+        totalCount: 1,
       });
       await tx
         .update(accountThreadState)
@@ -338,10 +352,12 @@ describe('transactional thread fanout queue', () => {
     )!;
     const task = (await store.claim(next.id))!;
     expect(
-      await progress.projectAccount(
-        task.id,
-        parseAccountThreadFanoutTarget(task.payload),
-      ),
+      (
+        await progress.projectAccount(
+          task.id,
+          parseAccountThreadFanoutTarget(task.payload),
+        )
+      ).projected,
     ).toHaveLength(1);
   });
 
@@ -358,7 +374,7 @@ describe('transactional thread fanout queue', () => {
       expect(task.payload).toEqual({
         threadId,
         messageEndSeq: 6,
-        tombstoneEndSeq: 3,
+        ...(task.taskType === federationType ? { tombstoneEndSeq: 3 } : {}),
       });
       expect(task.scopeKey).toBe(
         threadFanoutScope(task.taskType as typeof federationType, threadId),
@@ -417,20 +433,15 @@ describe('transactional thread fanout queue', () => {
 
   it('yields only to its own newer federation task and preserves both heads', async () => {
     const f = await federationFixture();
-    await enqueue(20, 20);
+    await enqueue(20);
     let successor: bigint | undefined;
     f.heads.projectCurrentInTx.mockImplementationOnce(async (tx) => {
       const lock = (await acquireThreadContentLockInTx(tx, threadId))!;
-      successor = await enqueueThreadFanoutInTx(
-        tx,
-        lock,
-        {
-          threadId,
-          messageEndSeq: 6,
-          tombstoneEndSeq: 2,
-        },
-        federationType,
-      );
+      successor = await enqueueFederationThreadFanoutInTx(tx, lock, {
+        threadId,
+        messageEndSeq: 6,
+        tombstoneEndSeq: 2,
+      });
     });
     await f.handler.execute(f.task);
     expect(f.heads.projectCurrentInTx).toHaveBeenCalledTimes(1);
@@ -500,7 +511,6 @@ describe('transactional thread fanout queue', () => {
     expect(queued[0].payload).toEqual({
       threadId,
       messageEndSeq: 2,
-      tombstoneEndSeq: 0,
     });
     expect(queued[0].status).toBe('PENDING');
   });
@@ -658,34 +668,57 @@ describe('transactional thread fanout queue', () => {
     ).toMatchObject({ checkpoint: { phase: 'DONE', afterNamespaceId: 0 } });
   });
 
-  it('merges pending watermarks by MAX', async () => {
-    const first = await enqueue(5, 1);
-    expect(await enqueue(4, 2)).toBe(first);
-    const rows = await database.db.select().from(durableTask);
-    expect(rows).toHaveLength(1);
-    expect(rows[0].payload).toEqual({
-      threadId,
-      messageEndSeq: 5,
-      tombstoneEndSeq: 2,
-    });
+  it('merges independent resource watermarks by MAX without coupling their tasks', async () => {
+    const enqueueResources = (
+      messageEndSeq: number,
+      tombstoneEndSeq: number,
+      groupMetaFeedEndId: number,
+    ) =>
+      database.db.transaction(async (tx) => {
+        const lock = (await acquireThreadContentLockInTx(tx, threadId))!;
+        return Promise.all([
+          enqueueThreadFanoutInTx(tx, lock, { threadId, messageEndSeq }),
+          enqueueThreadTombFanoutInTx(tx, lock, { threadId, tombstoneEndSeq }),
+          enqueueThreadMetaFanoutInTx(tx, lock, {
+            threadId,
+            groupMetaFeedEndId,
+          }),
+        ]);
+      });
+    const first = await enqueueResources(5, 1, 4);
+    expect(await enqueueResources(4, 2, 3)).toEqual(first);
+    const rows = await store.findEligible(
+      [
+        DurableTaskType.FAN_OUT_THREAD_CONTENT,
+        DurableTaskType.FAN_OUT_THREAD_TOMB,
+        DurableTaskType.FAN_OUT_THREAD_META,
+      ],
+      10,
+    );
+    expect(rows).toHaveLength(3);
+    expect(rows.map((row) => row.payload)).toEqual(
+      expect.arrayContaining([
+        { threadId, messageEndSeq: 5 },
+        { threadId, tombstoneEndSeq: 2 },
+        { threadId, groupMetaFeedEndId: 4 },
+      ]),
+    );
   });
 
-  it('durably yields to a newer target while preserving both heads and resetting no successor cursor', async () => {
-    const first = await enqueue(5, 3);
+  it('durably yields to a newer message target without resetting the successor cursor', async () => {
+    const first = await enqueue(5);
     await store.claim(first);
     expect(
       await progress.yieldToNewer(first, {
         threadId,
         messageEndSeq: 5,
-        tombstoneEndSeq: 3,
       }),
     ).toBe(false);
-    const next = await enqueue(6, 2);
+    const next = await enqueue(6);
     expect(
       await progress.yieldToNewer(first, {
         threadId,
         messageEndSeq: 5,
-        tombstoneEndSeq: 3,
       }),
     ).toBe(true);
     const completed = await database.db.query.durableTask.findFirst({
@@ -700,7 +733,6 @@ describe('transactional thread fanout queue', () => {
     expect(successor?.payload).toEqual({
       threadId,
       messageEndSeq: 6,
-      tombstoneEndSeq: 3,
     });
     expect(successor?.checkpoint).toEqual({});
     expect(
@@ -718,18 +750,17 @@ describe('transactional thread fanout queue', () => {
   });
 
   it('does not yield to an equal target or an unclaimed old task', async () => {
-    const first = await enqueue(5, 3);
+    const first = await enqueue(5);
     await store.claim(first);
-    const next = await enqueue(5, 3);
+    const next = await enqueue(5);
     expect(
       await progress.yieldToNewer(first, {
         threadId,
         messageEndSeq: 5,
-        tombstoneEndSeq: 3,
       }),
     ).toBe(false);
     await store.markSucceeded(first);
-    const trailing = await enqueue(6, 4);
+    const trailing = await enqueue(6);
     expect(trailing).toBe(next);
     expect(await progress.read(first).catch(() => null)).toBeNull();
   });
@@ -769,7 +800,6 @@ describe('transactional thread fanout queue', () => {
         await enqueueThreadFanoutInTx(tx, lock, {
           threadId,
           messageEndSeq: 1,
-          tombstoneEndSeq: 0,
         });
         throw new Error('abort source');
       }),

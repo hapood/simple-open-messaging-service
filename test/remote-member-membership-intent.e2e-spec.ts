@@ -10,6 +10,7 @@ import * as tables from '../src/database/schema.js';
 import { ClientStateFeedService } from '../src/client-state-feed/client-state-feed.service.js';
 import { FederationStateFeedPushService } from '../src/federation/federation-state-feed-push.service.js';
 import { PeerStateFeedService } from '../src/federation/peer-state-feed.service.js';
+import { GroupMetaFeedService } from '../src/group/meta/group-meta-feed.service.js';
 import { GroupRelationshipMutationService } from '../src/group/membership-intent/shared/group-relationship-mutation.service.js';
 import { RemoteMemberMembershipIntentService } from '../src/group/membership-intent/received/remote-member-membership-intent.service.js';
 import { seedFederatedPeerNamespace, seedUser } from './seed.js';
@@ -62,6 +63,7 @@ describe('remote member membership intents on the authoritative group', () => {
       app.get(PeerStateFeedService),
       app.get(FederationStateFeedPushService),
       app.get(GroupRelationshipMutationService),
+      app.get(GroupMetaFeedService),
     );
     namespaceId = await seedFederatedPeerNamespace(database.db, PEER_DOMAIN);
   });
@@ -248,7 +250,12 @@ describe('remote member membership intents on the authoritative group', () => {
       await database.db
         .select({ id: tables.groupMetaMemberFeed.feedId })
         .from(tables.groupMetaMemberFeed)
-        .where(eq(tables.groupMetaMemberFeed.threadId, fixture.threadId))
+        .where(
+          and(
+            eq(tables.groupMetaMemberFeed.threadId, fixture.threadId),
+            sql`${tables.groupMetaMemberFeed.operation} IN ('MEMBER_UPSERT', 'MEMBER_DEPART')`,
+          ),
+        )
     ).length;
 
   async function seedPendingApplication(): Promise<Fixture> {
@@ -396,6 +403,14 @@ describe('remote member membership intents on the authoritative group', () => {
 
   it('treats a rostered member replayed ACK as a completion, never a revocation', async () => {
     const fixture = await seedCompletedMembership();
+    const memberFacts = () =>
+      database.db.query.groupMetaMemberFeed.findMany({
+        where: and(
+          eq(tables.groupMetaMemberFeed.threadId, fixture.threadId),
+          sql`${tables.groupMetaMemberFeed.operation} IN ('MEMBER_UPSERT', 'MEMBER_DEPART')`,
+        ),
+      });
+    const rosterBefore = await memberFacts();
     // The replay carries heads advanced past the stored B-side: exactly what a
     // member's home node sends after the member chatted elsewhere.
     const result = await applier.execute({
@@ -419,7 +434,9 @@ describe('remote member membership intents on the authoritative group', () => {
       active: true,
       established: true,
     });
-    // No roster coordinate, no departure fact, no system message.
+    // Profile reconciliation may repair a missing group profile fact, but a
+    // replay must not allocate a member coordinate or emit a departure notice.
+    expect(await memberFacts()).toEqual(rosterBefore);
     expect(await rosterCount(fixture)).toBe(1);
     expect(
       await database.db

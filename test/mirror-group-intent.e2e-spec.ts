@@ -1,5 +1,6 @@
 import { and, desc, eq, or, sql } from 'drizzle-orm';
 import type { ProfiledAddress } from '../shared/profiled-address.js';
+import { parseSystemMessageContent } from '../shared/system-message-content.js';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { Test } from '@nestjs/testing';
 import type { INestApplication } from '@nestjs/common';
@@ -11,6 +12,7 @@ import { businessAccountScopeKey } from '../src/common/locks/account-business-lo
 import * as tables from '../src/database/schema.js';
 import { ClientStateFeedService } from '../src/client-state-feed/client-state-feed.service.js';
 import { ClientGroupMetaFeedService } from '../src/client-state-feed/client-group-meta-feed.service.js';
+import { GroupMemberQueryService } from '../src/group/member-query/group-member-query.service.js';
 import { BusinessCode } from '../src/common/business-code.js';
 import { FederationStateFeedConsumerService } from '../src/federation/federation-state-feed-consumer.service.js';
 import { FederationStateFeedPushService } from '../src/federation/federation-state-feed-push.service.js';
@@ -1034,14 +1036,51 @@ describe('mirror group intent application', () => {
         .set({ defaultProfileRev: 55 })
         .where(eq(tables.account.id, alice.id));
       await run(alice, revocationBody());
+      // Departed members retain bounded client meta history, never the current
+      // roster or facts published after their departure boundary.
       await expect(
         metaFeed.resolveVisibleGroup(alice.id, { threadId }),
+      ).resolves.toMatchObject({ groupId: threadId });
+      await expect(
+        app.get(GroupMemberQueryService).query(alice.id, { threadId }),
       ).rejects.toMatchObject({ bizCode: BusinessCode.FORBIDDEN });
-      for (const mode of ['full', 'delta'] as const) {
-        await expect(
-          metaFeed.serve(alice.id, threadId, group.account, mode, 0, 100),
-        ).rejects.toMatchObject({ bizCode: BusinessCode.FORBIDDEN });
-      }
+      const departedState =
+        await database.db.query.accountThreadState.findFirst({
+          where: and(
+            eq(tables.accountThreadState.threadId, threadId),
+            eq(tables.accountThreadState.accountId, alice.id),
+          ),
+        });
+      const boundary = departedState!.groupMetaVisibleThroughId!;
+      expect(boundary).toBe(0);
+      // Meta was deliberately absent during the kick. A later synchronization
+      // can initialize it, but must not expand Alice's frozen visibility.
+      await database.db.insert(tables.groupMeta).values({
+        threadId,
+        clientMetaEndId: boundary + 1,
+      });
+      await database.db.insert(tables.clientGroupMetaFeed).values({
+        threadId,
+        feedId: boundary + 1,
+        operation: 'GROUP_ANNOUNCEMENT',
+        body: { text: 'After departure' },
+      });
+      const retained = await metaFeed.serve(
+        alice.id,
+        threadId,
+        group.account,
+        0,
+        100,
+      );
+      expect(retained.groupMetaFeedEndId).toBe(String(boundary));
+      expect(
+        retained.items.every((item) => Number(item.feedId) <= boundary),
+      ).toBe(true);
+      expect(retained.items).not.toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ body: { text: 'After departure' } }),
+        ]),
+      );
       await expect(
         metaFeed.resolveVisibleGroup(bob.id, { threadId }),
       ).resolves.toMatchObject({ groupId: threadId });
@@ -1054,12 +1093,18 @@ describe('mirror group intent application', () => {
       // The received REVOKED intent owns the local departure notice and boundary.
       const aliceNotices = await boundaryMessages(threadId, 'GROUP_LEFT');
       expect(aliceNotices).toHaveLength(1);
-      expect(JSON.parse(aliceNotices[0]!.content).member).toEqual({
-        account: alice.account,
-        publisherNamespaceId: 0,
-        profileNamespaceId: 0,
-        profileRev: 1,
-      } satisfies ProfiledAddress);
+      expect(parseSystemMessageContent(aliceNotices[0]!.content)).toEqual({
+        type: 'GROUP_LEFT',
+        members: [
+          {
+            account: alice.account,
+            publisherNamespaceId: 0,
+            profileNamespaceId: 0,
+            profileRev: 1,
+          } satisfies ProfiledAddress,
+        ],
+        totalCount: 1,
+      });
 
       await run(bob, revocationBody());
       expect(
@@ -1087,7 +1132,7 @@ describe('mirror group intent application', () => {
       expect(notices).toHaveLength(2);
       expect(
         notices.map(
-          (notice) => JSON.parse(notice.content as string).member.account,
+          (notice) => JSON.parse(notice.content as string).members[0].account,
         ),
       ).toEqual([alice.account, bob.account]);
       // Departure is a membership operation, not a request conclusion.

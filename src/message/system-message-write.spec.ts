@@ -81,12 +81,15 @@ describe('MessageService local system messages', () => {
 
     const result = await service.writeSystemMessageInTx(tx as never, 7, {
       type: SystemMessageType.GROUP_JOINED,
-      member: {
-        account: 'alice',
-        publisherNamespaceId: 0,
-        profileNamespaceId: 0,
-        profileRev: 2,
-      },
+      members: [
+        {
+          account: 'alice',
+          publisherNamespaceId: 0,
+          profileNamespaceId: 0,
+          profileRev: 2,
+        },
+      ],
+      totalCount: 1,
     });
 
     expect(result.message.contentType).toBe(ContentType.SYSTEM);
@@ -102,12 +105,15 @@ describe('MessageService local system messages', () => {
     });
     expect(JSON.parse(insertValues.mock.calls[0][0].content)).toEqual({
       type: 'GROUP_JOINED',
-      member: {
-        account: 'alice',
-        publisherNamespaceId: 0,
-        profileNamespaceId: 0,
-        profileRev: 2,
-      },
+      members: [
+        {
+          account: 'alice',
+          publisherNamespaceId: 0,
+          profileNamespaceId: 0,
+          profileRev: 2,
+        },
+      ],
+      totalCount: 1,
     });
     expect(threadUpdate).toBe(1);
   });
@@ -223,14 +229,14 @@ describe('MessageService local system messages', () => {
     expect(enqueueDepartureFanoutsInTx).toHaveBeenLastCalledWith(
       tx,
       { tx, threadId: 7 },
-      { threadId: 7, messageEndSeq: 5, tombstoneEndSeq: 2 },
+      { threadId: 7, messageEndSeq: 5 },
       'P2P',
       undefined,
     );
     expect(enqueueThreadFanoutInTx).toHaveBeenLastCalledWith(
       tx,
       { tx, threadId: 7 },
-      { threadId: 7, messageEndSeq: 5, tombstoneEndSeq: 2 },
+      { threadId: 7, messageEndSeq: 5 },
     );
   });
 });

@@ -219,7 +219,9 @@ describe('federation feed state and received observations', () => {
     const migrations = await database.db.execute(
       sql`SELECT version FROM schema_migrations ORDER BY version`,
     );
-    expect(migrations.rows).toEqual([{ version: '0000_base' }]);
+    expect(migrations.rows).toEqual([
+      { version: '0000_base' },
+    ]);
   });
 
   it('rejects invalid timestamps at the persistence boundary', async () => {

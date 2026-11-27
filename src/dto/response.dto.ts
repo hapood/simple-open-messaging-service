@@ -115,6 +115,11 @@ export class ThreadFeedProfileDto {
   @ApiProperty() account!: string;
 }
 
+export class ThreadAuthorDto {
+  @ApiProperty() account!: string;
+  @ApiProperty({ minimum: 0 }) namespaceId!: number;
+}
+
 /** Complete server thread snapshot; structure and attention share one feed coordinate. */
 export class ThreadFeedStateDto {
   @ApiProperty({ enum: ['P2P', 'GROUP'] }) type!: 'P2P' | 'GROUP';
@@ -144,9 +149,13 @@ export class ThreadFeedStateDto {
   threadId!: number;
 
   @ApiProperty({ minimum: 0 }) messageEndSeq!: number;
-  @ApiProperty({ minimum: 0 }) tombstoneEndSeq!: number;
-  @ApiProperty({ type: String, nullable: true, example: '42' })
-  groupMetaFeedEndId!: string | null;
+  @ApiProperty({
+    type: ThreadAuthorDto,
+    required: false,
+    description:
+      'Author of messageEndSeq; required and non-null for a nonzero head, omitted at zero',
+  })
+  author?: ThreadAuthorDto;
 
   @ApiProperty({ minimum: 0 })
   joinRequestEndFeedId!: number;

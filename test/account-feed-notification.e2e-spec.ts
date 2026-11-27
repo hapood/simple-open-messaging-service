@@ -5,6 +5,7 @@ import { DatabaseService } from '../src/database/database.service.js';
 import {
   account,
   accountThreadState,
+  message,
   messageThread,
   relationshipPair,
 } from '../src/database/schema.js';
@@ -15,6 +16,7 @@ import { ThreadReadPositionService } from '../src/message/thread-read-position.s
 import { ThreadPreviewService } from '../src/message/thread-preview.service.js';
 import { AccountThreadStateService } from '../src/account-thread-state/account-thread-state.service.js';
 import { ClientStateFeedService } from '../src/client-state-feed/client-state-feed.service.js';
+import { withMessageDigest } from './support/message-fixture.js';
 
 /** Business commits publish through the shared SSE methods without polling. */
 describe('account feed notification delivery', () => {
@@ -44,6 +46,18 @@ describe('account feed notification delivery', () => {
       .values({ type: 'P2P', curSeq: 10, updatedAt: new Date() })
       .returning();
     threadId = thread.id;
+    // A nonzero published head must retain its exact message author, even when
+    // this suite is exercising only alias/read-position notifications.
+    await database.db.insert(message).values(
+      withMessageDigest({
+        threadId,
+        seq: 10,
+        creatorAccount: 'peer',
+        profileNamespaceId: 0,
+        contentType: 'PURE_TEXT',
+        content: JSON.stringify({ text: 'Published head' }),
+      }),
+    );
     await database.db.insert(relationshipPair).values({
       kind: 'P2P',
       active: true,
@@ -173,7 +187,12 @@ describe('account feed notification delivery', () => {
     const delta = await feed.queryThreadFeedDelta(userId, {
       after: before.threadFeedEndId,
     });
-    expect(delta.items).toEqual([expect.objectContaining(saved)]);
+    expect(delta.items).toEqual([
+      expect.objectContaining({
+        ...saved,
+        author: { account: 'peer', namespaceId: 0 },
+      }),
+    ]);
     const cold = await feed.queryThreadFeedDelta(userId, { after: 0 });
     expect(cold.items).toContainEqual(expect.objectContaining(saved));
     hints.mockClear();

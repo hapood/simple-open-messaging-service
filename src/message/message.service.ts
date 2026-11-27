@@ -660,10 +660,7 @@ export class MessageService {
       threadId,
       messageEndSeq: seq,
     });
-    if (
-      event.type === SystemMessageType.FRIEND_REMOVED ||
-      event.type === SystemMessageType.GROUP_LEFT
-    ) {
+    if (event.type === SystemMessageType.FRIEND_REMOVED) {
       await enqueueDepartureFanoutsInTx(
         tx,
         threadLock,
@@ -671,14 +668,25 @@ export class MessageService {
           threadId,
           messageEndSeq: seq,
         },
-        event.type === SystemMessageType.FRIEND_REMOVED ? 'P2P' : 'GROUP',
-        event.type === SystemMessageType.GROUP_LEFT
-          ? {
-              account: event.member.account,
-              namespaceId: event.member.profileNamespaceId,
-            }
-          : undefined,
+        'P2P',
+        undefined,
       );
+    } else if (event.type === SystemMessageType.GROUP_LEFT) {
+      for (const member of event.members) {
+        await enqueueDepartureFanoutsInTx(
+          tx,
+          threadLock,
+          {
+            threadId,
+            messageEndSeq: seq,
+          },
+          'GROUP',
+          {
+            account: member.account,
+            namespaceId: member.profileNamespaceId,
+          },
+        );
+      }
     }
     return { message: stripMessageId(stored), messageId: stored.id };
   }

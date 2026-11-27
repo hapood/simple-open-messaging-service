@@ -64,7 +64,6 @@ describe('incoming request read watermark', () => {
     });
     expect(versions.map(({ feedId, body }) => ({ feedId, body }))).toEqual([
       { feedId: 2, body: { requestEndId: endId, requestReadId: endId } },
-      { feedId: 1, body: { requestEndId: endId, requestReadId: '0' } },
     ]);
 
     const replay = await request(app.getHttpServer())

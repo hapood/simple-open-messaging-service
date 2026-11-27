@@ -60,7 +60,6 @@ function setup() {
     payload: {
       threadId: 7,
       messageEndSeq: 10,
-      tombstoneEndSeq: 2,
     },
     // Partial double: the handler only reads identity/scope/payload here; the
     // row's bookkeeping columns are irrelevant to these paths.

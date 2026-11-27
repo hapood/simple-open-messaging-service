@@ -2262,6 +2262,10 @@ export const clientGroupMetaFeed = pgTable(
     createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
+    updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
+      .default(sql`CURRENT_TIMESTAMP`)
+      .$onUpdate(() => new Date())
+      .notNull(),
     /** Optional source version for profile/announcement replay detection, not a client cursor. */
     sourceFeedId: integer(),
     originCreatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' }),

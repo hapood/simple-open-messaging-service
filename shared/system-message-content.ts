@@ -13,11 +13,12 @@ export type OrdinarySystemMessageContent<A = SystemEventAddress> =
   | { type: 'FRIEND_REMOVED'; initiator: A; participants: [A, A] }
   | { type: 'GROUP_CREATED'; creator: A }
   | {
-      type:
-        | 'GROUP_JOINED'
-        | 'GROUP_LEFT'
-        | 'GROUP_ADMIN_GRANTED'
-        | 'GROUP_ADMIN_REVOKED';
+      type: 'GROUP_JOINED' | 'GROUP_LEFT';
+      members: [A, ...A[]];
+      totalCount: number;
+    }
+  | {
+      type: 'GROUP_ADMIN_GRANTED' | 'GROUP_ADMIN_REVOKED';
       member: A;
     }
   | { type: 'GROUP_DISSOLVED' }
@@ -96,7 +97,30 @@ export function parseSystemMessageContent(
         return creator ? { type: 'GROUP_CREATED', creator } : null;
       }
       case 'GROUP_JOINED':
-      case 'GROUP_LEFT':
+      case 'GROUP_LEFT': {
+        if (!keys('members', 'totalCount') || !Array.isArray(body['members']))
+          return null;
+        if (body['members'].length === 0 || body['members'].length > 5)
+          return null;
+        const totalCount = body['totalCount'];
+        if (
+          typeof totalCount !== 'number' ||
+          !Number.isSafeInteger(totalCount) ||
+          totalCount < body['members'].length
+        )
+          return null;
+        const members: SystemEventAddress[] = [];
+        for (const item of body['members']) {
+          const parsed = address(item);
+          if (!parsed) return null;
+          members.push(parsed);
+        }
+        return {
+          type: body['type'],
+          members: members as [SystemEventAddress, ...SystemEventAddress[]],
+          totalCount,
+        };
+      }
       case 'GROUP_ADMIN_GRANTED':
       case 'GROUP_ADMIN_REVOKED': {
         if (!keys('member')) return null;

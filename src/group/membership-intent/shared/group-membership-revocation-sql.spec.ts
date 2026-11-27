@@ -37,11 +37,12 @@ describe('group departure system message SQL', () => {
     // The domain statement owns group effects only: the intent direction is
     // written beforehand by the shared authored-intent writer.
     expect(sql).not.toContain('INSERT INTO "RelationshipIntent"');
+    expect(sql).toContain("'totalCount', 1)");
     // PostgreSQL cannot infer the type of bare bind parameters passed to
     // polymorphic jsonb_build_object. The type casts are required even when
     // the values are strings and integers in JavaScript.
     expect(sql).toMatch(
-      /jsonb_build_object\('type', 'GROUP_LEFT', 'member',\s+jsonb_build_object\(\s*'account', \$\d+::text,\s*'publisherNamespaceId', (?:0|\$\d+::integer),\s*'profileNamespaceId',/,
+      /jsonb_build_object\('type', 'GROUP_LEFT', 'members',\s+jsonb_build_array\(jsonb_build_object\(\s*'account', \$\d+::text,\s*'publisherNamespaceId', (?:0|\$\d+::integer),\s*'profileNamespaceId',/,
     );
   });
 

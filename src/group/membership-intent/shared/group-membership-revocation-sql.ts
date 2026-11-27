@@ -94,13 +94,13 @@ export function groupMembershipRevocationSql(
         AND (body -> 'namespaceId') = to_jsonb(${memberProfileNamespaceId}::integer)
         AND operation = 'MEMBER_UPSERT' LIMIT 1), 'MEMBER')::text,
     'profileRev', COALESCE(${memberProfileRev}, 0)::integer)`;
-  const content = sql`jsonb_build_object('type', 'GROUP_LEFT', 'member',
-    ${groupMemberProfileAddressSql({
+  const content = sql`jsonb_build_object('type', 'GROUP_LEFT', 'members',
+    jsonb_build_array(${groupMemberProfileAddressSql({
       account: sql`${input.memberAccount}::text`,
       publisherNamespaceId: sql`0`,
       profileNamespaceId: sql`${memberProfileNamespaceId}::integer`,
       profileRev: sql`COALESCE(${memberProfileRev}, 0)::integer`,
-    })})`;
+    })}), 'totalCount', 1)`;
   return sql`
     WITH revocation AS MATERIALIZED (
       SELECT status, "profileNamespaceId", "profileRev", note, "statusChangedAt", "expiresAt"

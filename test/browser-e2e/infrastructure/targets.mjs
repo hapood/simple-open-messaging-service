@@ -15,7 +15,15 @@ export const federationNodes = Object.freeze({
     domain: 'charlie.test',
   },
 });
-export const playgroundOrigin = 'http://127.0.0.1:4301';
+export function resolvePlaygroundOrigin(env = process.env) {
+  const raw = env.SOMS_PLAYGROUND_PORT ?? '4301';
+  if (!/^[1-9]\d*$/.test(raw) || Number(raw) > 65535) {
+    throw new Error('SOMS_PLAYGROUND_PORT must be an integer from 1 to 65535.');
+  }
+  return `http://127.0.0.1:${Number(raw)}`;
+}
+
+export const playgroundOrigin = resolvePlaygroundOrigin();
 
 export function assertTarget(target) {
   if (target !== 'playground' && target !== 'federation')

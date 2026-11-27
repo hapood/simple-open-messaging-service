@@ -6,6 +6,7 @@ import {
 } from '../../../common/locks/thread-content-lock.js';
 import { threadFanoutAdmissionSql } from '../../../common/sql/thread-content-fanout-admission-sql.js';
 import type { ProfiledAddress } from '../../../../shared/profiled-address.js';
+import { stringifySystemMessageContent } from '../../../../shared/system-message-content.js';
 
 /** Announce an active-to-inactive local mirror relationship in the same
  * transaction that consumed or authored its REVOKED intent. The caller holds
@@ -48,9 +49,10 @@ export async function writeMirrorLocalGroupLeftInTx(
     profileNamespaceId: memberProfile.profileNamespaceId,
     profileRev: memberProfile.profileRev,
   } satisfies ProfiledAddress;
-  const content = JSON.stringify({
+  const content = stringifySystemMessageContent({
     type: 'GROUP_LEFT',
-    member: memberAddress,
+    members: [memberAddress],
+    totalCount: 1,
   });
   const accountScope = JSON.stringify([
     'ACCOUNT_THREAD_FANOUT',

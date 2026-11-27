@@ -1,4 +1,6 @@
 import { Test, type TestingModule } from '@nestjs/testing';
+import { EventEmitter2 } from '@nestjs/event-emitter';
+import { FederationPeerRuntimeService } from '../src/federation/federation-peer-runtime.service.js';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { DatabaseModule } from '../src/database/database.module.js';
 import { DatabaseService } from '../src/database/database.service.js';
@@ -16,7 +18,12 @@ describe('remote-only federation listing', () => {
       imports: [DatabaseModule],
     }).compile();
     database = mod.get(DatabaseService);
-    lifecycle = new FederationPeerLifecycle(database, {} as never, {} as never);
+    lifecycle = new FederationPeerLifecycle(
+      database,
+      {} as never,
+      {} as never,
+      new FederationPeerRuntimeService(new EventEmitter2()),
+    );
     const inserted = await database.pool.query<{ id: number }>(
       'INSERT INTO "IdentityNamespace" (domain, "signingKeyCreatedAt", "rootPublicKey", "identityPinnedAt") VALUES ($1, 1700000000000, $2, NOW()) RETURNING id',
       [domain, Buffer.alloc(32, 23).toString('base64')],

@@ -8,7 +8,7 @@ import { DatabaseService } from '../src/database/database.service.js';
 import { MessageDeleteType } from '../src/database/enums.js';
 import {
   admin,
-  messageTombstone,
+  deletedMessage,
   message,
   messageReport,
   durableTask,
@@ -209,7 +209,7 @@ describe('message report workflow', () => {
     ).not.toHaveProperty('reporter');
   });
 
-  it('commits concurrent deletions once and only enqueues content fanouts', async () => {
+  it('commits concurrent deletions once and enqueues independent content and tombstone fanouts', async () => {
     await reports.create(reporterId, { threadId, seq: 1 });
     const deletion = mod.get(DeletedMessageService);
     const results = await Promise.all(
@@ -217,11 +217,11 @@ describe('message report workflow', () => {
     );
     expect(new Set(results.map((result) => result.deletionSeq)).size).toBe(1);
     await deletion.deleteByModeration(threadId, 1);
-    const facts = await database.db.select().from(messageTombstone);
+    const facts = await database.db.select().from(deletedMessage);
     expect(facts).toHaveLength(1);
     expect(facts[0]).toMatchObject({
       threadId,
-      localMessageSeq: 1,
+      messageSeq: 1,
       deletionSeq: 1,
       type: MessageDeleteType.MODERATION_REMOVAL,
     });
@@ -238,13 +238,25 @@ describe('message report workflow', () => {
       .from(durableTask)
       .where(eq(durableTask.taskType, DurableTaskType.FAN_OUT_THREAD_CONTENT));
     expect(fanout).toHaveLength(1);
-    expect(fanout[0].payload).toMatchObject({ threadId, tombstoneEndSeq: 1 });
+    expect(fanout[0].payload).toEqual({ threadId, messageEndSeq: 2 });
     const tasks = await database.db.select().from(durableTask);
-    expect(tasks).toHaveLength(2);
+    expect(tasks).toHaveLength(3);
+    expect(
+      tasks.find(
+        (task) => task.taskType === DurableTaskType.FAN_OUT_THREAD_TOMB,
+      )!.payload,
+    ).toEqual({ threadId, tombstoneEndSeq: 1 });
+    expect(
+      tasks.find(
+        (task) =>
+          task.taskType === DurableTaskType.FAN_OUT_FEDERATION_THREAD_CONTENT,
+      )!.payload,
+    ).toEqual({ threadId, messageEndSeq: 2, tombstoneEndSeq: 1 });
     expect(tasks.map((task) => task.taskType).sort()).toEqual(
       [
         DurableTaskType.FAN_OUT_FEDERATION_THREAD_CONTENT,
         DurableTaskType.FAN_OUT_THREAD_CONTENT,
+        DurableTaskType.FAN_OUT_THREAD_TOMB,
       ].sort(),
     );
     // Retrying a previously accepted report succeeds without reactivating deleted content.

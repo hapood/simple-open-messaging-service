@@ -2,11 +2,30 @@ import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it, expect } from 'vitest';
-import { navigationUrl } from './targets.mjs';
+import { navigationUrl, resolvePlaygroundOrigin } from './targets.mjs';
 import { profileTarget, profileDirectory } from './profile-targets.mjs';
 import { browserLaunchOptions } from './browser-runtime.mjs';
 
 describe('browser target isolation', () => {
+  it('allows an explicit local playground port without reusing unknown servers', () => {
+    expect(resolvePlaygroundOrigin({})).toBe('http://127.0.0.1:4301');
+    expect(resolvePlaygroundOrigin({ SOMS_PLAYGROUND_PORT: '14301' })).toBe(
+      'http://127.0.0.1:14301',
+    );
+    for (const port of [
+      '',
+      '0',
+      '-1',
+      '65536',
+      '1.5',
+      '4301/path',
+      'localhost',
+    ]) {
+      expect(() =>
+        resolvePlaygroundOrigin({ SOMS_PLAYGROUND_PORT: port }),
+      ).toThrow('SOMS_PLAYGROUND_PORT');
+    }
+  });
   it('uses the installed browser by default and only explicitly overrides it', () => {
     expect(browserLaunchOptions({})).toEqual({ headless: true });
     expect(

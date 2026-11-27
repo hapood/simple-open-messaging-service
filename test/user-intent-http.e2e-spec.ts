@@ -180,10 +180,17 @@ describe('P2P request and established-relationship HTTP contract', () => {
         through: before.clientStateFeedEndId + 1,
       });
     expect(delta.body.code).toBe(BusinessCode.OK);
-    const items: Array<{ feedId: number; body: IncomingRequestHead }> =
-      delta.body.data.items;
+    const items: Array<{
+      type: 'REQUEST_HEAD';
+      feedId: number;
+      body: IncomingRequestHead;
+    }> = delta.body.data.items;
     expect(items).toEqual([
-      { feedId: before.clientStateFeedEndId + 1, body: received.incomingHead },
+      {
+        type: 'REQUEST_HEAD',
+        feedId: before.clientStateFeedEndId + 1,
+        body: received.incomingHead,
+      },
     ]);
   });
 

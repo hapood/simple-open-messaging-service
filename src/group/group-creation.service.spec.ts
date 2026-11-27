@@ -58,11 +58,14 @@ describe('GroupService creation', () => {
           messageId: 1n,
         }),
       };
+      const meta = {
+        reconcileAnnouncementInTx: vi.fn().mockResolvedValue(undefined),
+      };
       const service = new GroupService(
         database as never,
         relationshipMutations as never,
         clientStateFeed as never,
-        {} as never,
+        meta as never,
         messages as never,
       );
       const updateProfile = vi
@@ -80,6 +83,17 @@ describe('GroupService creation', () => {
         owner: 11,
       });
 
+      expect(meta.reconcileAnnouncementInTx).toHaveBeenCalledExactlyOnceWith(
+        tx,
+        7,
+        null,
+      );
+      expect(
+        meta.reconcileAnnouncementInTx.mock.invocationCallOrder[0],
+      ).toBeLessThan(
+        relationshipMutations.initializeFoundingMembershipInTx.mock
+          .invocationCallOrder[0]!,
+      );
       expect(tx.query.profileTable.findFirst).not.toHaveBeenCalled();
       expect(insertedTables).toEqual([
         groupAccount,

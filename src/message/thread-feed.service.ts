@@ -7,6 +7,10 @@ import type { ThreadFeedQueryDto } from '../dto/message.dto.js';
 import { ThreadPreviewService } from './thread-preview.service.js';
 import { toDisplayText } from '../common/message-entity.js';
 import { deriveMessagePreview } from '../../shared/message-preview.js';
+import {
+  assertThreadAuthor,
+  type ThreadAuthor,
+} from '../../shared/thread-author.js';
 
 interface ThreadFeedPreview {
   seq: number;
@@ -32,6 +36,8 @@ export interface ThreadFeedState {
   threadId: number;
   threadFeedId: number;
   messageEndSeq: number;
+  /** Required for a nonzero messageEndSeq; omitted only for an empty thread. */
+  author?: ThreadAuthor;
   joinRequestEndFeedId: number;
   joinRequestReadFeedId: number;
   groupInviteEndFeedId: number;
@@ -87,12 +93,14 @@ export class ThreadFeedService {
         }
         const take = request.take ?? 100;
         const resultRows = await tx.execute<
-          Omit<ThreadFeedState, 'profileAccount'> & {
-            profileAccount: string;
-            profileRev: number;
+          Omit<ThreadFeedState, 'author'> & {
+            authorAccount: string | null;
+            authorNamespaceId: number | null;
           }
         >(sql`
         SELECT s."threadId", s."threadFeedId", s.alias, s."messageEndSeq",
+               head."creatorAccount" AS "authorAccount",
+               head."profileNamespaceId" AS "authorNamespaceId",
                s."joinRequestEndFeedId",
                s."joinRequestReadFeedId", s."groupInviteEndFeedId",
                s."threadProfileRev" AS "profileRev", s."lastReadSeq", s."announcementReadFeedId",
@@ -108,6 +116,9 @@ export class ThreadFeedService {
         FROM "AccountThreadState" s
         JOIN "Account" self ON self.id = s."accountId"
         JOIN "MessageThread" t ON t.id = s."threadId"
+        LEFT JOIN "Message" head ON head."threadId" = s."threadId"
+          AND head.seq = s."messageEndSeq"
+          AND head.seq <= COALESCE(s."messageVisibleThroughSeq", s."messageEndSeq")
         LEFT JOIN "IdentityNamespace" origin ON origin.id = t."authorityNamespaceId"
         JOIN "RelationshipPair" pair ON pair."threadId" = t.id AND pair.established
           AND ((pair."endpointAType" = 'USER' AND pair."endpointAAccount" = self.account
@@ -120,10 +131,16 @@ export class ThreadFeedService {
         const hasMore = resultRows.rows.length > take;
         const items: ThreadFeedState[] = resultRows.rows
           .slice(0, take)
-          .map(({ profileAccount, ...item }) => ({
-            ...item,
-            profileAccount,
-          }));
+          .map(({ authorAccount, authorNamespaceId, ...item }) => {
+            // The feed head is already account-scoped. Author identity survives
+            // body deletion and history clearing; it is not a readable body or
+            // an unread preview. Never replace a missing head with an older row.
+            const author = item.messageEndSeq === 0
+              ? undefined
+              : { account: authorAccount, namespaceId: authorNamespaceId };
+            assertThreadAuthor(item.messageEndSeq, author);
+            return author === undefined ? item : { ...item, author };
+          });
         if (previewCount > 0) {
           for (const item of items) {
             item.previews = (

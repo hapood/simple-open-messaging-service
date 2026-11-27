@@ -118,6 +118,7 @@ describe('server group member queries', () => {
       .update(groupMeta)
       .set({
         metaEndId: 10,
+        clientMetaEndId: 10,
         metaTargetId: 10,
         metaProcessedThroughId: 10,
         metaRecoveryThroughId: 0,
@@ -340,6 +341,7 @@ describe('server group member queries', () => {
       .update(groupMeta)
       .set({
         metaEndId: 0,
+        clientMetaEndId: 0,
         metaProcessedThroughId: 0,
         metaRecoveryThroughId: 10,
       })
@@ -350,6 +352,14 @@ describe('server group member queries', () => {
     await database.db
       .update(groupMeta)
       .set({ metaEndId: 5 })
+      .where(eq(groupMeta.threadId, threadId));
+    // Receiving canonical facts alone is not a committed client projection.
+    await expect(service.query(userId, { threadId })).rejects.toThrow(
+      'not ready',
+    );
+    await database.db
+      .update(groupMeta)
+      .set({ clientMetaEndId: 5 })
       .where(eq(groupMeta.threadId, threadId));
     expect((await service.query(userId, { threadId })).items).toHaveLength(3);
   });

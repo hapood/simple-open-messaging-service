@@ -9,9 +9,9 @@ import {
   message,
   messageThread,
   accountThreadState,
-  messageTombstone,
+  deletedMessage,
 } from '../src/database/schema.js';
-import { ContentType, MessageTombstoneProvenance } from '../src/database/enums.js';
+import { ContentType } from '../src/database/enums.js';
 import {
   seedAcceptedRelationship,
   seedSession,
@@ -95,7 +95,7 @@ describe('client message history gaps', () => {
       .send({ threadId, ...body });
   }
 
-  it('documents tombs as query-only responses with no content field', async () => {
+  it('documents deletion facts separately from message responses with no content field', async () => {
     const response = await request(app.getHttpServer()).get(
       '/api/v1/docs-json',
     );
@@ -115,46 +115,52 @@ describe('client message history gaps', () => {
     expect(schemas.MessageQueryPageDto.properties).toHaveProperty(
       'resolvedAnchorSeq',
     );
-    expect(schemas.MessageQueryPageDto.properties.messages.items.oneOf).toEqual(
-      [
-        { $ref: '#/components/schemas/MessageResponseDto' },
-        { $ref: '#/components/schemas/MessageTombResponseDto' },
-      ],
-    );
-    expect(schemas.MessageTombResponseDto.properties.contentType.enum).toEqual([
-      'TOMB',
+    expect(schemas.MessageQueryPageDto.properties.messages.items).toEqual({
+      $ref: '#/components/schemas/MessageResponseDto',
+    });
+    expect(
+      schemas.MessageTombstoneQueryPageDto.properties.tombstones.items,
+    ).toEqual({
+      $ref: '#/components/schemas/MessageTombstoneResponseDto',
+    });
+    expect(
+      Object.keys(schemas.MessageTombstoneResponseDto.properties).sort(),
+    ).toEqual([
+      'createdAt',
+      'deletionSeq',
+      'messageSeq',
+      'threadId',
+      'type',
+      'updatedAt',
     ]);
-    expect(schemas.MessageTombResponseDto.properties).not.toHaveProperty(
-      'content',
-    );
     expect(
       schemas.MessageResponseDto.properties.contentType.enum,
     ).not.toContain('TOMB');
   });
 
-  it('returns body-free tomb slots in both directions with stable pagination and gap coordinates', async () => {
+  it('scans deleted slots in both directions while serving body-free deletion facts separately', async () => {
     await database.db.transaction(async (tx) => {
       await requireThreadContentLockInTx(tx, threadId);
-      await tx.insert(messageTombstone).values([
+      await tx.insert(deletedMessage).values([
         {
           threadId,
-          provenance: MessageTombstoneProvenance.LOCAL,
           publisherNamespaceId: 0,
-          localMessageSeq: 11,
+          messageSeq: 11,
           deletionSeq: 1,
           type: 'USER_RETRACTION',
-          consumed: true,
         },
         {
           threadId,
-          provenance: MessageTombstoneProvenance.LOCAL,
           publisherNamespaceId: 0,
-          localMessageSeq: 36,
+          messageSeq: 36,
           deletionSeq: 2,
           type: 'MODERATION_REMOVAL',
-          consumed: true,
         },
       ]);
+      await tx
+        .update(messageThread)
+        .set({ tombstoneEndSeq: 2 })
+        .where(eq(messageThread.id, threadId));
       await tx
         .update(message)
         .set({ isDeleted: true })
@@ -165,65 +171,57 @@ describe('client message history gaps', () => {
       scannedThrough: 11,
       hasMore: true,
     });
-    const tomb = first.body.data.messages[0];
-    expect(tomb).toMatchObject({
-      threadId,
-      seq: 11,
-      contentType: 'TOMB',
-      isDeleted: true,
-      creator: {
-        account: 'peer',
-        namespaceId: 0,
-      },
-      deletionType: 'USER_RETRACTION',
-    });
-    expect(Object.keys(tomb).sort()).toEqual(
-      [
-        'threadId',
-        'seq',
-        'profileRev',
-        'creator',
+    expect(first.body.data.messages).toEqual([]);
+    const tombPage = await request(app.getHttpServer())
+      .post('/api/v1/deleted-messages/query')
+      .set('Authorization', `Bearer ${sessionToken}`)
+      .send({ threadId, after: 0, take: 10 });
+    expect(tombPage.body.code).toBe(0);
+    expect(tombPage.body.data.tombstones).toMatchObject([
+      { threadId, messageSeq: 11, deletionSeq: 1, type: 'USER_RETRACTION' },
+      { threadId, messageSeq: 36, deletionSeq: 2, type: 'MODERATION_REMOVAL' },
+    ]);
+    for (const tomb of tombPage.body.data.tombstones) {
+      expect(Object.keys(tomb).sort()).toEqual([
         'createdAt',
+        'deletionSeq',
+        'messageSeq',
+        'publisherNamespaceId',
+        'threadId',
+        'type',
         'updatedAt',
-        'contentType',
-        'isDeleted',
-        'deletionType',
-      ].sort(),
-    );
+      ]);
+    }
     const second = await queryMessages({ after: 11, through: 50, take: 1 });
     expect(second.body.data).toMatchObject({
       scannedThrough: 50,
       hasMore: false,
-      messages: [
-        { seq: 36, contentType: 'TOMB', deletionType: 'MODERATION_REMOVAL' },
-      ],
+      messages: [],
       gaps: [{ startSeq: 15, endSeq: 35, recoverable: true }],
     });
     const reverse = await queryMessages({ before: 51, through: 1, take: 1 });
     expect(reverse.body.data).toMatchObject({
       scannedThrough: 36,
       hasMore: true,
-      messages: [{ seq: 36, contentType: 'TOMB' }],
+      messages: [],
     });
     const tail = await queryMessages({ before: 36, through: 1, take: 1 });
     expect(tail.body.data).toMatchObject({
       scannedThrough: 1,
       hasMore: false,
-      messages: [{ seq: 11, contentType: 'TOMB' }],
+      messages: [],
     });
   });
 
   it('keeps live enrichment separate and does not expose deleted media content', async () => {
     await database.db.transaction(async (tx) => {
       await requireThreadContentLockInTx(tx, threadId);
-      await tx.insert(messageTombstone).values({
+      await tx.insert(deletedMessage).values({
         threadId,
-        provenance: MessageTombstoneProvenance.LOCAL,
         publisherNamespaceId: 0,
-        localMessageSeq: 11,
+        messageSeq: 11,
         deletionSeq: 1,
         type: 'USER_RETRACTION',
-        consumed: true,
       });
       await tx
         .update(message)
@@ -241,10 +239,12 @@ describe('client message history gaps', () => {
       result.body.data.messages.map(
         (row: { contentType: string }) => row.contentType,
       ),
-    ).toEqual(['TOMB', 'PURE_TEXT']);
-    expect(result.body.data.messages[0]).not.toHaveProperty('content');
-    expect(result.body.data.messages[0]).not.toHaveProperty('mediaStatus');
-    expect(result.body.data.messages[1]).toHaveProperty('content');
+    ).toEqual(['PURE_TEXT']);
+    expect(result.body.data.messages[0]).toMatchObject({ seq: 36 });
+    expect(result.body.data.messages[0]).toHaveProperty('content');
+    expect(JSON.stringify(result.body.data)).not.toContain(
+      'must not be parsed or returned',
+    );
   });
 
   it('resolves origin anchors to local coordinates without exposing quote digests', async () => {
@@ -299,17 +299,15 @@ describe('client message history gaps', () => {
     expect(hidden.body.data.messages).toEqual([]);
   });
 
-  it('resolves a local tomb anchor while keeping the tomb contract local-only', async () => {
+  it('resolves a deleted anchor without returning the deleted message body', async () => {
     await database.db.transaction(async (tx) => {
       await requireThreadContentLockInTx(tx, threadId);
-      await tx.insert(messageTombstone).values({
+      await tx.insert(deletedMessage).values({
         threadId,
-        provenance: MessageTombstoneProvenance.LOCAL,
         publisherNamespaceId: 0,
-        localMessageSeq: 36,
+        messageSeq: 36,
         deletionSeq: 1,
         type: 'USER_RETRACTION',
-        consumed: true,
       });
       await tx
         .update(message)
@@ -319,12 +317,12 @@ describe('client message history gaps', () => {
     const result = await queryMessages({ anchorSeq: 36, take: 1 });
     expect(result.body.code).toBe(0);
     expect(result.body.data.resolvedAnchorSeq).toBe(36);
-    expect(result.body.data.messages[0]).toMatchObject({
-      seq: 36,
-      contentType: 'TOMB',
-    });
-    expect(result.body.data.messages[0]).not.toHaveProperty('originSeq');
-    expect(result.body.data.messages[0]).not.toHaveProperty('content');
+    expect(result.body.data.messages).toEqual([]);
+    expect(result.body.data.scannedThrough).toBe(36);
+    expect(result.body.data.hasMore).toBe(true);
+    const previous = await queryMessages({ before: 36, take: 1 });
+    expect(previous.body.data.messages).toMatchObject([{ seq: 11 }]);
+    expect(previous.body.data.hasMore).toBe(false);
   });
 
   it('clips the backward endpoint while validating the starting cursor', async () => {

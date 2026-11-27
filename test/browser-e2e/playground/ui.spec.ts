@@ -279,6 +279,16 @@ test('accepting a group invitation adds a group, and unfriend keeps a read-only 
     page.getByRole('button', { name: /^(Book Club|!bookclub), chat/ }),
   ).toBeVisible();
   await page.getByRole('button', { name: /^Alice, chat/ }).click();
+  const pane = page.locator('.pane-layer.pane-fg');
+  const historyRows = pane.locator('.msg-row');
+  const bottomReserve = pane.locator('.cb-bottom-reserve');
+  await expect(historyRows.first()).toBeAttached();
+  await expect(pane.getByRole('textbox')).toBeVisible();
+  await expect
+    .poll(() =>
+      bottomReserve.evaluate((reserve) => (reserve as HTMLElement).offsetHeight),
+    )
+    .toBeGreaterThan(16);
   await page
     .locator('.pane-layer.pane-fg .msg-header')
     .getByRole('button')
@@ -291,19 +301,20 @@ test('accepting a group invitation adds a group, and unfriend keeps a read-only 
   ).toBeVisible();
   // Read-only presentation retains prepared editor infrastructure, but it must be
   // hidden and non-interactive rather than bound to a sending context.
-  const retainedComposer = page.locator('.pane-layer.pane-fg app-chat-input');
+  const retainedComposer = pane.locator('app-chat-input');
   await expect(retainedComposer).toHaveCount(1);
   await expect(retainedComposer).toBeHidden();
   await expect(retainedComposer).toHaveAttribute('inert', '');
   await expect(retainedComposer).toHaveClass(/msg-composer--unbound/);
-  await expect(page.locator('.pane-layer.pane-fg .msg-header')).toContainText(
-    'Alice',
-  );
+  await expect(pane.getByRole('textbox')).toHaveCount(0);
+  await expect(pane.locator('.msg-header')).toContainText('Alice');
+  await expect(historyRows.first()).toBeAttached();
+  await expect(pane.locator('.msg-empty-overlay')).toHaveCount(0);
+  // The measured reserve remains independent of historical edge/gap rows and
+  // collapses to the read-only breathing room, not the retained editor height.
   await expect
     .poll(() =>
-      page
-        .locator('.pane-layer.pane-fg .cb-tail-cap')
-        .evaluate((tail) => (tail as HTMLElement).offsetHeight),
+      bottomReserve.evaluate((reserve) => (reserve as HTMLElement).offsetHeight),
     )
     .toBe(16);
 });

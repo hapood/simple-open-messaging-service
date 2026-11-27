@@ -314,6 +314,9 @@ export class GroupService {
                 profileRev: owner.defaultProfileRev,
               },
             });
+            // Publish the initial announcement in the client coordinate space
+            // too, so the creator can display and acknowledge the cleared value.
+            await this.groupMeta.reconcileAnnouncementInTx(tx, thread.id, null);
             await this.relationshipMutations.initializeFoundingMembershipInTx(
               tx,
               thread.id,

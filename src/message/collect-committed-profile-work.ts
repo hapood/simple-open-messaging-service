@@ -56,6 +56,7 @@ function eventParticipants(
     case 'GROUP_CREATED':
       return [content.creator];
     case 'GROUP_JOINED':
+      return content.members;
     case 'GROUP_ADMIN_GRANTED':
     case 'GROUP_ADMIN_REVOKED':
       return [content.member];

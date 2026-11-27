@@ -12,26 +12,76 @@ const migrationsDirectory = new URL(
   '../../database/migrations/',
   import.meta.url,
 );
+const migrationFiles = readdirSync(migrationsDirectory)
+  .filter((name) => name.endsWith('.sql'))
+  .sort();
 const baseline = readFileSync(
   new URL('0000_base.sql', migrationsDirectory),
   'utf8',
 );
 const baselineTables = new Map(
   [
-    ...baseline.matchAll(/CREATE TABLE public\."([^"]+)" \(\n([\s\S]*?)\n\);/g),
+    ...baseline.matchAll(
+      /CREATE TABLE (?:IF NOT EXISTS )?(?:public\.)?"([^"]+)" \(\n([\s\S]*?)\n\);/g,
+    ),
   ].map((match) => [match[1], match[2]]),
 );
 
 describe('common row timestamps', () => {
   it('keeps the rebuilt baseline', () => {
-    expect(
-      readdirSync(migrationsDirectory)
-        .filter((name) => name.endsWith('.sql'))
-        .sort(),
-    ).toEqual(['0000_base.sql']);
+    expect(migrationFiles).toEqual(['0000_base.sql']);
     expect(schema.mediaAsset.meta.getSQLType()).toBe('jsonb');
     expect(baselineTables.get('MediaAsset')).toContain('meta jsonb');
     expect(baseline).toContain("'{thumbnail,digest}'");
+  });
+
+  it('creates final client and federation state without compatibility migrations', () => {
+    expect(baselineTables.get('FederatedMessageTombstone')).toContain(
+      'consumed boolean DEFAULT false NOT NULL',
+    );
+    const syncState = baselineTables.get('FederationThreadSyncState')!;
+    for (const obsolete of [
+      'activeGapId',
+      'deletionRecoveryThroughSeq',
+      'deletionRecoveryMaxMessageSeq',
+    ]) {
+      expect(syncState).not.toContain(`"${obsolete}"`);
+    }
+    expect(syncState).not.toContain(
+      '"messageProcessedThroughSeq" <= "messageTargetSeq"',
+    );
+    const attention = baselineTables.get('AccountThreadState')!;
+    for (const column of [
+      'previewDeletedSeqs',
+      'tombstoneVisibleThroughSeq',
+      'groupMetaVisibleThroughId',
+    ]) {
+      expect(attention).toContain(`"${column}"`);
+    }
+    for (const obsolete of ['tombstoneEndSeq', 'groupMetaFeedEndId']) {
+      expect(attention).not.toContain(`"${obsolete}"`);
+      expect(baseline).not.toContain(`NEW."${obsolete}"`);
+    }
+    expect(baselineTables.get('GroupMeta')).toContain(
+      '"metaRecoveryThroughId" integer DEFAULT 0 NOT NULL',
+    );
+    expect(baselineTables.get('GroupMeta')).toContain(
+      '"clientMetaEndId" integer DEFAULT 0 NOT NULL',
+    );
+    expect(baselineTables.get('ClientGroupMetaFeed')).toContain(
+      '"ClientGroupMetaFeed_count_check"',
+    );
+    expect(baselineTables.get('ClientStateFeed')).toContain(
+      '"ClientStateFeed_type_thread_check"',
+    );
+    expect(baseline).toContain(
+      '"ClientStateFeed_pkey" PRIMARY KEY ("userId", type, "threadId")',
+    );
+    expect(baseline).toContain(
+      'CREATE TRIGGER "FederationThreadHistoryGap_direction_check"',
+    );
+    expect(baseline).not.toMatch(/\b(?:ADD|DROP) COLUMN\b/);
+    expect(baseline).not.toContain('CREATE OR REPLACE FUNCTION');
   });
 
   it('requires a message author explicitly without assigning fallback identities', () => {

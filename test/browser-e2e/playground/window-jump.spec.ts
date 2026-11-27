@@ -16,6 +16,7 @@ type ProbeWindow = Window & {
   ng: { getComponent(element: Element): unknown };
   jumpSettled?: boolean;
   failPendingJump: () => void;
+  releaseWindowLoad: () => void;
   pendingJump: Promise<void>;
   replacedSources: number;
   jumpSnapshot: {
@@ -29,15 +30,6 @@ type ProbeWindow = Window & {
 test('missing window target shows a skeleton and recovers through Material action without rebinding composer', async ({
   page,
 }) => {
-  await page.evaluate(() => {
-    const probe = window as unknown as ProbeWindow;
-    const controls = probe.ng.getComponent(
-      document.querySelector('app-playground-controls')!,
-    ) as {
-      runtime: { sourceLatency: { set(value: number): void } };
-    };
-    controls.runtime.sourceLatency.set(800);
-  });
   await page.getByRole('button', { name: /^Alice, chat/ }).click();
   const pane = page.locator('.pane-layer.pane-fg');
   await expect(pane.locator('.msg-row').first()).toBeVisible();
@@ -53,14 +45,34 @@ test('missing window target shows a skeleton and recovers through Material actio
       binding: component.lifecycle.binding,
       composer: document.querySelector('.pane-fg app-chat-input')!,
     };
-    void component.onSearchJump(999999999);
+    // Hold each replacement window at the adapter boundary until its loading
+    // presentation is asserted. Keep the actual source result and kernel real.
+    const adapter = component.threadAdapter;
+    const create = adapter.createSource.bind(adapter);
+    adapter.createSource = (...args) => {
+      const source = create(...args);
+      const loadWindow = source.loadWindow.bind(source);
+      source.loadWindow = async (...loadArgs) => {
+        await new Promise<void>((resolve) => {
+          probe.releaseWindowLoad = resolve;
+        });
+        return loadWindow(...loadArgs);
+      };
+      return source;
+    };
+    probe.pendingJump = component.onSearchJump(999999999);
   });
-  await expect(pane.locator('.msg-window-loading')).toBeVisible();
+  await expect(pane.locator('app-message-window-skeleton')).toBeVisible();
   await expect(pane.locator('.msg-viewport')).toHaveAttribute(
     'aria-busy',
     'true',
   );
   await expect(editor).toHaveText('keep this draft while jumping');
+  await page.evaluate(async () => {
+    const probe = window as unknown as ProbeWindow;
+    probe.releaseWindowLoad();
+    await probe.pendingJump;
+  });
   await expect(pane.locator('.msg-window-result')).toContainText(
     'Message not found',
   );
@@ -69,11 +81,24 @@ test('missing window target shows a skeleton and recovers through Material actio
     'false',
   );
   await pane
+    .locator('.msg-window-result')
     .getByRole('button', { name: 'Scroll to latest message', exact: true })
     .click();
-  await expect(pane.locator('.msg-window-loading')).toBeVisible();
+  await expect(pane.locator('app-message-window-skeleton')).toBeVisible();
+  await expect(pane.locator('.msg-viewport')).toHaveAttribute(
+    'aria-busy',
+    'true',
+  );
   await expect(pane.locator('.msg-window-result')).toHaveCount(0);
-  await expect(pane.locator('.msg-window-loading')).toHaveCount(0);
+  await expect(editor).toHaveText('keep this draft while jumping');
+  await page.evaluate(() =>
+    (window as unknown as ProbeWindow).releaseWindowLoad(),
+  );
+  await expect(pane.locator('app-message-window-skeleton')).toHaveCount(0);
+  await expect(pane.locator('.msg-viewport')).toHaveAttribute(
+    'aria-busy',
+    'false',
+  );
   await expect(pane.locator('.msg-row').first()).toBeVisible();
   await expect(editor).toHaveText('keep this draft while jumping');
   expect(
@@ -111,10 +136,10 @@ test('initial-load retry recreates only the message window', async ({
     };
     const adapter = controls.runtime;
     const create = adapter.createSource.bind(adapter);
-    adapter.createSource = (conversation, callbacks) => {
+    adapter.createSource = (conversation, entryReadSeq, callbacks) => {
       adapter.createSource = create;
-      const source = create(conversation, callbacks);
-      source.init = async () => {
+      const source = create(conversation, entryReadSeq, callbacks);
+      source.loadWindow = async () => {
         throw new Error('controlled first-load failure');
       };
       return source;
@@ -175,7 +200,7 @@ for (const reduced of [false, true]) {
     await page.getByRole('button', { name: /^Alice, chat/ }).click();
     const pane = page.locator('.pane-layer.pane-fg');
     await expect(pane.locator('.msg-row').first()).toBeVisible();
-    await expect(pane.locator('.msg-window-loading')).toHaveCount(0);
+    await expect(pane.locator('app-message-window-skeleton')).toHaveCount(0);
     const result = await page.evaluate((reduced) => {
       const probe = window as unknown as ProbeWindow;
       const component = probe.ng.getComponent(
@@ -242,7 +267,8 @@ for (const reduced of [false, true]) {
           stoppedAtInputPosition:
             reduced || calls.at(-1)?.top === positionBeforeInput,
           loading:
-            document.querySelector('.pane-fg .msg-window-loading') !== null,
+            document.querySelector('.pane-fg app-message-window-skeleton') !==
+            null,
         };
       } finally {
         viewport.scrollTo = scroll;
@@ -263,7 +289,7 @@ for (const reduced of [false, true]) {
       stoppedAtInputPosition: true,
       loading: false,
     });
-    await expect(pane.locator('.msg-window-loading')).toHaveCount(0);
+    await expect(pane.locator('app-message-window-skeleton')).toHaveCount(0);
     await expect(pane.locator('.msg-window-result')).toHaveCount(0);
   });
 }
@@ -290,15 +316,15 @@ for (const outcome of ['resolve', 'reject'] as const) {
       probe.jumpSettled = false;
       // Only the next (Alice jump) source is controlled. Other conversations
       // and subsequent opens keep their normal adapter behavior.
-      adapter.createSource = (conversation, callbacks) => {
+      adapter.createSource = (conversation, entryReadSeq, callbacks) => {
         adapter.createSource = create;
-        const source = create(conversation, callbacks);
+        const source = create(conversation, entryReadSeq, callbacks);
         const destroy = source.destroy.bind(source);
         source.destroy = () => {
           probe.replacedSources++;
           destroy();
         };
-        source.init = () =>
+        source.loadWindow = () =>
           new Promise((resolve, reject) => {
             probe.failPendingJump = () =>
               outcome === 'resolve'
@@ -311,7 +337,7 @@ for (const outcome of ['resolve', 'reject'] as const) {
         probe.jumpSettled = true;
       });
     }, outcome);
-    await expect(pane.locator('.msg-window-loading')).toBeVisible();
+    await expect(pane.locator('app-message-window-skeleton')).toBeVisible();
     await page.getByRole('button', { name: /^Playground Team, chat/ }).click();
     await expect(pane.locator('.msg-title-text')).toHaveText('Playground Team');
     await expect(pane.locator('.msg-row').first()).toBeVisible();
@@ -335,7 +361,7 @@ for (const outcome of ['resolve', 'reject'] as const) {
     });
     await expect(pane.locator('.msg-title-text')).toHaveText('Playground Team');
     await expect(pane.locator('.msg-window-result')).toHaveCount(0);
-    await expect(pane.locator('.msg-window-loading')).toHaveCount(0);
+    await expect(pane.locator('app-message-window-skeleton')).toHaveCount(0);
     await page.getByRole('button', { name: /^Alice, chat/ }).click();
     await expect(pane.locator('.msg-title-text')).toHaveText('Alice');
     await expect(pane.locator('.msg-row').first()).toBeVisible();
@@ -384,8 +410,8 @@ for (const mode of ['retry', 'replace'] as const) {
       const adapter = component.threadAdapter;
       const create = adapter.createSource.bind(adapter);
       let first = true;
-      adapter.createSource = (conversation, callbacks) => {
-        const source = create(conversation, callbacks);
+      adapter.createSource = (conversation, entryReadSeq, callbacks) => {
+        const source = create(conversation, entryReadSeq, callbacks);
         const destroy = source.destroy.bind(source);
         source.destroy = () => {
           probe.replacedSources++;
@@ -393,7 +419,7 @@ for (const mode of ['retry', 'replace'] as const) {
         };
         if (first) {
           first = false;
-          source.init = () =>
+          source.loadWindow = () =>
             new Promise((_resolve, reject) => {
               probe.failPendingJump = () =>
                 reject(new Error('controlled window load failure'));
@@ -401,9 +427,19 @@ for (const mode of ['retry', 'replace'] as const) {
         }
         return source;
       };
-      probe.pendingJump = component.onSearchJump(10);
+      // Use interior targets outside the initial read-position window.
+      // Entry now opens around the read cursor, not implicitly at the tail.
+      if (
+        component.scroller.getMountedGeometry(400) ||
+        component.scroller.getMountedGeometry(600)
+      ) {
+        throw new Error(
+          'expected replacement targets outside the mounted window',
+        );
+      }
+      probe.pendingJump = component.onSearchJump(400);
     });
-    await expect(pane.locator('.msg-window-loading')).toBeVisible();
+    await expect(pane.locator('app-message-window-skeleton')).toBeVisible();
     await expect(editor).toHaveText('retain draft across window replacement');
     if (mode === 'retry') {
       await page.evaluate(() =>
@@ -419,12 +455,12 @@ for (const mode of ['retry', 'replace'] as const) {
         const component = probe.ng.getComponent(
           document.querySelector('.pane-fg app-message-thread')!,
         ) as ThreadProbe;
-        void component.onSearchJump(200);
+        void component.onSearchJump(600);
       });
       // Superseding must settle the old caller before its I/O completes.
       await page.evaluate(() => (window as unknown as ProbeWindow).pendingJump);
     }
-    await expect(pane.locator('.msg-window-loading')).toHaveCount(0);
+    await expect(pane.locator('app-message-window-skeleton')).toHaveCount(0);
     await expect(pane.locator('.msg-window-result')).toHaveCount(0);
     await expect(pane.locator('.msg-row').first()).toBeVisible();
     if (mode === 'replace') {
@@ -456,7 +492,7 @@ for (const mode of ['retry', 'replace'] as const) {
             replacedSources: probe.replacedSources,
           };
         },
-        mode === 'retry' ? 10 : 200,
+        mode === 'retry' ? 400 : 600,
       ),
     ).toEqual({
       targetMounted: true,

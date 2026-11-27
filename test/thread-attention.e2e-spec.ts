@@ -22,7 +22,7 @@ import {
   messageThread,
   message,
   durableTask,
-  messageTombstone,
+  deletedMessage,
   relationshipPair,
 } from '../src/database/schema.js';
 import { ThreadFeedService } from '../src/message/thread-feed.service.js';
@@ -86,7 +86,7 @@ describe('transactional thread attention', () => {
     }))!;
 
   it('skips blocked content heads while advancing fanout progress, then publishes after unblock', async () => {
-    const target = { threadId, messageEndSeq: 10, tombstoneEndSeq: 2 };
+    const target = { threadId, messageEndSeq: 10 };
     const taskId = await db.db.transaction(async (tx) => {
       const lock = await requireThreadContentLockInTx(tx, threadId);
       return enqueueThreadFanoutInTx(tx, lock, target);
@@ -109,7 +109,6 @@ describe('transactional thread attention', () => {
     await progress.projectActiveAccount(taskId, target, userId);
     expect(await state()).toMatchObject({
       messageEndSeq: 0,
-      tombstoneEndSeq: 0,
       threadFeedId: blocked.threadFeedId,
     });
     expect(await progress.read(taskId)).toEqual({
@@ -248,10 +247,9 @@ describe('transactional thread attention', () => {
       },
     });
     await db.db.transaction((tx) =>
-      ThreadFeedHeadWriter.advanceGroupMetaCoordinatesInTx(tx, {
+      ThreadFeedHeadWriter.advanceGroupProfileInTx(tx, {
         threadId: group.id,
         userIds: [userId],
-        groupMetaFeedEndId: 1,
         profileRev: 3,
         profileSourceId: 1,
       }),
@@ -284,7 +282,7 @@ describe('transactional thread attention', () => {
       })
       .where(eq(groupMetaMemberFeed.threadId, group.id));
     await db.db.transaction((tx) =>
-      ThreadFeedHeadWriter.reconcileGroupMetaCoordinateInTx(tx, {
+      ThreadFeedHeadWriter.reconcileGroupProfileInTx(tx, {
         threadId: group.id,
         userIds: [userId],
       }),
@@ -294,7 +292,6 @@ describe('transactional thread attention', () => {
         where: eq(accountThreadState.threadId, group.id),
       }),
     ).toMatchObject({
-      groupMetaFeedEndId: 2,
       threadProfileRev: 1,
       profileSourceId: 2,
     });
@@ -325,8 +322,10 @@ describe('transactional thread attention', () => {
   });
 
   it('publishes heads through the same feed even when unread stays zero', async () => {
+    // A self-authored head advances the feed without adding unread attention.
+    await put(10, 'published head', { creatorAccount: 'reader' });
     const before = await state();
-    const target = { threadId, messageEndSeq: 10, tombstoneEndSeq: 2 };
+    const target = { threadId, messageEndSeq: 10 };
     await db.db.transaction((tx) =>
       ThreadFeedHeadWriter.advanceInTx(tx, userId, target),
     );
@@ -338,7 +337,11 @@ describe('transactional thread attention', () => {
       after: before.threadFeedId,
     });
     expect(page.items).toEqual([
-      expect.objectContaining({ ...target, unreadCount: 0 }),
+      expect.objectContaining({
+        ...target,
+        unreadCount: 0,
+        author: { account: 'reader', namespaceId: 0 },
+      }),
     ]);
     await db.db.transaction((tx) =>
       ThreadFeedHeadWriter.advanceInTx(tx, userId, target),
@@ -449,7 +452,7 @@ describe('transactional thread attention', () => {
         tombstoneEndSeq: number;
       }>(sql`
         SELECT COALESCE((SELECT max(seq) FROM "Message" WHERE "threadId" = ${threadId}), 0) AS "messageEndSeq",
-          COALESCE((SELECT max("deletionSeq") FROM "MessageTombstone" WHERE "threadId" = ${threadId} AND "deletionSeq" IS NOT NULL), 0) AS "tombstoneEndSeq"`);
+          COALESCE((SELECT max("deletionSeq") FROM "DeletedMessage" WHERE "threadId" = ${threadId} AND "deletionSeq" IS NOT NULL), 0) AS "tombstoneEndSeq"`);
       return ThreadFeedHeadWriter.advanceInTx(tx, userId, {
         threadId,
         ...heads.rows[0],
@@ -459,14 +462,12 @@ describe('transactional thread attention', () => {
   async function retractMention(seq: number, deletionSeq: number) {
     await db.db.transaction(async (tx) => {
       await requireThreadContentLockInTx(tx, threadId);
-      await tx.insert(messageTombstone).values({
+      await tx.insert(deletedMessage).values({
         threadId,
-        provenance: 'LOCAL',
         publisherNamespaceId: 0,
-        localMessageSeq: seq,
+        messageSeq: seq,
         deletionSeq,
         type: 'USER_RETRACTION',
-        consumed: true,
       });
       await tx
         .update(message)
@@ -536,7 +537,6 @@ describe('transactional thread attention', () => {
       lastReadSeq: 1,
       unreadCount: 2,
       messageEndSeq: 4,
-      tombstoneEndSeq: 1,
       lastMentionSeq: null,
     });
     const settled = await state();
@@ -580,17 +580,13 @@ describe('transactional thread attention', () => {
       const before = await state();
       await db.db.transaction(async (tx) => {
         await requireThreadContentLockInTx(tx, threadId);
-        await tx
-          .insert(messageTombstone)
-          .values({
-            threadId,
-            provenance: 'LOCAL',
-            publisherNamespaceId: 0,
-            localMessageSeq: 7,
-            deletionSeq: 1,
-            type,
-            consumed: true,
-          });
+        await tx.insert(deletedMessage).values({
+          threadId,
+          publisherNamespaceId: 0,
+          messageSeq: 7,
+          deletionSeq: 1,
+          type,
+        });
         await tx
           .update(message)
           .set({ isDeleted: true })
@@ -841,7 +837,6 @@ describe('transactional thread attention', () => {
     expect(await state()).toMatchObject({
       lastMentionSeq: 1,
       messageEndSeq: 2,
-      tombstoneEndSeq: 1,
       unreadCount: 2,
       threadFeedId: before + 1,
     });
@@ -862,7 +857,6 @@ describe('transactional thread attention', () => {
     await projectCurrentHeads();
     expect(await state()).toMatchObject({
       messageEndSeq: 3,
-      tombstoneEndSeq: 2,
       unreadCount: 3,
       lastMentionSeq: 2,
       threadFeedId: before.threadFeedId + 1,

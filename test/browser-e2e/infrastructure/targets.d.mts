@@ -3,6 +3,9 @@ export const federationNodes: Record<
   'alpha' | 'bravo' | 'charlie',
   { edge: string; admin: string; domain: string }
 >;
+export function resolvePlaygroundOrigin(
+  env?: Record<string, string | undefined>,
+): string;
 export const playgroundOrigin: string;
 export function assertTarget(target: unknown): BrowserTarget;
 export function navigationUrl(

@@ -34,6 +34,154 @@ export interface DeltaMirrorMetaItemInput {
   messages: Pick<MessageService, 'writeSystemMessageInTx'>;
 }
 
+export interface DeltaMirrorMetaPageInput {
+  group: MirrorGroupAddress;
+  items: readonly MirrorMetaReplicatedItem[];
+  /** The round's fixed target; the scan cursor is fenced against it. */
+  through: number;
+  /** The fetched page's scanned-through; used when items is empty. */
+  scannedThrough: number;
+  /** True for the round's last page: the applied end advances to `through`
+   * and the shell projection refreshes in this same transaction. */
+  reachedBoundary: boolean;
+  messages: Pick<MessageService, 'writeSystemMessageInTx'>;
+}
+
+/** Delta Group Meta consumption: one fetched page per transaction. Replica
+ * facts apply idempotently, member count is reconciled once at the end of the
+ * page, and the scan cursor advances to the last item's feed id. */
+export async function applyDeltaMirrorMetaPageInTx(
+  tx: DatabaseTransaction,
+  input: DeltaMirrorMetaPageInput,
+): Promise<{
+  threadId: number;
+  profileDemands: ProfilePrefetchDemand[];
+  systemMessageProfileWorks: MessageProfileWorkCommittedEvent[];
+}> {
+  await lockMirrorGroupInTx(tx, input.group);
+  const mirror = await requireMirrorMetaInTx(tx, input.group);
+  if (mirror.metaRecoveryThroughId !== 0)
+    throw new Error('a meta recovery drain opened during this delta round');
+  const threadLock = await requireGroupThreadContentLockUnderGroupInTx(
+    tx,
+    mirror.threadId,
+    mirror.threadId,
+  );
+  let lastFeedId = mirror.metaProcessedThroughId;
+  let hasMembershipMutation = false;
+  let hasGroupProfile = false;
+  let anyTransitioned = false;
+  const joinedMembers: ReturnType<typeof groupMemberProfileAddress>[] = [];
+  const leftMembers: ReturnType<typeof groupMemberProfileAddress>[] = [];
+  const profileDemands: ProfilePrefetchDemand[] = [];
+  const systemMessageProfileWorks: MessageProfileWorkCommittedEvent[] = [];
+
+  for (const item of input.items) {
+    if (item.feedId <= lastFeedId)
+      throw new Error('duplicate or stale group-meta delta coordinate');
+    const previousFact = await readCurrentMirrorMemberOperationInTx(
+      tx,
+      mirror.threadId,
+      item,
+    );
+    await applyMirrorMetaFactInTx(
+      tx,
+      mirror.threadId,
+      input.group,
+      item,
+      'delta',
+    );
+    if (item.operation === 'MEMBER_UPSERT' || item.operation === 'MEMBER_DEPART')
+      hasMembershipMutation = true;
+    if (item.operation === 'GROUP_PROFILE') hasGroupProfile = true;
+    const transition = await resolveObservedMembershipTransitionInTx(
+      tx,
+      mirror.threadId,
+      input.group,
+      item,
+      previousFact,
+    );
+    if (transition) {
+      if (transition.type === 'GROUP_JOINED') {
+        joinedMembers.push(transition.memberAddress);
+      } else {
+        leftMembers.push(transition.memberAddress);
+      }
+    }
+    const demand = selectChangedMirrorMemberProfileDemand(
+      input.group,
+      item,
+      previousFact,
+    );
+    if (demand) profileDemands.push(demand);
+    lastFeedId = item.feedId;
+  }
+
+  if (joinedMembers.length > 0) {
+    anyTransitioned = true;
+    const work = await writeBatchedMembershipSystemMessageInTx(
+      tx,
+      mirror.threadId,
+      input.group,
+      SystemMessageType.GROUP_JOINED,
+      joinedMembers as [
+        ReturnType<typeof groupMemberProfileAddress>,
+        ...ReturnType<typeof groupMemberProfileAddress>[],
+      ],
+      { threadLock, messages: input.messages },
+    );
+    if (work) systemMessageProfileWorks.push(work);
+  }
+  if (leftMembers.length > 0) {
+    anyTransitioned = true;
+    const work = await writeBatchedMembershipSystemMessageInTx(
+      tx,
+      mirror.threadId,
+      input.group,
+      SystemMessageType.GROUP_LEFT,
+      leftMembers as [
+        ReturnType<typeof groupMemberProfileAddress>,
+        ...ReturnType<typeof groupMemberProfileAddress>[],
+      ],
+      { threadLock, messages: input.messages },
+    );
+    if (work) systemMessageProfileWorks.push(work);
+  }
+
+  if (hasMembershipMutation) {
+    await reconcileClientMemberCountInTx(tx, threadLock);
+  }
+  if (!anyTransitioned && hasGroupProfile) {
+    const messageEnd = await tx.execute<{ head: number }>(sql`
+      SELECT COALESCE(max(seq), 0)::integer AS head FROM "Message"
+      WHERE "threadId" = ${mirror.threadId}`);
+    await enqueueThreadFanoutInTx(tx, threadLock, {
+      threadId: mirror.threadId,
+      messageEndSeq: messageEnd.rows[0]!.head,
+    });
+  }
+  const cursorTarget =
+    input.items.length > 0 ? lastFeedId : input.scannedThrough;
+  if (input.reachedBoundary) {
+    await finalizeMirrorMetaRecoveryInTx(tx, {
+      threadId: mirror.threadId,
+      through: input.through,
+      threadLock,
+    });
+  }
+  await advanceMirrorProcessedThroughInTx(
+    tx,
+    mirror.threadId,
+    cursorTarget,
+    input.through,
+  );
+  return {
+    threadId: mirror.threadId,
+    profileDemands,
+    systemMessageProfileWorks,
+  };
+}
+
 /** Delta Group Meta consumption: one feed item per transaction. The replica
  * fact applies idempotently, a third-party join or leave transition writes its
  * system message (whose writer admits the local fan-out), an item without a
@@ -77,15 +225,26 @@ export async function applyDeltaMirrorMetaItemInTx(
   ) {
     await reconcileClientMemberCountInTx(tx, threadLock);
   }
-  const transition = await writeObservedMembershipTransitionInTx(
+  const transition = await resolveObservedMembershipTransitionInTx(
     tx,
     mirror.threadId,
     input.group,
     input.item,
     previousFact,
-    { threadLock, messages: input.messages },
   );
-  const transitioned = transition.transitioned;
+  let transitioned = false;
+  let profileWork: MessageProfileWorkCommittedEvent | undefined;
+  if (transition) {
+    transitioned = true;
+    profileWork = await writeBatchedMembershipSystemMessageInTx(
+      tx,
+      mirror.threadId,
+      input.group,
+      transition.type,
+      [transition.memberAddress],
+      { threadLock, messages: input.messages },
+    );
+  }
   if (!transitioned && input.item.operation === 'GROUP_PROFILE') {
     const messageEnd = await tx.execute<{ head: number }>(sql`
       SELECT COALESCE(max(seq), 0)::integer AS head FROM "Message"
@@ -114,9 +273,7 @@ export async function applyDeltaMirrorMetaItemInTx(
         input.item,
         previousFact,
       ),
-      ...(transition.profileWork
-        ? { systemMessageProfileWork: transition.profileWork }
-        : {}),
+      ...(profileWork ? { systemMessageProfileWork: profileWork } : {}),
     };
   }
   await advanceMirrorProcessedThroughInTx(
@@ -132,9 +289,7 @@ export async function applyDeltaMirrorMetaItemInTx(
       input.item,
       previousFact,
     ),
-    ...(transition.profileWork
-      ? { systemMessageProfileWork: transition.profileWork }
-      : {}),
+    ...(profileWork ? { systemMessageProfileWork: profileWork } : {}),
   };
 }
 
@@ -233,7 +388,7 @@ async function readCurrentMirrorMemberOperationInTx(
 /** Meta deltas announce third-party departures and member joins. A local
  * departure is announced by the mirror's relationship-intent transition;
  * replaying its later MEMBER_DEPART here would write a second GROUP_LEFT. */
-async function writeObservedMembershipTransitionInTx(
+async function resolveObservedMembershipTransitionInTx(
   tx: DatabaseTransaction,
   threadId: number,
   group: MirrorGroupAddress,
@@ -245,21 +400,15 @@ async function writeObservedMembershipTransitionInTx(
         profileRev: number | null;
       }
     | undefined,
-  deps: {
-    threadLock: Awaited<
-      ReturnType<typeof requireGroupThreadContentLockUnderGroupInTx>
-    >;
-    messages: Pick<MessageService, 'writeSystemMessageInTx'>;
-  },
 ): Promise<{
-  transitioned: boolean;
-  profileWork?: MessageProfileWorkCommittedEvent;
-}> {
+  type: 'GROUP_JOINED' | 'GROUP_LEFT';
+  memberAddress: ReturnType<typeof groupMemberProfileAddress>;
+} | null> {
   if (
     item.operation === 'GROUP_PROFILE' ||
     item.operation === 'GROUP_ANNOUNCEMENT'
   )
-    return { transitioned: false };
+    return null;
   const member = { account: item.account, namespaceId: item.namespaceId };
   const joined =
     item.operation === 'MEMBER_UPSERT' &&
@@ -267,7 +416,7 @@ async function writeObservedMembershipTransitionInTx(
   const left =
     item.operation === 'MEMBER_DEPART' &&
     previousFact?.operation === 'MEMBER_UPSERT';
-  if (!joined && !left) return { transitioned: false };
+  if (!joined && !left) return null;
   // Meta identities remain in the publisher's coordinate space. Recognition
   // records the nonzero coordinate that this publisher assigned to our server;
   // publisher namespace zero identifies the publisher, never a mirror member.
@@ -282,7 +431,7 @@ async function writeObservedMembershipTransitionInTx(
       'mirror publisher has no recognized local namespace binding',
     );
   const localMember = member.namespaceId === localNamespaceId;
-  if (left && localMember) return { transitioned: false };
+  if (left && localMember) return null;
   const profileNamespaceId =
     item.operation === 'MEMBER_UPSERT'
       ? item.namespaceId
@@ -304,27 +453,51 @@ async function writeObservedMembershipTransitionInTx(
       LIMIT 1
     `);
     const current = pair.rows[0];
-    if (!current?.active) return { transitioned: false };
+    if (!current?.active) return null;
   }
   const recipients = await readCurrentLocalAuthorizedGroupMemberIdsInTx(tx, {
     groupId: threadId,
     threadId,
   });
-  if (!recipients.length) return { transitioned: false };
+  if (!recipients.length) return null;
   const memberAddress = groupMemberProfileAddress({
     account: member.account,
     publisherNamespaceId: group.publisherNamespaceId,
     profileNamespaceId: profileNamespaceId ?? 0,
     profileRev,
   });
+  return {
+    type: joined ? 'GROUP_JOINED' : 'GROUP_LEFT',
+    memberAddress,
+  };
+}
+
+async function writeBatchedMembershipSystemMessageInTx(
+  tx: DatabaseTransaction,
+  threadId: number,
+  group: MirrorGroupAddress,
+  type: typeof SystemMessageType.GROUP_JOINED | typeof SystemMessageType.GROUP_LEFT,
+  members: [
+    ReturnType<typeof groupMemberProfileAddress>,
+    ...ReturnType<typeof groupMemberProfileAddress>[],
+  ],
+  deps: {
+    threadLock: Awaited<
+      ReturnType<typeof requireGroupThreadContentLockUnderGroupInTx>
+    >;
+    messages: Pick<MessageService, 'writeSystemMessageInTx'>;
+  },
+): Promise<MessageProfileWorkCommittedEvent | undefined> {
   const result = await deps.messages.writeSystemMessageInTx(
     tx,
     threadId,
     {
-      type: joined
-        ? SystemMessageType.GROUP_JOINED
-        : SystemMessageType.GROUP_LEFT,
-      member: memberAddress,
+      type,
+      members: members.slice(0, 5) as [
+        ReturnType<typeof groupMemberProfileAddress>,
+        ...ReturnType<typeof groupMemberProfileAddress>[],
+      ],
+      totalCount: members.length,
     },
     { threadLock: deps.threadLock },
   );
@@ -347,6 +520,6 @@ async function writeObservedMembershipTransitionInTx(
     },
   ]);
   if (work.demands.length === 0 && work.evidenceProjections.length === 0)
-    return { transitioned: true };
-  return { transitioned: true, profileWork: work };
+    return undefined;
+  return work;
 }

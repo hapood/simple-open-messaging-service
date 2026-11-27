@@ -19,6 +19,7 @@ import { initializeHistoryReadPositionInTx } from '../message/thread-read-positi
 import { eligiblePreviewOwnerSql } from '../message/thread-preview-eligibility.js';
 import { resolvePublisherCoverageInTx } from './federation-message-anchor.js';
 import { calculatePublisherReservationOffset } from './federation-message-sequence-policy.js';
+import { readAuthorizedSourceHeadInTx } from './federation-authorized-source-head.js';
 
 export interface FederationReverseWindow {
   authorizationEpoch: number;
@@ -510,16 +511,38 @@ export class FederationThreadSyncStateService {
     return result.rows[0]?.seq ?? 0;
   }
 
-  /** Relationship activation and every message round share this authorization align. */
+  /** Align one remote source from the retained authorization snapshot.
+   * Relationship activation and each message round share this initialization. */
+  static async prepareMessageRoundInTx(
+    tx: DatabaseTransaction,
+    threadId: number,
+    namespaceId: number,
+    held?: ThreadContentLock,
+  ): Promise<void> {
+    if (namespaceId <= 0) return;
+    const threadLock = await requireThreadContentLockInTx(tx, threadId, held);
+    const head = await readAuthorizedSourceHeadInTx(threadLock, namespaceId);
+    if (!head) return;
+    await this.reconcileRelationshipAuthorizationInTx(tx, {
+      threadId,
+      namespaceId,
+      messageTargetSeq: head.messageEndSeq,
+      deletionTargetSeq: head.tombstoneEndSeq,
+      reverseEnabled: head.reverseEnabled,
+      threadLock,
+    });
+  }
+
   async prepareMessageRound(
     threadId: number,
     namespaceId: number,
   ): Promise<void> {
-    const { prepareFederationMessageRoundInTx } = await import(
-      './federation-relationship-thread-state.js'
-    );
     await this.database.db.transaction((tx) =>
-      prepareFederationMessageRoundInTx(tx, threadId, namespaceId),
+      FederationThreadSyncStateService.prepareMessageRoundInTx(
+        tx,
+        threadId,
+        namespaceId,
+      ),
     );
   }
 

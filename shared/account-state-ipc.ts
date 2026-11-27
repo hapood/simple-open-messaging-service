@@ -1,10 +1,18 @@
-import type { AccountState, AccountSelfProfile, AccountComposerDraft } from './account-state.js';
+import type {
+  AccountState,
+  AccountSelfProfile,
+  AccountComposerDraft,
+} from './account-state.js';
 
 /** Reviewed IPC argument/result contracts. Failures reject; no success-shaped fallback. */
 export interface AccountStateCommands {
   native_db_initialize_account_state: {
     args: { userId: number };
     result: void;
+  };
+  native_db_read_cached_self_profile: {
+    args: Record<string, never>;
+    result: AccountSelfProfile | null;
   };
   native_db_read_account_state: {
     args: { userId: number };
@@ -26,6 +34,8 @@ export interface AccountStateCommands {
 
 /** Writes own only their named fields, preserving all other account state. */
 export interface AccountStateStorage {
+  /** Discover existing self facts before account binding; never initializes storage. */
+  readCachedSelfProfile(): Promise<AccountSelfProfile | null>;
   initializeAccountState(): Promise<void>;
   readAccountState(): Promise<AccountState>;
   advanceIntentRequestRead(observedEndId: string): Promise<AccountState>;

@@ -146,10 +146,13 @@ describe('client state feed + notification feed', () => {
       rows.find((row: { threadId: number }) => row.threadId === tAlice),
     ).toMatchObject({
       messageEndSeq: 3,
-      tombstoneEndSeq: 0,
       unreadCount: 3,
       lastReadSeq: 0,
     });
+    for (const row of rows) {
+      expect(row).not.toHaveProperty('tombstoneEndSeq');
+      expect(row).not.toHaveProperty('groupMetaFeedEndId');
+    }
     const state = await getState({ after: 0, take: 200, mode: 'full' });
     expect(state.body.code).toBe(0);
     expect(state.body.data.items).toEqual([]);

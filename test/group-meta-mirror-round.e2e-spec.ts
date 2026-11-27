@@ -281,7 +281,7 @@ describe('mirror Group Meta rounds', () => {
       }),
     );
     expect(await readMirrorMeta()).toMatchObject({
-      metaEndId: 9,
+      metaEndId: 0,
       metaTargetId: 9,
       metaProcessedThroughId: 9,
       metaRecoveryThroughId: 0,
@@ -394,11 +394,14 @@ describe('mirror Group Meta rounds', () => {
     expect(joined.length).toBe(1);
     expect(JSON.parse(joined[0]!.content as string)).toMatchObject({
       type: 'GROUP_JOINED',
-      member: {
-        account: 'peer-one',
-        profileNamespaceId: originNamespaceId,
-        profileRev: 1,
-      },
+      members: [
+        {
+          account: 'peer-one',
+          profileNamespaceId: originNamespaceId,
+          profileRev: 1,
+        },
+      ],
+      totalCount: 1,
     });
 
     // A rejoin boundary (MEMBER_DEPART after MEMBER_UPSERT) mints the leave message.
@@ -418,7 +421,7 @@ describe('mirror Group Meta rounds', () => {
     expect(
       transitions.map((row) => JSON.parse(row.content as string).type),
     ).toEqual(['GROUP_JOINED', 'GROUP_LEFT']);
-    expect(JSON.parse(transitions[1]!.content as string).member).toMatchObject({
+    expect(JSON.parse(transitions[1]!.content as string).members[0]).toMatchObject({
       account: 'peer-one',
       profileNamespaceId: originNamespaceId,
       profileRev: 1,
@@ -472,7 +475,7 @@ describe('mirror Group Meta rounds', () => {
       }),
     );
     expect(await readMirrorMeta()).toMatchObject({
-      metaEndId: 8,
+      metaEndId: 0,
       metaProcessedThroughId: 8,
       metaRecoveryThroughId: 0,
     });
@@ -558,7 +561,7 @@ describe('mirror Group Meta rounds', () => {
       }),
     );
     expect(await readMirrorMeta()).toMatchObject({
-      metaEndId: 3,
+      metaEndId: 0,
       metaProcessedThroughId: 3,
       metaRecoveryThroughId: 0,
     });
@@ -1075,10 +1078,13 @@ describe('mirror Group Meta rounds', () => {
     expect(joined).toHaveLength(1);
     expect(JSON.parse(joined[0]!.content as string)).toMatchObject({
       type: 'GROUP_JOINED',
-      member: {
-        account: localMemberAccount,
-        profileNamespaceId: 77,
-      },
+      members: [
+        {
+          account: localMemberAccount,
+          profileNamespaceId: 77,
+        },
+      ],
+      totalCount: 1,
     });
     for (const [feedId, operation] of [
       [2, 'MEMBER_UPSERT'],
@@ -1232,7 +1238,7 @@ describe('mirror Group Meta rounds', () => {
       }),
     );
     const [head] = await database.db
-      .select({ end: groupMeta.metaEndId })
+      .select({ end: groupMeta.metaProcessedThroughId })
       .from(groupMeta)
       .where(eq(groupMeta.threadId, threadId));
     const page = await database.db.transaction((tx) =>

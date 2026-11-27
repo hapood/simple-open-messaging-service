@@ -2,6 +2,7 @@ import {
   isThreadStateSnapshot,
   type ThreadStateSnapshot,
 } from './thread-state.js';
+import { assertThreadAuthor, type ThreadAuthor } from './thread-author.js';
 
 /** One complete conversation snapshot. Its account-scoped ID orders visible thread-list items. */
 export interface ThreadFeedSnapshot extends ThreadStateSnapshot {
@@ -11,6 +12,8 @@ export interface ThreadFeedSnapshot extends ThreadStateSnapshot {
   alias: string | null;
   profileRev: number;
   messageEndSeq: number;
+  /** Transient wire author of messageEndSeq; required when messageEndSeq > 0, omitted at 0, not persisted. */
+  author?: ThreadAuthor;
   /** Latest join-application projection coordinate for this manager. */
   joinRequestEndFeedId: number;
   /** -1 for non-managers; otherwise the consumed join-application coordinate. */
@@ -69,6 +72,8 @@ export function mergeThreadAttention(
   coordinate(incoming.threadFeedId, 'feed ID', 1);
   coordinate(incoming.profileRev, 'profile revision');
   coordinate(incoming.messageEndSeq, 'message end');
+  if (incoming.author !== undefined)
+    assertThreadAuthor(incoming.messageEndSeq, incoming.author);
   coordinate(incoming.joinRequestEndFeedId, 'join request end');
   coordinate(incoming.joinRequestReadFeedId, 'join request read', -1);
   coordinate(incoming.groupInviteEndFeedId, 'group invite end');

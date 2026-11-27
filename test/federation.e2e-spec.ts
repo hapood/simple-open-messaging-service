@@ -1144,8 +1144,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
         expect(JSON.parse(reply!.content)).toMatchObject({
           text: 'reply from bob',
           quote: {
-            namespaceId: 0,
-            seq: original.body.data.seq,
+            originSeq: original.body.data.seq,
             digest: expect.stringMatching(/^[0-9a-f]{64}$/),
           },
         });
@@ -2404,7 +2403,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
         const mirrorMeta = await appB.database.query.groupMeta.findFirst({
           where: eq(groupMeta.threadId, mirrorB.id),
         });
-        expect(mirrorMeta?.metaRecoveryThroughId).toBeNull();
+        expect(mirrorMeta?.metaRecoveryThroughId).toBe(0);
         expect(mirrorMeta?.metaProcessedThroughId).toBeGreaterThan(0);
         const joined = await appA.database
           .select({ id: message.id })
@@ -3383,7 +3382,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
             eq(message.threadId, firstMirrorBId),
             eq(message.contentType, ContentType.SYSTEM),
             sql`(${message.content}::jsonb ->> 'type') = 'GROUP_LEFT'`,
-            sql`(${message.content}::jsonb -> 'member' ->> 'account') = 'dave'`,
+            sql`(${message.content}::jsonb -> 'members') @> '[{"account":"dave"}]'::jsonb`,
           ),
         });
         expect(
@@ -3398,6 +3397,13 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
         ).toHaveLength(1);
         expect(mirrorLeft[0]).toMatchObject({
           creatorAccount: '$system',
+        });
+        expect(JSON.parse(mirrorLeft[0]!.content)).toMatchObject({
+          type: 'GROUP_LEFT',
+          members: [
+            { account: 'dave', publisherNamespaceId: 0, profileNamespaceId: 0 },
+          ],
+          totalCount: 1,
         });
         expect(
           await appB.database.query.accountThreadState.findFirst({

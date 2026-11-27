@@ -1,22 +1,73 @@
+import type { Locator } from '@playwright/test';
 import { test, expect } from '../fixtures/playground';
+
+// The playground exposes Angular's development inspector. Ordinary conversation
+// entry restores readSeq (or history start); geometry at the tail needs an explicit jump.
+type MessageThread = {
+  scroller?: {
+    goToLatest(): Promise<boolean>;
+    isPinnedToBottom(): boolean;
+  };
+};
+type PlaygroundWindow = Window & {
+  ng: { getComponent(element: Element): MessageThread };
+};
+
+async function goToLatest(pane: Locator): Promise<void> {
+  await expect(pane.locator('.msg-viewport')).toHaveAttribute(
+    'aria-busy',
+    'false',
+  );
+  await expect(pane.locator('.msg-row').first()).toBeAttached();
+  const jumped = await pane
+    .locator('app-message-thread')
+    .evaluate((element) => {
+      const component = (window as unknown as PlaygroundWindow).ng.getComponent(
+        element,
+      );
+      return component.scroller!.goToLatest();
+    });
+  expect(jumped).toBe(true);
+  await expect(pane.locator('.msg-viewport')).toHaveAttribute(
+    'aria-busy',
+    'false',
+  );
+  await expect
+    .poll(() =>
+      pane.locator('app-message-thread').evaluate((element) => {
+        const component = (
+          window as unknown as PlaygroundWindow
+        ).ng.getComponent(element);
+        return component.scroller!.isPinnedToBottom();
+      }),
+    )
+    .toBe(true);
+  await expect
+    .poll(() =>
+      pane
+        .locator('.msg-viewport')
+        .evaluate((viewport) =>
+          Math.abs(
+            viewport.scrollHeight - viewport.clientHeight - viewport.scrollTop,
+          ),
+        ),
+    )
+    .toBeLessThanOrEqual(1);
+}
 
 test('reply composer reserves local space through a global height reset', async ({
   page,
 }) => {
   await page.getByRole('button', { name: /^Alice, chat/ }).click();
   const pane = page.locator('.pane-layer.pane-fg');
-  await expect(pane.locator('.cb-tail-cap--gap')).toBeAttached();
-  // The initial backfill changes scrollTop and dismisses open menus; wait for that page first.
-  await expect
-    .poll(() =>
-      pane.locator('.msg-content').evaluate((content) => content.scrollHeight),
-    )
-    .toBeGreaterThan(6000);
+  await expect(pane.locator('.cb-bottom-reserve')).toBeAttached();
+  // Finish navigation before opening a menu: replacing the window dismisses it.
+  await goToLatest(pane);
   await pane.locator('.msg-bubble-text').last().click({ button: 'right' });
   await pane.getByRole('menuitem', { name: 'Reply', exact: true }).click();
   await expect(pane.locator('.msg-compose-quote')).toBeVisible();
   const geometry = await pane.evaluate((element) => {
-    const tail = element.querySelector<HTMLElement>('.cb-tail-cap')!;
+    const tail = element.querySelector<HTMLElement>('.cb-bottom-reserve')!;
     const composer = element.querySelector<HTMLElement>('app-chat-input')!;
     const viewport = element.querySelector<HTMLElement>('.msg-viewport')!;
     const root = document.documentElement.style;
@@ -44,7 +95,7 @@ test('reply composer reserves local space through a global height reset', async 
 });
 
 for (const width of [1440, 1000]) {
-  test(`initial bottom positioning at ${width}px reserves the full composer height`, async ({
+  test(`explicit latest positioning at ${width}px reserves the full composer height`, async ({
     page,
   }) => {
     await page.setViewportSize({ width, height: 1000 });
@@ -61,18 +112,15 @@ for (const width of [1440, 1000]) {
         })),
       )
       .toEqual({ wide: width === 1440, height: width === 1440 ? 82 : 64 });
-    await expect
-      .poll(() =>
-        pane.locator('.msg-content').evaluate((el) => el.scrollHeight),
-      )
-      .toBeGreaterThan(6000);
+    await goToLatest(pane);
 
     await expect
       .poll(() =>
         pane.evaluate((element) => {
           const composer =
             element.querySelector<HTMLElement>('app-chat-input')!;
-          const tail = element.querySelector<HTMLElement>('.cb-tail-cap--gap')!;
+          const tail =
+            element.querySelector<HTMLElement>('.cb-bottom-reserve')!;
           const message = tail.previousElementSibling!;
           const viewport = element.querySelector<HTMLElement>('.msg-viewport')!;
           return {
@@ -101,11 +149,20 @@ type ComposerFrame = {
   thread: string;
   messageBottom: number;
   composerTop: number;
+  reserveHeight: number;
+  composerHeight: number;
+  backgroundReserves: number;
+  pinned: boolean;
 };
 
 type ComposerProbe = {
   frames: number;
+  readingFrames: number;
+  pinnedFrames: number;
+  phase: 'entry' | 'latest';
   overlaps: ComposerFrame[];
+  reserveViolations: ComposerFrame[];
+  unpinnedFrames: ComposerFrame[];
   raf: number;
 };
 
@@ -129,15 +186,24 @@ for (const width of [1440, 1000]) {
     await expect(block).toBeChecked();
     await block.click();
     await expect(block).not.toBeChecked();
-    await expect(activePane.locator('.cb-tail-cap--gap')).toBeAttached();
+    await expect(activePane.locator('.cb-bottom-reserve')).toBeAttached();
     await profile.locator('.page-header__back').click();
     await expect(profile).toHaveCount(0);
     await page.evaluate(() => {
-      const probe: ComposerProbe = { frames: 0, overlaps: [], raf: 0 };
+      const probe: ComposerProbe = {
+        frames: 0,
+        readingFrames: 0,
+        pinnedFrames: 0,
+        phase: 'entry',
+        overlaps: [],
+        reserveViolations: [],
+        unpinnedFrames: [],
+        raf: 0,
+      };
       (window as ProbeWindow).composerProbe = probe;
       const sample = () => {
         const pane = document.querySelector('.pane-layer.pane-fg');
-        const tail = pane?.querySelector<HTMLElement>('.cb-tail-cap--gap');
+        const tail = pane?.querySelector<HTMLElement>('.cb-bottom-reserve');
         const message = tail?.previousElementSibling;
         const composer = pane?.querySelector<HTMLElement>('app-chat-input');
         if (
@@ -146,34 +212,91 @@ for (const width of [1440, 1000]) {
           composer
         ) {
           probe.frames++;
-          const frame = {
+          const component = (
+            window as unknown as PlaygroundWindow
+          ).ng.getComponent(pane!.querySelector('app-message-thread')!);
+          const pinned = component.scroller?.isPinnedToBottom() ?? false;
+          const frame: ComposerFrame = {
             thread: pane?.querySelector('.msg-header')?.textContent ?? '',
             messageBottom: message.getBoundingClientRect().bottom,
             composerTop: composer.getBoundingClientRect().top,
+            reserveHeight: tail!.offsetHeight,
+            composerHeight: composer.offsetHeight,
+            backgroundReserves: document.querySelectorAll(
+              '.pane-layer:not(.pane-fg) .cb-bottom-reserve',
+            ).length,
+            pinned,
           };
-          if (frame.messageBottom > frame.composerTop + 1)
-            probe.overlaps.push(frame);
+          // Reserve ownership applies even while reading history. The last mounted
+          // row can be far below the viewport then; that is not composer overlap.
+          if (
+            frame.reserveHeight < frame.composerHeight ||
+            frame.backgroundReserves !== 0
+          )
+            probe.reserveViolations.push(frame);
+          if (pinned || probe.phase === 'latest') {
+            if (frame.messageBottom > frame.composerTop + 1)
+              probe.overlaps.push(frame);
+          }
+          if (probe.phase === 'latest') {
+            // Do not silently filter a regression that loses bottom pinning.
+            if (!pinned) probe.unpinnedFrames.push(frame);
+            probe.pinnedFrames++;
+          } else if (!pinned) {
+            probe.readingFrames++;
+          }
         }
         probe.raf = requestAnimationFrame(sample);
       };
       sample();
     });
 
-    // Revisit both resident slots after their kernels idle: exercise both activation orders,
-    // not just the first mount, and keep observing through the asynchronous history backfill.
-    for (const name of ['Alice', 'Liam', 'Alice', 'Liam', 'Alice']) {
-      await page
-        .getByRole('button', { name: new RegExp(`^${name}, chat`) })
-        .click();
+    // Revisit both resident slots in both activation orders. Unbinding releases
+    // their windows, so each ordinary re-entry must explicitly navigate to latest.
+    // The probe remains running through entry/loading, navigation, and bottom frames.
+    for (const [visit, name] of [
+      'Liam',
+      'Alice',
+      'Liam',
+      'Alice',
+      'Liam',
+      'Alice',
+    ].entries()) {
+      await page.evaluate(() => {
+        (window as ProbeWindow).composerProbe!.phase = 'entry';
+      });
+      // Liam is already open after unblocking. Selecting the active list item
+      // toggles the chat closed; only subsequent visits are actual switches.
+      if (visit > 0) {
+        await page
+          .getByRole('button', { name: new RegExp(`^${name}, chat`) })
+          .click();
+      }
       await expect(
         page.locator('.pane-layer.pane-fg .msg-header'),
       ).toContainText(name);
       await expect(
-        page.locator('.pane-layer.pane-fg .cb-tail-cap--gap'),
+        page.locator('.pane-layer.pane-fg .cb-bottom-reserve'),
       ).toBeAttached();
       await expect(
-        page.locator('.pane-layer:not(.pane-fg) .cb-tail-cap'),
+        page.locator('.pane-layer:not(.pane-fg) .cb-bottom-reserve'),
       ).toHaveCount(0);
+      await goToLatest(activePane);
+      const observed = await page.evaluate(async () => {
+        const probe = (window as ProbeWindow).composerProbe!;
+        probe.phase = 'latest';
+        const before = probe.pinnedFrames;
+        // Observe actual paint opportunities, not a fixed-duration sleep. Every
+        // visit must contribute bottom frames, including each reactivated slot.
+        await new Promise<void>((resolve) => {
+          requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+        });
+        return probe.pinnedFrames - before;
+      });
+      expect(
+        observed,
+        `${name} must contribute latest-position frames`,
+      ).toBeGreaterThan(0);
     }
 
     const probe = await page.evaluate(() => {
@@ -182,6 +305,10 @@ for (const width of [1440, 1000]) {
       return probe;
     });
     expect(probe.frames).toBeGreaterThan(0);
+    expect(probe.readingFrames).toBeGreaterThan(0);
+    expect(probe.pinnedFrames).toBeGreaterThan(0);
+    expect(probe.reserveViolations).toEqual([]);
+    expect(probe.unpinnedFrames).toEqual([]);
     expect(probe.overlaps).toEqual([]);
   });
 }
@@ -191,8 +318,9 @@ test('pane tail geometry is independent of a transient global composer height', 
 }) => {
   await page.getByRole('button', { name: /^Alice, chat/ }).click();
   await expect(
-    page.locator('.pane-layer.pane-fg .cb-tail-cap--gap'),
+    page.locator('.pane-layer.pane-fg .cb-bottom-reserve'),
   ).toBeAttached();
+  await goToLatest(page.locator('.pane-layer.pane-fg'));
 
   // Exercise the actual CSS cascade in Chromium. Force layout between the same-task root
   // reset/restore that can occur during A/B handoff; ResizeObserver may see no net size change.
@@ -202,7 +330,7 @@ test('pane tail geometry is independent of a transient global composer height', 
       '.pane-layer.pane-fg .msg-container',
     )!;
     const viewport = container.querySelector<HTMLElement>('.msg-viewport')!;
-    const tail = container.querySelector<HTMLElement>('.cb-tail-cap')!;
+    const tail = container.querySelector<HTMLElement>('.cb-bottom-reserve')!;
     const oldValue = root.style.getPropertyValue('--soms-composer-height');
     const measure = () => ({
       tail: tail.offsetHeight,

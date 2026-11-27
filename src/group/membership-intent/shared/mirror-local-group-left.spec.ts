@@ -47,12 +47,15 @@ describe('writeMirrorLocalGroupLeftInTx', () => {
     expect(query.params).toContain(
       JSON.stringify({
         type: 'GROUP_LEFT',
-        member: {
-          account: 'alice',
-          publisherNamespaceId: 0,
-          profileNamespaceId: 0,
-          profileRev: 4,
-        },
+        members: [
+          {
+            account: 'alice',
+            publisherNamespaceId: 0,
+            profileNamespaceId: 0,
+            profileRev: 4,
+          },
+        ],
+        totalCount: 1,
       }),
     );
     const queries = execute.mock.calls.map(([statement]) =>

@@ -1,5 +1,6 @@
 import { ReceivedUserIntentService } from '../src/user/p2p-intent/received/received-user-intent.service.js';
 import { localIdentityDomain } from './support/local-domain.js';
+import { parseSystemMessageContent } from '../shared/system-message-content.js';
 import { UserIntentService } from '../src/user/p2p-intent/authored/user-intent.service.js';
 import { FederationThreadQueryDenialService } from '../src/federation/federation-thread-query-denial.service.js';
 import { FederationThreadSourceInactiveError } from '../src/federation/federation-errors.js';
@@ -233,7 +234,7 @@ describe('departure system message paths', () => {
     );
     await database.db.insert(groupMeta).values({
       threadId: parent.id,
-      metaEndId: 5,
+      metaEndId: 0,
       metaTargetId: 6,
       metaProcessedThroughId: 5,
     });
@@ -312,7 +313,18 @@ describe('departure system message paths', () => {
       await run();
       const rows = await notices(h.threadId);
       expect(rows).toHaveLength(1);
-      expect(JSON.parse(rows[0].content).member.account).toBe(h.member.account);
+      expect(parseSystemMessageContent(rows[0].content)).toEqual({
+        type: 'GROUP_LEFT',
+        members: [
+          {
+            account: h.member.account,
+            publisherNamespaceId: 0,
+            profileNamespaceId: 0,
+            profileRev: 1,
+          },
+        ],
+        totalCount: 1,
+      });
       expect(
         (await boundary(h.threadId, h.member.id))?.messageVisibleThroughSeq,
       ).toBe(rows[0].seq);
@@ -392,12 +404,14 @@ describe('departure system message paths', () => {
       });
       const running = await store.claim(accountFanout!.id);
       expect(
-        await app
-          .get(ThreadFanoutProgressService)
-          .projectAccount(
-            running!.id,
-            parseAccountThreadFanoutTarget(running!.payload),
-          ),
+        (
+          await app
+            .get(ThreadFanoutProgressService)
+            .projectAccount(
+              running!.id,
+              parseAccountThreadFanoutTarget(running!.payload),
+            )
+        ).projected,
       ).toHaveLength(1);
       await store.markSucceeded(accountFanout!.id);
       expect((await boundary(h.threadId, id))?.messageEndSeq).toBe(dissolveSeq);

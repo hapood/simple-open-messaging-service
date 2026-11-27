@@ -68,6 +68,7 @@ describe('RelationshipController request-round boundary', () => {
         7,
         '9007199254740993',
         decision,
+        undefined,
       );
       expect(requests.decidePersonal).not.toHaveBeenCalled();
       expect(userIntents.execute).not.toHaveBeenCalled();

@@ -10,6 +10,7 @@ describe('mention projection in the shared head writer', () => {
     selfMentionNamespaceId: 0,
     unreadCount: 0,
     previewSeqs: [],
+    previewDeletedSeqs: [],
     lastReadSeq: 0,
     lastMentionSeq: 3,
     messageEndSeq: 5,
@@ -39,7 +40,7 @@ describe('mention projection in the shared head writer', () => {
         next,
       ),
     ).toBe(7);
-    expect(execute).toHaveBeenCalledTimes(1);
+    expect(execute).toHaveBeenCalledTimes(2);
   });
 
   it('uses the viewer namespace assigned by the group origin, not account alone', async () => {
@@ -211,26 +212,6 @@ describe('mention projection in the shared head writer', () => {
     expect(update.sql).toContain('SELECT seq FROM selected_peer_profile');
   });
 
-  it('compares GROUP_PROFILE feed IDs before revisions and does not rebase on the source ID alone', async () => {
-    const execute = vi.fn().mockResolvedValue({ rows: [] });
-    await ThreadFeedHeadWriter.advanceGroupMetaCoordinatesInTx(
-      { execute } as never,
-      {
-        threadId: 2,
-        userIds: [1],
-        groupMetaFeedEndId: 7,
-        profileRev: 3,
-        profileSourceId: 5,
-      },
-    );
-    const update = new PgDialect().sqlToQuery(execute.mock.lastCall![0] as SQL);
-    expect(update.sql).toContain('s."profileSourceId" IS NULL');
-    expect(update.sql).toContain('s."profileSourceId" <');
-    expect(update.sql).toContain('s."threadProfileRev" IS DISTINCT FROM');
-    expect(update.sql).toContain('"profileSourceId" = CASE');
-    expect(update.sql).toContain('"groupMetaFeedEndId" = GREATEST');
-  });
-
   it('skips duplicate fanout heads entirely', async () => {
     const execute = vi.fn().mockResolvedValue({ rows: [state] });
     await ThreadFeedHeadWriter.advanceInTx({ execute } as never, 1, {
@@ -238,7 +219,7 @@ describe('mention projection in the shared head writer', () => {
       messageEndSeq: 5,
       tombstoneEndSeq: 0,
     });
-    expect(execute).toHaveBeenCalledTimes(1);
+    expect(execute).toHaveBeenCalledTimes(4);
   });
 
   it('skips duplicate heads with a preview older than the read cursor', async () => {
@@ -252,7 +233,7 @@ describe('mention projection in the shared head writer', () => {
       messageEndSeq: 5,
       tombstoneEndSeq: 0,
     });
-    expect(execute).toHaveBeenCalledTimes(1);
+    expect(execute).toHaveBeenCalledTimes(3);
   });
 
   it.each([
