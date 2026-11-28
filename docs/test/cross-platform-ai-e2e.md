@@ -75,8 +75,8 @@ Useful environment variables:
   Do not use reset behavior to prepare a retained regression fixture.
 - `CROSS_PLATFORM_BROWSER_URL`, default `http://localhost:3101/`
 - `CROSS_PLATFORM_PLATFORM`, default `both`; also accepts `browser` or `android`
-- `CROSS_PLATFORM_SCENARIOS`, default `docs/development/browser-e2e-test-plan.md`;
-  Android runs must point it at `docs/development/android-e2e-test-plan.md`
+- `CROSS_PLATFORM_SCENARIOS`, default `docs/test/browser-e2e-test-plan.md`;
+  Android runs must point it at `docs/test/android-e2e-test-plan.md`
 - `AI_TEST_CASE`, exact numeric ID preferred, defaults to `0.1`; exact IDs are
   required when available. A title-substring selector must match exactly one
   case; ambiguous matches are rejected with candidate IDs.

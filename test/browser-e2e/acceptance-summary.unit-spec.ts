@@ -131,7 +131,7 @@ describe('roundView', () => {
     const active = handle();
     active.state.phase = 'running';
     const manifests = new URL(
-      '../../docs/development/browser-e2e-quick-rounds/',
+      '../../docs/test/browser-e2e-quick-rounds/',
       import.meta.url,
     );
     const seen = new Set<string>();

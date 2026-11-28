@@ -37,7 +37,7 @@ is not an E2E pass.
 
 ```bash
 CROSS_PLATFORM_PLATFORM=android \
-CROSS_PLATFORM_SCENARIOS=docs/development/android-e2e-test-plan.md \
+CROSS_PLATFORM_SCENARIOS=docs/test/android-e2e-test-plan.md \
 AI_TEST_CASE=11.5 AI_TEST_API_KEY=... npm run test:cross-platform
 ```
 

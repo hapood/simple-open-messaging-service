@@ -28,13 +28,13 @@ synthetic files, and writing/editing scenario `.mjs` files under the step direct
 It does not authorize editing source, resetting databases/profiles, changing
 credentials, restarting services or mutating pre-existing business data.
 
-Read `docs/development/browser-testing.md`, then the selected plan:
+Read `docs/test/browser-testing.md`, then the selected plan:
 
-- Quick: `docs/development/browser-e2e-quick-test-plan.md` (two nodes). Its
+- Quick: `docs/test/browser-e2e-quick-test-plan.md` (two nodes). Its
   chapter sections are the assertion contract; execute one round manifest at a
-  time from `docs/development/browser-e2e-quick-rounds/` (each enumerates at
+  time from `docs/test/browser-e2e-quick-rounds/` (each enumerates at
   most ~32 case IDs) and register exactly the manifest's cases.
-- Full: `docs/development/browser-e2e-test-plan.md` (three nodes, including
+- Full: `docs/test/browser-e2e-test-plan.md` (three nodes, including
   cross-cutting and viewport matrices). Browser runs never include Android 11.x.
 
 Use `rg -n '^## |^### |<case id>|<feature>'` to locate relevant detailed rules.
@@ -50,7 +50,7 @@ their language.
 - `run.json` is authoritative. `progress.md`, `handoff.md`, and `bugs/` are
   tool-generated projections; do not edit them with shell/file tools.
 - Before business mutations in quick mode, register exactly one round manifest
-  from `docs/development/browser-e2e-quick-rounds/` (each enumerates at most ~32
+  from `docs/test/browser-e2e-quick-rounds/` (each enumerates at most ~32
   case IDs) with `webtest_run register`, using `cases: [{id, title}]`.
   In full mode, expand the selected full-plan matrices into stable,
   assertion-sized IDs and register one bounded round at a time (up to 200 cases).

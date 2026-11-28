@@ -43,8 +43,8 @@ entry. On first setup, or when modifying settings:
 
 Plans:
 
-- [Two-node main-workflow plan](../../docs/development/browser-e2e-quick-test-plan.md)
-- [Three-node full acceptance inventory](../../docs/development/browser-e2e-test-plan.md)
+- [Two-node main-workflow plan](../../docs/test/browser-e2e-quick-test-plan.md)
+- [Three-node full acceptance inventory](../../docs/test/browser-e2e-test-plan.md)
 
 Quick mode covers local workflows on both nodes and bidirectional federation:
 friendship, groups, settings/announcements, message/media/file types, personal and
@@ -150,8 +150,8 @@ Open profiles with explicit `target: "playground"` or `target: "federation"`.
 Without configured acceptance, federation retains the existing three-node local
 lab defaults and credential precedence; HMR preflight still applies. Playground
 is separate and needs no federation credentials. See
-[browser testing architecture](../../docs/development/browser-testing.md) and
-[driver operations](../../docs/development/browser-e2e-tools.md).
+[browser testing architecture](../../docs/test/browser-testing.md) and
+[driver operations](../../docs/test/browser-e2e-tools.md).
 
 The driver and regression suite share the lockfile-paired Chromium. Reusable
 harness code belongs in `test/browser-e2e/`, not temporary steps. Run harness checks

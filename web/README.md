@@ -46,7 +46,7 @@ are written to the repository's ignored `test-results/web-unit/` directory.
 
 From the repository root, run `npm run test:browser:install`, then
 `npm run test:playground` for standalone mock UI regression. Federation browser
-projects require the running lab. See [browser testing architecture](../docs/development/browser-testing.md)
+projects require the running lab. See [browser testing architecture](../docs/test/browser-testing.md)
 for project selection, Pi exploration, and isolated build outputs.
 
 ## Further help

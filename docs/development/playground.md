@@ -117,5 +117,5 @@ its server on port 4301; it refuses to reuse an existing server. It uses fresh
 browser contexts, no lab credentials, and no lab HMR status files. Tests assert
 visible UI outcomes, absence of browser errors, and absence of outgoing API
 requests. Failure artifacts are isolated per run under `test-results/browser-e2e/`.
-See [browser testing architecture](browser-testing.md) for shared installation,
+See [browser testing architecture](../test/browser-testing.md) for shared installation,
 interactive Pi use, and build isolation.

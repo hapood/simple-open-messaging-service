@@ -13,10 +13,10 @@ and client behavior.
 - [Architecture](./overview/architecture.md)
 - [Database model](./overview/database.md)
 - [Client and administration API](./api/api.md)
-- [Web browser E2E test plan](./development/browser-e2e-test-plan.md)
-- [Android E2E test plan](./development/android-e2e-test-plan.md)
-- [Cross-platform AI E2E runner](./development/cross-platform-ai-e2e.md)
-- [Browser E2E reusable tools](./development/browser-e2e-tools.md)
+- [Web browser E2E test plan](./test/browser-e2e-test-plan.md)
+- [Android E2E test plan](./test/android-e2e-test-plan.md)
+- [Cross-platform AI E2E runner](./test/cross-platform-ai-e2e.md)
+- [Browser E2E reusable tools](./test/browser-e2e-tools.md)
 - [Federation implementation scope and acceptance](./development/federation-implementation-handoff.md)
 
 ## Federation Specification

@@ -17,7 +17,7 @@ import type {
 const root = resolve(import.meta.dirname, '../..');
 const scenarioPath =
   process.env.CROSS_PLATFORM_SCENARIOS ??
-  resolve(root, 'docs/development/browser-e2e-test-plan.md');
+  resolve(root, 'docs/test/browser-e2e-test-plan.md');
 const browserUrl =
   process.env.CROSS_PLATFORM_BROWSER_URL ?? 'http://localhost:3101/';
 const maxSteps = Number(process.env.AI_TEST_MAX_STEPS ?? 24);
