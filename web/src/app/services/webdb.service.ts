@@ -1,4 +1,5 @@
-import { InjectionToken, inject } from '@angular/core';
+import { InjectionToken } from '@angular/core';
+import { AppDataLifetime } from './app-data-lifetime.service';
 import { SessionLifecycleService } from './session-lifecycle.service';
 import { WebdbStorage, type StateFeedWorkerFactory } from './webdb-storage';
 import { TauriWebdbStorage } from './tauri-webdb-storage';
@@ -40,9 +41,13 @@ export abstract class WebdbService extends WebdbStorage {}
 export function webdbServiceFactory(
   factory: StateFeedWorkerFactory,
   lifecycle: SessionLifecycleService,
+  appData: AppDataLifetime,
 ): WebdbService {
-  if (isTauri()) return new TauriWebdbStorage(lifecycle);
-  return new WebdbStorage(factory, lifecycle) as WebdbService;
+  const storage = isTauri()
+    ? new TauriWebdbStorage(lifecycle)
+    : new WebdbStorage(factory, lifecycle);
+  storage.bindAppDataLifetime(appData.signal);
+  return storage;
 }
 
 /** Provider that binds `WebdbService` to the browser or Tauri specialization. */
@@ -50,9 +55,6 @@ export function provideWebdbService() {
   return {
     provide: WebdbService,
     useFactory: webdbServiceFactory,
-    deps: [
-      STATE_FEED_WORKER_FACTORY,
-      SessionLifecycleService,
-    ],
+    deps: [STATE_FEED_WORKER_FACTORY, SessionLifecycleService, AppDataLifetime],
   };
 }

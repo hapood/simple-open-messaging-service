@@ -1,68 +1,80 @@
 import { Injectable } from '@angular/core';
 import { Subject } from 'rxjs';
+import { AppDataLifetime } from './app-data-lifetime.service';
 import {
   SessionSupersededError,
   type LoginSessionId,
 } from './session/session-identity';
 
-/** A captured work lease, not a second login identity. Null denotes signed-out/public work. */
+/** Protocol identity captured alongside app-owned work cancellation. */
 export interface SessionWorkScope {
   readonly sessionId: LoginSessionId | null;
   readonly signal: AbortSignal;
 }
 
 /**
- * Renderer mirror and cancellation boundary. The browser owner or Rust supplies the login UUID;
- * this service never creates identities, restores credentials, or owns durable session decisions.
+ * Compatibility facade for protocol identity and reset notifications. This class
+ * owns no work controller: app data lifetime is the sole renderer cancellation
+ * owner. Browser ownership and Rust remain the durable admission authorities.
  */
 @Injectable({ providedIn: 'root' })
 export class SessionLifecycleService {
-  private work = new AbortController();
-  private scope: SessionWorkScope = Object.freeze({
-    sessionId: null,
-    signal: this.work.signal,
-  });
+  private sessionId: LoginSessionId | null = null;
+  private scope?: SessionWorkScope;
   private readonly invalidated = new Subject<void>();
   readonly invalidated$ = this.invalidated.asObservable();
   private readonly ended = new Subject<void>();
   readonly ended$ = this.ended.asObservable();
 
-  /** Capture before scheduling. A successor UUID must never be looked up at completion time. */
+  constructor(
+    private readonly appData: AppDataLifetime = new AppDataLifetime(),
+  ) {}
+
   capture(): SessionWorkScope {
+    if (
+      this.scope?.sessionId !== this.sessionId ||
+      this.scope.signal !== this.appData.workSignal
+    ) {
+      this.scope = Object.freeze({
+        sessionId: this.sessionId,
+        signal: this.appData.workSignal,
+      });
+    }
     return this.scope;
   }
 
   isCurrent(scope: SessionWorkScope): boolean {
-    return scope === this.scope && !scope.signal.aborted;
+    return this.appData.isCurrent(scope.signal);
   }
 
-  /** Does not replace resource admission locks or native command admission in Rust. */
+  /** Resource/IPC callers still carry the captured UUID to their admission authority. */
   assertCurrent(scope: SessionWorkScope): void {
     if (!this.isCurrent(scope)) throw new SessionSupersededError();
   }
 
-  /** Publish an admitted identity from the host authority, without repeating resource cleanup. */
-  bindSession(sessionId: LoginSessionId): void {
-    if (this.scope.sessionId === sessionId && !this.work.signal.aborted) return;
-    this.replaceScope(sessionId);
+  /** Publish the authority's admitted UUID without starting a second work lifetime. */
+  publishIdentity(sessionId: LoginSessionId): void {
+    if (this.sessionId === sessionId) {
+      this.appData.assertActive();
+      return;
+    }
+    this.appData.admit();
+    this.sessionId = sessionId;
   }
 
-  /** Invalidate old work synchronously, before waiting for persistence or resource release. */
+  /** Compatibility spelling for existing protocol consumers. */
+  bindSession(sessionId: LoginSessionId): void {
+    this.publishIdentity(sessionId);
+  }
+
   invalidateSession(): void {
-    this.replaceScope(null);
+    this.sessionId = null;
+    this.appData.invalidateWork();
     this.invalidated.next();
   }
 
-  /** Pure in-memory consumers reset synchronously, independently of physical cache deletion. */
+  /** In-memory reset notification; physical cleanup belongs to the host authority. */
   endSession(): void {
     this.ended.next();
-  }
-
-  private replaceScope(sessionId: LoginSessionId | null): void {
-    const previous = this.work;
-    this.work = new AbortController();
-    this.scope = Object.freeze({ sessionId, signal: this.work.signal });
-    // Publish the replacement first: synchronous abort listeners must already see the old lease as stale.
-    previous.abort();
   }
 }

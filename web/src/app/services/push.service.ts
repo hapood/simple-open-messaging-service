@@ -171,7 +171,7 @@ export class PushService {
   }
 
   /** Open the tapped thread via the nav state machine (the URL mirror updates `/chat/:id`; ChatPane renders
-   *  from ConversationListService.openThreadId which the home shell syncs from the state machine). */
+   *  from ConversationListService.activeThreadId which the home shell syncs from the state machine). */
   private openPendingThread() {
     const bridge = window.SomsFcm;
     const pending = bridge?.getPendingThreadId();

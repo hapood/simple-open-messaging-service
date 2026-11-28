@@ -10,6 +10,7 @@ import { isTauri } from './runtime';
 import { resetNotificationSince } from './browser-notification-checkpoint';
 import { SessionStartupService } from './session-startup.service';
 import { withNotificationRestoration } from './notification-session';
+import { AppDataLifetime } from './app-data-lifetime.service';
 
 /** Browser host adapter; no duplicate lifecycle or physical cleanup in UserService. */
 @Injectable({ providedIn: 'root' })
@@ -23,6 +24,7 @@ export class BrowserSessionService extends BrowserSessionOwner {
     lifecycle: SessionLifecycleService,
     state: SessionStateService,
   ) {
+    const appData = inject(AppDataLifetime);
     super(
       new SessionStore(),
       {
@@ -45,8 +47,9 @@ export class BrowserSessionService extends BrowserSessionOwner {
         state.setAuthenticated(false);
         lifecycle.invalidateSession();
       },
-      (session) => lifecycle.bindSession(session.id),
+      (session) => lifecycle.publishIdentity(session.id),
       { primary: location.origin, secondary: null },
+      () => appData.assertCanAuthenticate(),
     );
     this.destroyRef.onDestroy(() => this.lifetime.abort());
   }

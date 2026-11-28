@@ -1,6 +1,7 @@
 /// <reference lib="webworker" />
 
 import { LoginConnection } from './session/login-connection';
+import { WorkerShortJsonTransport } from './worker-short-json-transport';
 import { WebdbStorage } from './webdb-storage';
 import { BusinessCode } from './biz-code';
 import { coalesceThreadFeedWakes } from './thread-feed-sync';
@@ -26,6 +27,9 @@ import {
 
 const storage = new WebdbStorage(() => null);
 const preferences = new PreferenceStorage();
+// The dedicated worker is the transport owner; terminating it ends all work.
+// Do not share this lane with the main thread or the long-lived SSE connection.
+const shortJson = new WorkerShortJsonTransport();
 
 storage.messageDbCommitted$.subscribe((event) => {
   postMessage({ type: 'message-db-committed', ...event });
@@ -277,25 +281,26 @@ const requestProfile = async (
 ) => {
   const cached = await storage.findProfileForDemand(demand);
   if (cached) return { status: 'READY', profile: cached } as const;
-  const response = await fetch(URLS.profileResolution, {
-    method: 'POST',
-    credentials: 'same-origin',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(
-      Object.hasOwn(options, 'evidence')
-        ? { demand, evidence: options.evidence }
-        : demand,
-    ),
-  });
-  if (!response.ok)
-    throw new Error(`profile-resolution HTTP ${response.status}`);
-  const envelope = (await response.json()) as {
+  const envelope = await shortJson.request<{
     code?: number;
     message?: string;
     data?:
       | { status: 'PENDING'; key: unknown }
       | { status: 'READY'; profile: ResolvedProfile };
-  };
+  }>(
+    URLS.profileResolution,
+    {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(
+        Object.hasOwn(options, 'evidence')
+          ? { demand, evidence: options.evidence }
+          : demand,
+      ),
+    },
+    'profile-resolution',
+  );
   if (envelope.code === BusinessCode.FEDERATION_PROFILE_UNRECOVERABLE) {
     // Permanent loss — persist a tomb so the UI renders "gone", then error
     // the observable: there is no profile to deliver. The tomb spans every
@@ -342,22 +347,26 @@ const requestStateFeed = async (query: {
     through: String(query.through),
     take: String(query.take),
   });
-  const response = await fetch(`${URLS.stateFeed}?${params}`, {
-    credentials: 'same-origin',
-  });
-  if (!response.ok) throw new Error(`state feed HTTP ${response.status}`);
-  return response.json();
+  return shortJson.request<
+    Awaited<ReturnType<Parameters<typeof syncPushState>[2]>>
+  >(
+    `${URLS.stateFeed}?${params}`,
+    { credentials: 'same-origin' },
+    'state feed',
+  );
 };
 
 const requestThreadFeed = async (body: unknown) => {
-  const response = await fetch(URLS.threadFeed, {
-    method: 'POST',
-    credentials: 'same-origin',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-  if (!response.ok) throw new Error(`thread feed HTTP ${response.status}`);
-  return response.json();
+  return shortJson.request(
+    URLS.threadFeed,
+    {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    },
+    'thread feed',
+  );
 };
 
 const requestGroupMeta = async (input: {
@@ -372,11 +381,11 @@ const requestGroupMeta = async (input: {
     through: input.through,
     take: String(input.take),
   });
-  const response = await fetch(`${URLS.groupMeta}?${query.toString()}`, {
-    credentials: 'same-origin',
-  });
-  if (!response.ok) throw new Error(`group-meta HTTP ${response.status}`);
-  return response.json();
+  return shortJson.request(
+    `${URLS.groupMeta}?${query.toString()}`,
+    { credentials: 'same-origin' },
+    'group-meta',
+  );
 };
 
 const requestTombstone = async (input: {
@@ -386,22 +395,24 @@ const requestTombstone = async (input: {
   through: number;
   maxMessageSeq?: number;
 }) => {
-  const response = await fetch(URLS.tombstone, {
-    method: 'POST',
-    credentials: 'same-origin',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({
-      threadId: input.threadId,
-      after: input.after,
-      take: input.take,
-      through: input.through,
-      ...(input.maxMessageSeq === undefined
-        ? {}
-        : { maxMessageSeq: input.maxMessageSeq }),
-    }),
-  });
-  if (!response.ok) throw new Error(`tombstone query HTTP ${response.status}`);
-  return response.json();
+  return shortJson.request(
+    URLS.tombstone,
+    {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        threadId: input.threadId,
+        after: input.after,
+        take: input.take,
+        through: input.through,
+        ...(input.maxMessageSeq === undefined
+          ? {}
+          : { maxMessageSeq: input.maxMessageSeq }),
+      }),
+    },
+    'tombstone query',
+  );
 };
 
 type Request = { cacheDescriptor?: SessionCacheDescriptor | null } & (

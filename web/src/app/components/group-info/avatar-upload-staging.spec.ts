@@ -72,7 +72,7 @@ describe.each(['new', 'existing'] as const)(
           {
             provide: ConversationListService,
             useValue: {
-              openThreadId: signal(7),
+              activeThreadId: signal(7),
               items: signal([
                 createGroupConversation({
                   threadId: 7,

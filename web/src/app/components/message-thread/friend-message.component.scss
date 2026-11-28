@@ -164,8 +164,8 @@ app-chat-input {
   height: calc(var(--soms-composer-height) + var(--soms-safe-bottom, 0px));
   box-sizing: border-box;
   padding: 8px 12px calc(8px + var(--soms-safe-bottom, 0px));
-  background: var(--im-composer-bar-bg);
-  border-top: 1px solid var(--app-border);
+  background: transparent;
+  border-top: 0;
   pointer-events: none;
   user-select: none;
   // Ride the same keyboard lift as .ci-input-bar so it occupies the exact composer rectangle.
@@ -182,6 +182,14 @@ app-chat-input {
   display: flex;
   align-items: flex-end;
   gap: 8px;
+}
+
+.msg-composer-placeholder-attach {
+  flex: 0 0 auto;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background: var(--im-composer-placeholder-fill);
 }
 
 .msg-composer-placeholder-input {

@@ -1,6 +1,7 @@
 import {
   registrationDouble,
   subscriptionDouble,
+  workerDouble,
 } from './service-worker-test-doubles';
 import { provideHttpClient } from '@angular/common/http';
 import { TestBed } from '@angular/core/testing';
@@ -9,14 +10,18 @@ import { AppStateStorage } from './preference-storage';
 import { ToastService } from './toast.service';
 import { SessionStore } from './session/session-store';
 import { SessionLifecycleService } from './session-lifecycle.service';
-import { createSessionCacheDescriptor } from './session/session-identity';
+import {
+  createSessionCacheDescriptor,
+  SessionSupersededError,
+  type LoginSessionId,
+} from './session/session-identity';
 import { WebPushService } from './web-push.service';
 
 describe('WebPushService device ID', () => {
   let service: WebPushService;
   let preferences: AppStateStorage;
 
-  beforeEach(async () => {
+  function createRuntime(sessionId?: LoginSessionId): void {
     TestBed.configureTestingModule({
       providers: [
         provideHttpClient(),
@@ -24,9 +29,16 @@ describe('WebPushService device ID', () => {
         { provide: ToastService, useValue: { warn: () => {} } },
       ],
     });
+    if (sessionId) {
+      TestBed.inject(SessionLifecycleService).bindSession(sessionId);
+    }
+    service = TestBed.inject(WebPushService);
+  }
+
+  beforeEach(async () => {
     preferences = new AppStateStorage();
     await preferences.remove('pushDeviceId');
-    service = TestBed.inject(WebPushService);
+    createRuntime();
   });
 
   afterEach(() => {
@@ -52,19 +64,46 @@ describe('WebPushService device ID', () => {
     expect(await service.worker()).toBeNull();
   });
 
-  it('rejects a login invalidated while reading its durable identity', async () => {
+  it('rejects an invalidated identity read and registers only in a fresh successor runtime', async () => {
     const session = createSessionCacheDescriptor();
+    const successor = createSessionCacheDescriptor();
     const lifecycle = TestBed.inject(SessionLifecycleService);
     lifecycle.bindSession(session.id);
-    vi.spyOn(SessionStore.prototype, 'read').mockImplementation(async () => {
-      lifecycle.invalidateSession();
-      return {
-        lifecycleState: 'active',
-        session,
-        identity: { userId: 1, serverSessionId: 2 },
-      };
+    vi.spyOn(Notification, 'permission', 'get').mockReturnValue('granted');
+    const registration = registrationDouble({ active: workerDouble(vi.fn()) });
+    const register = vi
+      .spyOn(navigator.serviceWorker, 'register')
+      .mockResolvedValue(registration);
+    const read = vi
+      .spyOn(SessionStore.prototype, 'read')
+      .mockImplementationOnce(async () => {
+        lifecycle.invalidateSession();
+        expect(() => lifecycle.bindSession(successor.id)).toThrow(
+          SessionSupersededError,
+        );
+        TestBed.resetTestingModule();
+        createRuntime(successor.id);
+        return {
+          lifecycleState: 'active',
+          session,
+          identity: { userId: 1, serverSessionId: 2 },
+        };
+      });
+    const oldService = service;
+    expect(await oldService.worker()).toBeNull();
+    expect(register).not.toHaveBeenCalled();
+    expect(await oldService.worker()).toBeNull();
+    expect(read).toHaveBeenCalledTimes(1);
+    read.mockResolvedValue({
+      lifecycleState: 'active',
+      session: successor,
+      identity: { userId: 1, serverSessionId: 3 },
     });
-    expect(await service.worker()).toBeNull();
+    expect(await service.worker()).toBe(registration);
+    expect(register).toHaveBeenCalledExactlyOnceWith('/push/sw-push.js', {
+      scope: '/push/',
+      updateViaCache: 'none',
+    });
   });
 
   it('logout unsubscribes without registering a worker', async () => {

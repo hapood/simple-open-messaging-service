@@ -1,11 +1,10 @@
 import { inject, Injectable } from '@angular/core';
 import { AuthService } from './auth.service';
 import { WebsocketService } from './websocket.service';
-import { RouteService, RoutePage } from './route.service';
 
 /**
  * App-wide logout choreography: disconnect the realtime transport, revoke the session (server POST + local
- * state + native token — all handled by {@link AuthService.logout}), then redirect to login. Factored out so
+ * state + native token — all handled by {@link AuthService.logout}), then replace the document. Factored out so
  * every logout entry point runs the identical sequence; each host only decides whether to close its own pane
  * first (a dialog must, a section has nothing to close).
  *
@@ -16,7 +15,6 @@ import { RouteService, RoutePage } from './route.service';
 export class LogoutService {
   private readonly auth = inject(AuthService);
   private readonly ws = inject(WebsocketService);
-  private readonly routeService = inject(RouteService);
 
   logout(): void {
     let exited = false;
@@ -28,7 +26,8 @@ export class LogoutService {
       } catch {
         // A stale bridge must not prevent navigation out of an ended session.
       }
-      this.routeService.redirect(RoutePage.AUTH_LOGIN);
+      // AuthService owns document replacement after successful cleanup. Never expose
+      // a sign-in route in the old injector, including on a cleanup failure.
     };
     try {
       this.auth.logout().subscribe({

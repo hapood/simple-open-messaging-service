@@ -528,11 +528,13 @@ describe('shared background storage', () => {
     await background.openExistingForUser(userId);
     const previous = Object.getOwnPropertyDescriptor(navigator, 'locks');
     let tail: Promise<unknown> = Promise.resolve();
-    const lock = vi.fn((_name: string, run: () => Promise<unknown>) => {
-      const work = tail.then(run);
-      tail = work.catch(() => {});
-      return work;
-    });
+    const lock = vi.fn(
+      (_name: string, _options: LockOptions, run: () => Promise<unknown>) => {
+        const work = tail.then(run);
+        tail = work.catch(() => {});
+        return work;
+      },
+    );
     Object.defineProperty(navigator, 'locks', {
       configurable: true,
       value: { request: lock },

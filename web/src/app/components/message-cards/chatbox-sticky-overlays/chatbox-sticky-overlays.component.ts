@@ -83,7 +83,6 @@ export class ChatboxStickyOverlaysComponent implements OnDestroy {
       label: string | null;
     }> = [];
     let unreadDividerInterval: { top: number; bottom: number } | null = null;
-    let ghostBottom: number | null = null;
     scroller.visitMountedGeometry((geometry) => {
       const host = geometry.el;
       const top = viewportTop + geometry.top;
@@ -126,9 +125,8 @@ export class ChatboxStickyOverlaysComponent implements OnDestroy {
           top,
           bottom: top + UNREAD_DIVIDER_HEIGHT_PX,
         };
-      if (host.classList.contains('cb-ghost-loading')) ghostBottom = bottom;
     });
-    this.refreshDate(dates, visibleTop, unreadDividerInterval, ghostBottom);
+    this.refreshDate(dates, visibleTop, unreadDividerInterval);
     const resolution = resolveStickyAvatar(
       rows,
       visibleTop + 12,
@@ -223,11 +221,11 @@ export class ChatboxStickyOverlaysComponent implements OnDestroy {
     rows: Array<{ element: HTMLElement; top: number; label: string | null }>,
     visibleTop: number,
     unreadDivider: { top: number; bottom: number } | null,
-    ghostBottom: number | null,
   ): void {
-    const obstructed =
-      unreadDividerOverlapsStickyDate(unreadDivider, visibleTop) ||
-      (ghostBottom ?? -Infinity) > visibleTop;
+    const obstructed = unreadDividerOverlapsStickyDate(
+      unreadDivider,
+      visibleTop,
+    );
     const current = obstructed
       ? null
       : pickStickyDateLabel(rows, visibleTop, STICKY_DATE_PICK_FUZZ_PX);

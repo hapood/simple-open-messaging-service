@@ -100,7 +100,7 @@ let nextAsideId = 0;
  * topSection → chat. A mobile Settings/Profile section may cover a still-mounted chat; Back removes that
  * visible section first and reveals the preserved chat beneath it.
  *
- * This service owns only the navigation state + the URL mirror. `ConversationListService.openThreadId`
+ * This service owns only the navigation state + the URL mirror. `ConversationListService.activeThreadId`
  * remains the chat data-layer signal, coordinated by `HomeShellComponent` (which reads `chatThreadId` —
  * with the mobile close-slide lag — the way it used to read the routed thread id). All other readers
  * (ChatPane, thread-list, peer-profile, group-info) are unchanged.

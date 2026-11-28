@@ -122,7 +122,7 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
   private readonly contactCardShare = inject(ContactCardShareService);
 
   /** The open thread id (template-bound for the alias editor). */
-  readonly threadId = this.convList.openThreadId;
+  readonly threadId = this.convList.activeThreadId;
 
   groupProfileRef(): AvatarProfileRef | undefined {
     const thread = this.userMsgTrd();
@@ -141,7 +141,7 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
   }
   /** The panel is open over the currently-viewed chat — read its id + item from the shared list. */
   readonly userMsgTrd = computed<ConversationItem | undefined>(() => {
-    const id = this.convList.openThreadId();
+    const id = this.convList.activeThreadId();
     return id !== undefined
       ? this.convList.items().find((t) => t.threadId === id)
       : undefined;

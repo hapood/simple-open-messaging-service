@@ -46,6 +46,7 @@ export class BrowserSessionOwner {
     private readonly invalidate: () => void,
     private readonly publish: (session: SessionCacheDescriptor) => void,
     private readonly serverConfig?: unknown,
+    private readonly assertAppAdmission: () => void = () => {},
   ) {}
 
   bindIdentity(identity: ServerSessionIdentity): Promise<void> {
@@ -80,6 +81,7 @@ export class BrowserSessionOwner {
       ) {
         throw new SessionSupersededError();
       }
+      this.assertAppAdmission();
       const signal = this.beginTransition();
       await this.serializeTransition(() => this.cleanup());
       this.check(signal);
@@ -101,6 +103,7 @@ export class BrowserSessionOwner {
     if (signal !== this.work.signal) throw new SessionSupersededError();
     return this.serializeTransition(async () => {
       this.check(signal);
+      this.assertAppAdmission();
       const descriptor = createSessionCacheDescriptor();
       await this.resources.initialize(descriptor);
       this.check(signal);
@@ -125,6 +128,7 @@ export class BrowserSessionOwner {
     recover?: () => Promise<void>,
     complete?: (restored: boolean) => void,
   ): Promise<boolean> {
+    this.assertAppAdmission();
     const signal = this.beginTransition();
     return this.serializeTransition(async () => {
       try {

@@ -18,6 +18,8 @@ import {
   RequestScope,
 } from './request-context';
 import { SessionLifecycleService } from './services/session-lifecycle.service';
+import { LOGOUT_REQUEST_AUTHORITY } from './services/session/logout-request-authority';
+import { abortWork } from './services/session/abort-work';
 
 /**
  * Retry + surface policy for transient/server HTTP failures. `retryDelay` is a function (not a number) so
@@ -102,14 +104,16 @@ export const httpResilienceInterceptor: HttpInterceptorFn = (req, next) => {
   const toast = inject(ToastService);
   const transloco = inject(TranslocoService);
   const lifecycle = inject(SessionLifecycleService);
+  const cleanup = req.context.get(LOGOUT_REQUEST_AUTHORITY);
   const owner =
-    req.context.get(REQUEST_SCOPE) === RequestScope.Server
+    cleanup || req.context.get(REQUEST_SCOPE) === RequestScope.Server
       ? null
       : lifecycle.capture();
   const assertCurrent = () => {
+    cleanup?.assertRequest(req);
     if (owner) lifecycle.assertCurrent(owner);
   };
-  return defer(() => {
+  const request = defer(() => {
     // Recheck on every retry, including after a backoff timer has elapsed.
     assertCurrent();
     return next(req);
@@ -133,4 +137,7 @@ export const httpResilienceInterceptor: HttpInterceptorFn = (req, next) => {
       return throwError(() => err);
     }),
   );
+  const signal = cleanup?.signal ?? owner?.signal;
+  // Outermost around retry: abort also unsubscribes a pending backoff immediately.
+  return signal ? request.pipe(abortWork(signal)) : request;
 };

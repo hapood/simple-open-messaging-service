@@ -10,6 +10,8 @@ import { isMessageViewportAtBottom } from './message-scroll-state';
 /** Owns viewport-derived thread state and the frozen unread-entry boundary. */
 export class ThreadScrollController {
   readonly atBottom = signal(true);
+  /** Exact kernel pin fact for presentation only, distinct from the visible newest zone. */
+  readonly pinnedToBottom = signal(false);
   readonly newMessageCount = signal(0);
   readonly unreadBoundaryAbove = signal(false);
   readonly mountedMessageCount = signal(0);
@@ -41,7 +43,9 @@ export class ThreadScrollController {
   update(
     info: CbScrollInfo,
     scroller: ScrollerApi<ChatItemData> | undefined,
+    pinnedToBottom = false,
   ): number | null {
+    this.pinnedToBottom.set(pinnedToBottom);
     const atVisibleBottom = isMessageViewportAtBottom(info);
     this.atBottom.set(atVisibleBottom);
     if (atVisibleBottom) this.newMessageCount.set(0);
@@ -69,6 +73,7 @@ export class ThreadScrollController {
     this.unreadBoundaryAbove.set(false);
     this.mountedMessageCount.set(0);
     this.atBottom.set(true);
+    this.pinnedToBottom.set(false);
     this.newMessageCount.set(0);
   }
 

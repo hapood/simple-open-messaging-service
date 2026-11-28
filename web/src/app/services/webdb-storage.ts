@@ -1,4 +1,6 @@
 import { BusinessCode } from './biz-code';
+import { DatabaseOperationGate } from '../lib/database-operation-gate';
+export { DatabaseOperationLifetimeEndedError } from '../lib/database-operation-gate';
 import { SessionStore } from './session/session-store';
 import {
   advanceThreadResourceTargets,
@@ -23,7 +25,7 @@ import {
   type LocalThreadState,
 } from './thread-record';
 import { signal } from '@angular/core';
-import { Subject, type Observable, type Subscription } from 'rxjs';
+import { filter, Subject, type Observable, type Subscription } from 'rxjs';
 import { apiPrefix } from './constants';
 import type { ThreadFeedSyncResult } from './thread-feed-sync';
 import type { BrowserNotificationBatch } from './notification-descriptor.model';
@@ -629,14 +631,22 @@ export class WebdbStorage implements AccountStateStorage {
     userId: number;
     threadId: number;
   }>();
-  readonly messageDbCommitted$ = this.messageDbCommitted.asObservable();
+  readonly messageDbCommitted$ = this.messageDbCommitted
+    .asObservable()
+    .pipe(filter(() => !this.appDataEnded));
   private readonly workerFailed = new Subject<void>();
-  readonly workerFailed$ = this.workerFailed.asObservable();
+  readonly workerFailed$ = this.workerFailed
+    .asObservable()
+    .pipe(filter(() => !this.appDataEnded));
   private readonly browserNotifications =
     new Subject<BrowserNotificationBatch>();
-  readonly browserNotifications$ = this.browserNotifications.asObservable();
+  readonly browserNotifications$ = this.browserNotifications
+    .asObservable()
+    .pipe(filter(() => !this.appDataEnded));
   private readonly profileWake = new Subject<ProfileWake>();
-  readonly profileWake$ = this.profileWake.asObservable();
+  readonly profileWake$ = this.profileWake
+    .asObservable()
+    .pipe(filter(() => !this.appDataEnded));
   /** Emitted by the database worker after each tombstone page commits, so the
    *  message repository can project deletions into mounted sources. */
   protected readonly tombstoneCommitted = new Subject<{
@@ -646,21 +656,19 @@ export class WebdbStorage implements AccountStateStorage {
       type: 'USER_RETRACTION' | 'MODERATION_REMOVAL';
     }>;
   }>();
-  readonly tombstoneCommitted$ = this.tombstoneCommitted.asObservable();
+  readonly tombstoneCommitted$ = this.tombstoneCommitted
+    .asObservable()
+    .pipe(filter(() => !this.appDataEnded));
   /** Emitted after each durable thread-feed page commits. The executor and
    * renderer consume the same committed states without re-reading storage. */
   protected readonly threadFeedCommitted = new Subject<{
     userId: number;
     states: LocalThreadAttention[];
   }>();
-  readonly threadFeedCommitted$ = this.threadFeedCommitted.asObservable();
+  readonly threadFeedCommitted$ = this.threadFeedCommitted
+    .asObservable()
+    .pipe(filter(() => !this.appDataEnded));
 
-  protected readonly threadAttentionProjectionCommitted = new Subject<{
-    userId: number;
-    projection: ThreadAttentionProjection;
-  }>();
-  readonly threadAttentionProjectionCommitted$ =
-    this.threadAttentionProjectionCommitted.asObservable();
   /** Emitted by the database worker after a per-thread Group Meta drain commits.
    *  `patches` carries the committed Group Meta facts so the renderer patches its
    *  in-memory conversations directly; `threadIds` additionally covers threads whose
@@ -670,10 +678,14 @@ export class WebdbStorage implements AccountStateStorage {
     threadIds: number[];
     patches: GroupMetaCommitPatch[];
   }>();
-  readonly groupMetaCommitted$ = this.groupMetaCommitted.asObservable();
+  readonly groupMetaCommitted$ = this.groupMetaCommitted
+    .asObservable()
+    .pipe(filter(() => !this.appDataEnded));
   /** Emitted by the database worker after a state-feed drain commits. */
   protected readonly stateFeedCommitted = new Subject<{ userId: number }>();
-  readonly stateFeedCommitted$ = this.stateFeedCommitted.asObservable();
+  readonly stateFeedCommitted$ = this.stateFeedCommitted
+    .asObservable()
+    .pipe(filter(() => !this.appDataEnded));
   /** Emitted twice per change-feed page with the touched pairs: first
    *  after the expiry transaction commits (consumers mirror the expired
    *  state: DB first, cache second), then after the resolve round commits
@@ -688,13 +700,24 @@ export class WebdbStorage implements AccountStateStorage {
   private readonly profileNamespacePull = new TrailingSingleFlight<
     number | undefined
   >((anchor) =>
-    this.runAccountOperation(() =>
+    this.accountOperationGate.fence(() =>
       this.pullProfileNamespaceChangesInternal(anchor),
     ),
   );
-  readonly profileNamespaceWake$ = this.profileNamespaceWake.asObservable();
+  readonly profileNamespaceWake$ = this.profileNamespaceWake
+    .asObservable()
+    .pipe(filter(() => !this.appDataEnded));
 
   async applyProfileEvent(
+    event: 'PROFILE_AVAILABLE' | 'PROFILE_UNAVAILABLE',
+    data: unknown,
+  ): Promise<void> {
+    return this.runAccountOperation(() =>
+      this.applyProfileEventInternal(event, data),
+    );
+  }
+
+  private async applyProfileEventInternal(
     event: 'PROFILE_AVAILABLE' | 'PROFILE_UNAVAILABLE',
     data: unknown,
   ): Promise<void> {
@@ -753,9 +776,13 @@ export class WebdbStorage implements AccountStateStorage {
   private accountResetUserId: string | null = null;
   /** Full account-cache operation barrier. Core and message operations are admitted synchronously; full
    * recreation/logout closes admission and waits for every admitted native/IDB operation to settle. */
-  private accountOperations = 0;
+  private readonly accountOperationGate = new DatabaseOperationGate();
+  private appDataSignal: AbortSignal | undefined;
+  private readonly endAppData = () => {
+    ++this.cacheEpoch;
+    this.beginAccountMaintenance();
+  };
   protected accountMaintenance = false;
-  private accountIdleWaiters: Array<() => void> = [];
   /** Aborted before message-cache maintenance starts. Network work captures this signal and must pass it
    * back when entering a write operation, so a response from the old cache lifetime cannot populate the
    * replacement database. */
@@ -903,7 +930,9 @@ export class WebdbStorage implements AccountStateStorage {
 
   /** Initialize UUID-owned tables before HELLO identifies the account. No user handle is published. */
   async initializeSessionCache(): Promise<void> {
-    await this.prepareSessionCache(false);
+    return this.accountOperationGate.fence(() =>
+      this.prepareSessionCache(false),
+    );
   }
 
   /** Explicit recovery discards even structurally valid caches with corrupt account facts. */
@@ -936,6 +965,8 @@ export class WebdbStorage implements AccountStateStorage {
         await deleteDB(`${descriptor.indexedDbName}-download-history`);
         await deleteDB(descriptor.indexedDbName);
       }
+      // Terminal recovery may discard resources, but never prepares a successor runtime.
+      if (this.accountOperationGate.ended) return;
       const opened = await Promise.allSettled([
         this.openValidatedOrRecreate(descriptor.indexedDbName),
       ]);
@@ -1002,19 +1033,44 @@ export class WebdbStorage implements AccountStateStorage {
     });
   }
 
+  /** Bind the renderer's stable terminal signal, never its renewable bootstrap signal.
+   * Standalone workers and tests remain independent of Angular application services. */
+  bindAppDataLifetime(signal: AbortSignal): void {
+    this.accountOperationGate.bind(signal);
+    if (this.appDataSignal === signal) return;
+    this.appDataSignal = signal;
+    signal.addEventListener('abort', this.endAppData, { once: true });
+    if (signal.aborted) this.endAppData();
+  }
+
   /**
    * Open (or reuse) the per-user database. Safe to call repeatedly; returns the live handle promise
    * (null when IndexedDB is unavailable — prerender / SSR). Driven by the session owner (UserService).
    */
   async openForUser(userId: string): Promise<IDBPDatabase<WebdbSchema> | null> {
+    return this.accountOperationGate.fence(() =>
+      this.openForUserInternal(userId),
+    );
+  }
+
+  private async openForUserInternal(
+    userId: string,
+  ): Promise<IDBPDatabase<WebdbSchema> | null> {
+    this.accountOperationGate.assertActive();
     this.admitSessionUser(userId);
     if (!idbAvailable()) return null;
     if (this.accountResetPromise) await this.accountResetPromise;
+    this.accountOperationGate.assertActive();
     const epoch = this.cacheEpoch;
-    if (this.currentUserId === userId && this.dbPromise) return this.dbPromise;
+    if (this.currentUserId === userId && this.dbPromise) {
+      const db = await this.dbPromise;
+      this.accountOperationGate.assertActive();
+      return db;
+    }
     if (this.currentUserId != null && this.currentUserId !== userId) {
       await this.closeAndDelete(this.currentUserId);
     }
+    this.accountOperationGate.assertActive();
     this.currentUserId = userId;
     this.dbPromise = this.openValidatedOrRecreate(this.dbName(userId));
     try {
@@ -1038,13 +1094,28 @@ export class WebdbStorage implements AccountStateStorage {
   async openExistingForUser(
     userId: string,
   ): Promise<IDBPDatabase<WebdbSchema> | null> {
+    return this.accountOperationGate.fence(() =>
+      this.openExistingForUserInternal(userId),
+    );
+  }
+
+  private async openExistingForUserInternal(
+    userId: string,
+  ): Promise<IDBPDatabase<WebdbSchema> | null> {
+    this.accountOperationGate.assertActive();
     this.admitSessionUser(userId);
     if (!idbAvailable()) return null;
     if (this.accountResetPromise) await this.accountResetPromise;
+    this.accountOperationGate.assertActive();
     const epoch = this.cacheEpoch;
-    if (this.currentUserId === userId && this.dbPromise) return this.dbPromise;
+    if (this.currentUserId === userId && this.dbPromise) {
+      const db = await this.dbPromise;
+      this.accountOperationGate.assertActive();
+      return db;
+    }
     if (this.currentUserId != null && this.currentUserId !== userId)
       await this.close();
+    this.accountOperationGate.assertActive();
     this.currentUserId = userId;
     this.dbPromise = this.openExistingCore(this.dbName(userId));
     try {
@@ -1094,7 +1165,8 @@ export class WebdbStorage implements AccountStateStorage {
     await this.closeHandles();
     await deleteDB(`${this.dbName(userId)}-pending-sends`);
     await deleteDB(this.dbName(userId));
-    if (epoch !== this.cacheEpoch) return null;
+    if (epoch !== this.cacheEpoch || this.accountOperationGate.ended)
+      return null;
     this.currentUserId = userId;
     const core = this.openValidatedOrRecreate(this.dbName(userId));
     this.dbPromise = core;
@@ -1374,7 +1446,16 @@ export class WebdbStorage implements AccountStateStorage {
     this.ready.set(false);
   }
 
+  protected assertAppDataActive(): void {
+    this.accountOperationGate.assertActive();
+  }
+
+  protected get appDataEnded(): boolean {
+    return this.accountOperationGate.ended;
+  }
+
   protected activateMessageLifetime(): void {
+    if (this.accountOperationGate.ended) return;
     this.messageLifetime = new AbortController();
     this.messageResetting = false;
     this.accountMaintenance = false;
@@ -1397,11 +1478,17 @@ export class WebdbStorage implements AccountStateStorage {
   }
 
   /**
-   * Resolve the live database handle. Repositories call this before every op; it awaits the in-flight
-   * open. Rejects when there is no open DB (no user / unavailable) — callers should guard on
-   * {@link ready} or catch, treating a miss as a graceful no-op.
+   * Low-level handle access for storage internals and fixture setup. Acquisition is
+   * lifetime-checked; a retained IDB handle is not a managed operation. Production
+   * callers must use the typed storage methods so the entire operation is drained.
+   * Rejects when there is no open DB or the renderer lifetime has ended.
    */
   async db(): Promise<IDBPDatabase<WebdbSchema>> {
+    return this.runAccountOperation(() => this.databaseHandle());
+  }
+
+  /** Handle access for explicit maintenance only; business operations use db(). */
+  private async databaseHandle(): Promise<IDBPDatabase<WebdbSchema>> {
     if (this.dbPromise) return this.dbPromise;
     if (this.currentUserId != null && idbAvailable()) {
       const db = await this.openForUser(this.currentUserId);
@@ -1450,6 +1537,7 @@ export class WebdbStorage implements AccountStateStorage {
       ? AbortSignal.any([this.messageLifetime.signal, lifetime])
       : this.messageLifetime.signal;
     const admitted = () => {
+      this.accountOperationGate.assertActive();
       if (
         signal.aborted ||
         epoch !== this.cacheEpoch ||
@@ -1483,31 +1571,23 @@ export class WebdbStorage implements AccountStateStorage {
   private async runAccountOperation<T>(
     operation: () => Promise<T>,
   ): Promise<T> {
+    this.accountOperationGate.assertActive();
     if (this.accountMaintenance)
       throw new Error('account cache lifetime expired');
     return this.trackAccountOperation(operation);
   }
 
-  /** Count admitted work so close/recreation can drain it without reopening admission. */
-  private async trackAccountOperation<T>(
-    operation: () => Promise<T>,
-  ): Promise<T> {
-    this.accountOperations++;
-    try {
-      return await operation();
-    } finally {
-      this.accountOperations--;
-      if (this.accountOperations === 0) {
-        const waiters = this.accountIdleWaiters;
-        this.accountIdleWaiters = [];
-        for (const resolve of waiters) resolve();
-      }
-    }
+  /** Count admitted work so close/recreation can drain it without reopening admission.
+   * Cached-self restoration bypasses account maintenance, never the terminal lifetime. */
+  private trackAccountOperation<T>(operation: () => Promise<T>): Promise<T> {
+    return this.accountOperationGate.run(operation);
   }
 
-  private waitForAccountIdle(): Promise<void> {
-    if (this.accountOperations === 0) return Promise.resolve();
-    return new Promise((resolve) => this.accountIdleWaiters.push(resolve));
+  private async waitForAccountIdle(): Promise<void> {
+    await this.accountOperationGate.drain();
+    // Message eviction is an explicit maintenance operation, not business work,
+    // but its transaction must also settle before account handles are closed.
+    await this.messageResetPromise?.catch(() => undefined);
   }
 
   private waitForMessageIdle(): Promise<void> {
@@ -1561,7 +1641,7 @@ export class WebdbStorage implements AccountStateStorage {
       await tauriInvoke('native_db_recreate_messages');
       return;
     }
-    const tx = (await this.db()).transaction(
+    const tx = (await this.databaseHandle()).transaction(
       ['messages', 'messageRanges'],
       'readwrite',
     );
@@ -1729,6 +1809,7 @@ export class WebdbStorage implements AccountStateStorage {
 
   /** Serialize cursor consumers across page workers and the Push Service Worker. */
   async withStateFeedLock<T>(run: () => Promise<T>): Promise<T> {
+    this.accountOperationGate.assertActive();
     const epoch = this.cacheEpoch;
     const userId = this.currentUserId;
     const guarded = () => {
@@ -1738,14 +1819,19 @@ export class WebdbStorage implements AccountStateStorage {
         this.accountMaintenance
       )
         throw new Error('account cache lifetime expired');
-      return run();
+      return this.runAccountOperation(run);
     };
     return typeof navigator !== 'undefined' && navigator.locks
-      ? navigator.locks.request('soms-state-feed-' + userId, guarded)
+      ? navigator.locks.request(
+          'soms-state-feed-' + userId,
+          { signal: this.appDataSignal },
+          guarded,
+        )
       : guarded();
   }
 
   async withThreadFeedLock<T>(run: () => Promise<T>): Promise<T> {
+    this.accountOperationGate.assertActive();
     const epoch = this.cacheEpoch;
     const userId = this.currentUserId;
     const guarded = () => {
@@ -1755,10 +1841,14 @@ export class WebdbStorage implements AccountStateStorage {
         this.accountMaintenance
       )
         throw new Error('account cache lifetime expired');
-      return run();
+      return this.runAccountOperation(run);
     };
     if (typeof navigator !== 'undefined' && navigator.locks)
-      return navigator.locks.request('soms-thread-feed-' + userId, guarded);
+      return navigator.locks.request(
+        'soms-thread-feed-' + userId,
+        { signal: this.appDataSignal },
+        guarded,
+      );
     return guarded();
   }
 
@@ -2195,17 +2285,11 @@ export class WebdbStorage implements AccountStateStorage {
     threadId: number,
     self: MessageCreator,
   ): Promise<ThreadAttentionProjection> {
-    // Capture the owning account before the async operation: emitting a late
-    // projection under a switched account would tag another user's list.
-    const userId = Number(this.currentUserId);
-    const result = await this.runAccountOperation(() =>
+    // The caller owns publication after coalescing committed-fact wakes. An
+    // eager event here would bypass its dirty check and publish superseded reads.
+    return this.runAccountOperation(() =>
       this.projectThreadAttentionInternal(threadId, self),
     );
-    this.threadAttentionProjectionCommitted.next({
-      userId,
-      projection: result,
-    });
-    return result;
   }
 
   private async projectThreadAttentionInternal(
@@ -2235,8 +2319,8 @@ export class WebdbStorage implements AccountStateStorage {
     // Instead: read one consistent core snapshot, count outside any core transaction, then
     // persist the derived columns only when the committed facts still match that snapshot
     // (compare-and-set). A mismatch means a concurrent feed merge / local read just committed
-    // newer facts — every such writer triggers its own projection afterwards, so this attempt
-    // simply fails instead of retrying: no stale result ever reaches the row or the event payload.
+    // newer facts. Its committed wake dirties the caller's projection lane for another pass;
+    // this attempt fails rather than persisting or returning an obsolete projection.
     const snapshotTx = core.transaction(
       ['threads', 'threadPreviews', 'threadResourceSync'],
       'readonly',
@@ -2409,6 +2493,15 @@ export class WebdbStorage implements AccountStateStorage {
     demand: ProfileDemand,
     options: { evidence?: null; signal?: AbortSignal } = {},
   ): Promise<ProfileResolutionAttempt> {
+    return this.runAccountOperation(() =>
+      this.resolveProfileDemandInternal(demand, options),
+    );
+  }
+
+  private async resolveProfileDemandInternal(
+    demand: ProfileDemand,
+    options: { evidence?: null; signal?: AbortSignal },
+  ): Promise<ProfileResolutionAttempt> {
     if (this.accountMaintenance || this.currentUserId === null)
       throw new Error('account cache lifetime expired');
     const userId = this.currentUserId;
@@ -2419,7 +2512,9 @@ export class WebdbStorage implements AccountStateStorage {
           Object.hasOwn(options, 'evidence')
             ? { demand, evidence: null }
             : demand,
-          options.signal,
+          options.signal
+            ? AbortSignal.any([this.messageLifetime.signal, options.signal])
+            : this.messageLifetime.signal,
         )
       : await this.requestDbWorker<ProfileResolutionAttempt>({
           type: 'resolve-profile',
@@ -2433,10 +2528,6 @@ export class WebdbStorage implements AccountStateStorage {
     if (epoch !== this.cacheEpoch)
       throw new Error('account cache lifetime expired');
     return result;
-  }
-
-  async setOpenThread(_threadId: number | null): Promise<void> {
-    // Browser notification suppression reads the open thread directly in memory.
   }
 
   private wakeTombstoneCutoff(threadId: number): void {
@@ -2453,6 +2544,9 @@ export class WebdbStorage implements AccountStateStorage {
     request: Record<string, unknown>,
     transfer: Transferable[] = [],
   ): Promise<T> | null {
+    this.accountOperationGate.assertActive();
+    if (this.accountMaintenance)
+      throw new Error('account cache lifetime expired');
     if (!this.stateFeedWorker) {
       this.stateFeedWorker = this.stateFeedWorkerFactory();
       if (!this.stateFeedWorker) return null;
@@ -2556,6 +2650,10 @@ export class WebdbStorage implements AccountStateStorage {
   }
 
   async createThreadFeedPort(): Promise<MessagePort | null> {
+    return this.runAccountOperation(() => this.createThreadFeedPortInternal());
+  }
+
+  private async createThreadFeedPortInternal(): Promise<MessagePort | null> {
     if (isTauri() || this.accountMaintenance || this.currentUserId === null)
       return null;
     const epoch = this.cacheEpoch;
@@ -2929,7 +3027,9 @@ export class WebdbStorage implements AccountStateStorage {
    *  pull. Single-flight through the shared TrailingSingleFlight primitive.
    */
   pullProfileNamespaceChanges(anchor?: number): Promise<void> {
-    return this.profileNamespacePull.trigger(anchor);
+    return this.accountOperationGate.fence(() =>
+      this.profileNamespacePull.trigger(anchor),
+    );
   }
 
   private async pullProfileNamespaceChangesInternal(
@@ -2937,19 +3037,23 @@ export class WebdbStorage implements AccountStateStorage {
   ): Promise<void> {
     // Rust owns native SSE-driven sync. Do not open a renderer IndexedDB handle for it.
     if (isTauri()) return;
-    const db = await this.db();
-    const syncState = db.transaction('accountState');
-    const cursorRow = await syncState.store.get('account');
-    if (!cursorRow) throw new Error('missing account sync state');
-    const cursor = cursorRow.profileNamespaceChangeEndId ?? 0;
-    await syncState.done.catch(() => undefined);
+    const epoch = this.cacheEpoch;
+    const assertCurrent = () => {
+      this.accountOperationGate.assertActive();
+      if (epoch !== this.cacheEpoch || this.accountMaintenance)
+        throw new Error('account cache lifetime expired');
+    };
+    const cursor =
+      (await this.readAccountState()).profileNamespaceChangeEndId ?? 0;
     if (anchor !== undefined && anchor === cursor) return;
     let after = cursor;
     for (;;) {
+      assertCurrent();
       const response = await fetch(
         `${apiPrefix()}/user/profile-namespace-feed?after=${after}&take=100`,
-        { credentials: 'same-origin' },
+        { credentials: 'same-origin', signal: this.appDataSignal },
       );
+      assertCurrent();
       if (!response.ok && response.status === 400 && after > 0) {
         // The server's coordinate space moved backwards (reset): resync
         // from the beginning.
@@ -2976,6 +3080,7 @@ export class WebdbStorage implements AccountStateStorage {
       if (envelope.code !== 0 || !envelope.data)
         throw new Error('profile-namespace change feed failed');
       const page = envelope.data;
+      assertCurrent();
       const touched = await this.applyProfileNamespaceChanges(
         page.items,
         page.scannedThrough,
@@ -3001,6 +3106,25 @@ export class WebdbStorage implements AccountStateStorage {
     failed: ProfileNamespacePairKey[];
     unrecoverable: ProfileNamespacePairKey[];
   }> {
+    this.accountOperationGate.assertActive();
+    // Network resolution is not a database lease. Only its eventual writes join
+    // the drain; close must not wait for an unrelated HTTP response.
+    const result = await this.resolveProfileNamespacePairsInternal(
+      pairs,
+      roundEnd,
+    );
+    this.accountOperationGate.assertActive();
+    return result;
+  }
+
+  private async resolveProfileNamespacePairsInternal(
+    pairs: readonly ProfileNamespacePairKey[],
+    roundEnd: number,
+  ): Promise<{
+    pending: ProfileNamespacePairKey[];
+    failed: ProfileNamespacePairKey[];
+    unrecoverable: ProfileNamespacePairKey[];
+  }> {
     const epoch = this.cacheEpoch;
     const userId = this.currentUserId;
     const assertCurrentAccount = () => {
@@ -3018,6 +3142,7 @@ export class WebdbStorage implements AccountStateStorage {
           {
             method: 'POST',
             credentials: 'same-origin',
+            signal: this.appDataSignal,
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify(pair),
           },
@@ -3062,6 +3187,7 @@ export class WebdbStorage implements AccountStateStorage {
           await this.commitProfileNamespaceBindings([entry], roundEnd);
         });
       } catch (error) {
+        this.accountOperationGate.assertActive();
         // A failed request is not PENDING — the server never acknowledged
         // it. The repository can retry on the next demand or wake;
         // failed pairs are reported back
@@ -3209,8 +3335,8 @@ export class WebdbStorage implements AccountStateStorage {
 
   /** Read the binary avatar selected by an immutable profile snapshot. */
   async getProfileAvatarBlob(digest: string): Promise<Blob | undefined> {
-    if (!/^[a-f0-9]{64}$/.test(digest)) return undefined;
     return this.runAccountOperation(async () => {
+      if (!/^[a-f0-9]{64}$/.test(digest)) return undefined;
       if (isTauri() && this.currentUserId != null) {
         const bytes = await tauriInvoke<number[] | null>(
           'native_db_get_profile_avatar',
@@ -3395,8 +3521,8 @@ export class WebdbStorage implements AccountStateStorage {
   }
 
   async putCachedMessages(messages: MessageQueryRow[]): Promise<void> {
-    if (messages.length === 0) return;
     return this.runMessageOperation(async () => {
+      if (messages.length === 0) return;
       const userId = this.currentUserId;
       const epoch = this.cacheEpoch;
       if (isTauri() && this.currentUserId != null) {
@@ -3794,8 +3920,8 @@ export class WebdbStorage implements AccountStateStorage {
     threadId: number,
     seqs: number[],
   ): Promise<Array<{ seq: number; type: MessageDeletionType }>> {
-    if (seqs.length === 0) return [];
     return this.runMessageOperation(async () => {
+      if (seqs.length === 0) return [];
       if (isTauri() && this.currentUserId != null) {
         return tauriInvoke<Array<{ seq: number; type: MessageDeletionType }>>(
           'native_db_get_message_deletions',
@@ -4034,6 +4160,7 @@ export class WebdbStorage implements AccountStateStorage {
   }
 
   dispose(): void {
+    this.appDataSignal?.removeEventListener('abort', this.endAppData);
     this.sessionInvalidation?.unsubscribe();
     void this.close();
   }

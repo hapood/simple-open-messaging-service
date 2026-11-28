@@ -66,7 +66,7 @@ describe('PeerProfileComponent', () => {
   let binding: BehaviorSubject<ProfileNamespaceBinding>;
   let resolve: Mock;
   let items: WritableSignal<ConversationItem[]>;
-  let openThreadId: WritableSignal<number | undefined>;
+  let activeThreadId: WritableSignal<number | undefined>;
   let closeAside: Mock;
   let openSearch: Mock;
   let applyThreadMeta: Mock;
@@ -79,7 +79,7 @@ describe('PeerProfileComponent', () => {
     TestBed.resetTestingModule();
     const { item } = makeItem();
     items = signal<ConversationItem[]>([item]);
-    openThreadId = signal<number | undefined>(5);
+    activeThreadId = signal<number | undefined>(5);
 
     closeAside = vi.fn().mockName('closeAside');
     openSearch = vi.fn().mockName('openSearch');
@@ -134,7 +134,7 @@ describe('PeerProfileComponent', () => {
         {
           provide: ConversationListService,
           useValue: {
-            openThreadId,
+            activeThreadId,
             items,
             applyThreadMeta,
           } as unknown as ConversationListService,

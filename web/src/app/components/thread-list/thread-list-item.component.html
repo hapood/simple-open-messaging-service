@@ -1,0 +1,123 @@
+@let item = thread();
+<button
+  type="button"
+  class="thread-item"
+  [attr.data-thread-id]="item.threadId"
+  [class.active]="active()"
+  [class.unread]="unreadCount() > 0"
+  [class.muted]="item.muted"
+  [class.blocked]="item.blocked"
+  [class.pinned]="item.pinned"
+  [attr.aria-current]="active() ? 'true' : null"
+  [attr.aria-label]="label()"
+  (click)="select.emit()"
+  (keydown)="navigate.emit($event)"
+>
+  <span
+    #pin
+    class="pin-corner-badge"
+    [class.visible]="pinVisible()"
+    [title]="'threadList.pinned' | transloco"
+    aria-hidden="true"
+    (transitionend)="onPinTransitionEnd($event)"
+  >
+    <app-icon
+      [type]="AppIconType.PIN"
+      [style]="{ width: '14px', height: '14px' }"
+    />
+  </span>
+  <span class="thread-avatar">
+    <app-demand-avatar
+      [type]="avatarType(item)"
+      [name]="name()"
+      [account]="avatarAccount(item)"
+      [domainSource]="{
+        type: 'namespace',
+        namespaceId: avatarNamespaceId(item),
+      }"
+      [profile]="avatarProfile(item)"
+    />
+  </span>
+  <span class="thread-info">
+    <span class="thread-row">
+      <app-user-identity-label
+        [account]="avatarAccount(item)"
+        [profileRef]="avatarProfile(item)"
+      />
+      @if (
+        joinRequests() || (unreadCount() > 0 && item.mentionUnread.length > 0)
+      ) {
+        <span class="thread-status-group" aria-hidden="true">
+          @if (joinRequests()) {
+            <span
+              class="thread-status-icon thread-status-icon--warning"
+              [title]="'group.joinRequests' | transloco"
+            >
+              <app-icon
+                [type]="AppIconType.GROUP_JOIN_REQUESTS"
+                [style]="{ width: '14px', height: '14px' }"
+              />
+            </span>
+          }
+          @if (unreadCount() > 0 && item.mentionUnread.length > 0) {
+            <span
+              class="thread-status-icon thread-status-icon--mention"
+              [title]="'threadList.mentionedYou' | transloco"
+              >&#64;</span
+            >
+          }
+        </span>
+      }
+      <span class="thread-time">{{ time() }}</span>
+    </span>
+    <span class="thread-row">
+      @if (item.blocked) {
+        <span class="thread-blocked">
+          <app-icon
+            [type]="AppIconType.BLOCK"
+            [style]="{ width: '14px', height: '14px' }"
+          />
+          <span>{{ 'threadList.blocked' | transloco }}</span>
+        </span>
+      } @else {
+        <span class="thread-msg">
+          @if (item.muted) {
+            <span
+              class="thread-status-icon thread-status-icon--muted"
+              [title]="'threadList.muted' | transloco"
+              aria-hidden="true"
+            >
+              <app-icon
+                [type]="AppIconType.MUTE"
+                [style]="{ width: '14px', height: '14px' }"
+              />
+            </span>
+          }
+          <app-sending-task-indicator
+            class="thread-msg-text"
+            style="
+              --task-icon-size: 14px;
+              --task-alignment: start;
+              --task-text-align: left;
+            "
+            [interactive]="false"
+            [bio]="preview()"
+            [messageCount]="messageCount()"
+            [uploadCount]="uploadCount()"
+            [failedCount]="failedCount()"
+            [unavailable]="unavailable()"
+          />
+        </span>
+      }
+      <span
+        class="unread-badge"
+        [class.visible]="unreadCount() > 0"
+        aria-hidden="true"
+      >
+        <app-flip-count
+          [value]="unreadCount() >= 100 ? '99+' : unreadCount()"
+        />
+      </span>
+    </span>
+  </span>
+</button>

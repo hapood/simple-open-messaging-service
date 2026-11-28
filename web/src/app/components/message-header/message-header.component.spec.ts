@@ -37,7 +37,7 @@ describe('MessageHeaderComponent — back-button unread badge', () => {
   let comp: MessageHeaderComponent;
   let fixture: ComponentFixture<MessageHeaderComponent>;
   let items: ReturnType<typeof signal<ConversationItem[]>>;
-  let openThreadId: ReturnType<typeof signal<number | undefined>>;
+  let activeThreadId: ReturnType<typeof signal<number | undefined>>;
   let openAside: ReturnType<typeof vi.fn>;
   let asideTop: ReturnType<
     typeof signal<{ panel: 'profile' | 'group-info' } | undefined>
@@ -57,7 +57,7 @@ describe('MessageHeaderComponent — back-button unread badge', () => {
 
   beforeEach(() => {
     items = signal<ConversationItem[]>([]);
-    openThreadId = signal<number | undefined>(undefined);
+    activeThreadId = signal<number | undefined>(undefined);
     openAside = vi.fn();
     asideTop = signal<{ panel: 'profile' | 'group-info' } | undefined>(
       undefined,
@@ -86,7 +86,7 @@ describe('MessageHeaderComponent — back-button unread badge', () => {
           loader: InlineTranslocoLoader,
         }),
         provideTranslocoTranspiler(CspSafeIcuTranspiler),
-        { provide: ConversationListService, useValue: { items, openThreadId } },
+        { provide: ConversationListService, useValue: { items, activeThreadId } },
         {
           provide: NavStateMachineService,
           useValue: { searchOpen: signal(false), openAside, asideTop },
@@ -120,31 +120,31 @@ describe('MessageHeaderComponent — back-button unread badge', () => {
 
   it('sums unread across all threads except the open one', () => {
     items.set([item(1, 3), item(2, 0), item(3, 5)]);
-    openThreadId.set(3);
+    activeThreadId.set(3);
     expect(comp.otherUnreadCount()).toBe(3); // 3 + 0, thread 3 excluded
   });
 
   it('excludes the open thread even when it carries unread (defensive — it is held at 0 while open)', () => {
     items.set([item(1, 4), item(2, 6)]);
-    openThreadId.set(2);
+    activeThreadId.set(2);
     expect(comp.otherUnreadCount()).toBe(4); // only thread 1
   });
 
   it('with no open thread, sums every thread', () => {
     items.set([item(1, 2), item(2, 7)]);
-    openThreadId.set(undefined);
+    activeThreadId.set(undefined);
     expect(comp.otherUnreadCount()).toBe(9);
   });
 
   it('is 0 when only the open thread has unread', () => {
     items.set([item(1, 0), item(2, 8)]);
-    openThreadId.set(2);
+    activeThreadId.set(2);
     expect(comp.otherUnreadCount()).toBe(0);
   });
 
   it('otherUnreadLabel caps at 99+', () => {
     items.set(Array.from({ length: 100 }, (_, i) => item(i + 1, 1))); // 100 unread, none open
-    openThreadId.set(undefined);
+    activeThreadId.set(undefined);
     expect(comp.otherUnreadCount()).toBe(100);
     expect(comp.otherUnreadLabel()).toBe('99+');
   });
@@ -156,7 +156,7 @@ describe('MessageHeaderComponent — back-button unread badge', () => {
 
   it('treats a negative unreadCount as 0 (Math.max guard)', () => {
     items.set([item(1, -5), item(2, 3)]);
-    openThreadId.set(undefined);
+    activeThreadId.set(undefined);
     expect(comp.otherUnreadCount()).toBe(3); // -5 → 0, plus 3
   });
 

@@ -3,35 +3,25 @@ import { describe, expect, it, vi } from 'vitest';
 import { FlipCountComponent } from './flip-count.component';
 
 describe('FlipCountComponent', () => {
-  it('renders the latest value without remounting the counter', async () => {
+  it('renders the latest capped value without remounting the counter', async () => {
     const fixture = TestBed.createComponent(FlipCountComponent);
     fixture.componentRef.setInput('animate', false);
-    fixture.componentRef.setInput('value', 9);
+    fixture.componentRef.setInput('value', 99);
     fixture.detectChanges();
     await fixture.whenStable();
-    const current = fixture.nativeElement.querySelector('.current');
-    fixture.componentRef.setInput('value', 10);
+    const host: HTMLElement = fixture.nativeElement;
+    const current = host.querySelector('.current');
+    fixture.componentRef.setInput('value', '99+');
     fixture.detectChanges();
     await fixture.whenStable();
-    expect(fixture.nativeElement.querySelector('.current')).toBe(current);
-    expect(current.textContent).toBe('10');
+    expect(host.querySelector('.current')).toBe(current);
+    expect(current?.textContent).toBe('99+');
   });
 
-  it('cancels prior animations on rapid updates and disposal', async () => {
-    const animations: { cancel: ReturnType<typeof vi.fn> }[] = [];
-    const animate = vi
-      .spyOn(HTMLElement.prototype, 'animate')
-      .mockImplementation(() => {
-        const animation = { cancel: vi.fn() };
-        animations.push(animation);
-        return animation as unknown as Animation;
-      });
-    const preference = new EventTarget() as EventTarget & { matches: boolean };
-    preference.matches = false;
-    const removeListener = vi.spyOn(preference, 'removeEventListener');
-    const media = vi
-      .spyOn(window, 'matchMedia')
-      .mockReturnValue(preference as MediaQueryList);
+  it('retargets both rendered faces from their current visual state and cancels on disposal', async () => {
+    const media = window.matchMedia('(prefers-reduced-motion: reduce)');
+    const matches = vi.spyOn(media, 'matches', 'get').mockReturnValue(false);
+    const matchMedia = vi.spyOn(window, 'matchMedia').mockReturnValue(media);
     try {
       const fixture = TestBed.createComponent(FlipCountComponent);
       fixture.detectChanges();
@@ -39,30 +29,49 @@ describe('FlipCountComponent', () => {
       fixture.componentRef.setInput('value', 1);
       fixture.detectChanges();
       await fixture.whenStable();
-      expect(animations).toHaveLength(2);
+      const host: HTMLElement = fixture.nativeElement;
+      const current = host.querySelector<HTMLElement>('.current')!;
+      const previous = host.querySelector<HTMLElement>('.previous')!;
+      const oldAnimations = host.getAnimations({ subtree: true });
+      expect(oldAnimations).toHaveLength(2);
+      for (const animation of oldAnimations) animation.currentTime = 80;
+      const currentTransform = getComputedStyle(current).transform;
+      const previousTransform = getComputedStyle(previous).transform;
       fixture.componentRef.setInput('value', 2);
       fixture.detectChanges();
       await fixture.whenStable();
-      expect(animations[0].cancel).toHaveBeenCalledOnce();
-      expect(animations).toHaveLength(4);
-      preference.matches = true;
-      preference.dispatchEvent(new Event('change'));
-      expect(animations[3].cancel).toHaveBeenCalledOnce();
+      expect(
+        oldAnimations.every((animation) => animation.playState === 'idle'),
+      ).toBe(true);
+      const currentEffect = current.getAnimations()[0]?.effect;
+      const previousEffect = previous.getAnimations()[0]?.effect;
+      expect(currentEffect).toBeInstanceOf(KeyframeEffect);
+      if (
+        currentEffect instanceof KeyframeEffect &&
+        previousEffect instanceof KeyframeEffect
+      ) {
+        expect(currentEffect.getKeyframes()[0]['transform']).toBe(
+          currentTransform,
+        );
+        expect(previousEffect.getKeyframes()[0]['transform']).toBe(
+          previousTransform,
+        );
+      }
+      expect(current.textContent).toBe('2');
+      const animations = host.getAnimations({ subtree: true });
+      matches.mockReturnValue(true);
+      media.dispatchEvent(new Event('change'));
+      expect(
+        animations.every((animation) => animation.playState === 'idle'),
+      ).toBe(true);
       fixture.componentRef.setInput('value', 3);
       fixture.detectChanges();
       await fixture.whenStable();
-      expect(animations).toHaveLength(4);
-      expect(fixture.nativeElement.querySelector('.current').textContent).toBe(
-        '3',
-      );
+      expect(host.getAnimations({ subtree: true })).toHaveLength(0);
       fixture.destroy();
-      expect(removeListener).toHaveBeenCalledWith(
-        'change',
-        expect.any(Function),
-      );
     } finally {
-      animate.mockRestore();
-      media.mockRestore();
+      matchMedia.mockRestore();
+      matches.mockRestore();
     }
   });
 });

@@ -4,7 +4,11 @@ import type { Observable } from 'rxjs';
 import { NativeCommitEventsService } from './native-commit-events.service';
 import { NativeEventTransport } from './native-event.transport';
 import { SessionLifecycleService } from './session-lifecycle.service';
-import { parseLoginSessionId } from './session/session-identity';
+import {
+  parseLoginSessionId,
+  SessionSupersededError,
+  type LoginSessionId,
+} from './session/session-identity';
 import { WebdbService, provideWebdbService } from './webdb.service';
 
 const originalId = parseLoginSessionId('11111111-1111-4111-8111-111111111111');
@@ -16,20 +20,37 @@ describe('native database completion port', () => {
   let port: NativeCommitEventsService;
   let lifecycle: SessionLifecycleService;
 
-  beforeEach(async () => {
-    Reflect.set(window, '__TAURI_INTERNALS__', {});
-    Reflect.set(window, '__TAURI__', {
-      core: { invoke: vi.fn(async () => null) },
-    });
+  async function createRuntime(sessionId: LoginSessionId): Promise<void> {
     TestBed.configureTestingModule({
       providers: [provideZonelessChangeDetection(), provideWebdbService()],
     });
     lifecycle = TestBed.inject(SessionLifecycleService);
     // Mirror the UUID admitted by the mocked native authority.
-    lifecycle.bindSession(originalId);
+    lifecycle.bindSession(sessionId);
     storage = TestBed.inject(WebdbService);
     port = TestBed.inject(NativeCommitEventsService);
     await storage.openExistingForUser('42');
+  }
+
+  async function recreateForSuccessor(): Promise<void> {
+    expect(() => lifecycle.bindSession(successorId)).toThrow(
+      SessionSupersededError,
+    );
+    lifecycle.invalidateSession();
+    expect(() => lifecycle.bindSession(successorId)).toThrow(
+      SessionSupersededError,
+    );
+    await storage.close();
+    TestBed.resetTestingModule();
+    await createRuntime(successorId);
+  }
+
+  beforeEach(async () => {
+    Reflect.set(window, '__TAURI_INTERNALS__', {});
+    Reflect.set(window, '__TAURI__', {
+      core: { invoke: vi.fn(async () => null) },
+    });
+    await createRuntime(originalId);
   });
 
   afterEach(() => {
@@ -92,8 +113,7 @@ describe('native database completion port', () => {
   it.each(cases)(
     'rejects missing UUID and queued old %s after same-user fresh login',
     async (event, channel, data) => {
-      lifecycle.bindSession(successorId);
-      await storage.openExistingForUser('42');
+      await recreateForSuccessor();
       const received = vi.fn();
       (storage[channel] as Observable<unknown>).subscribe(received);
       const message = { event, status: 0, message: '', data };
@@ -108,8 +128,7 @@ describe('native database completion port', () => {
   it.each(cases)(
     'delivers Android %s envelopes to storage without admitting an old same-user login',
     async (event, channel, data) => {
-      lifecycle.bindSession(successorId);
-      await storage.openExistingForUser('42');
+      await recreateForSuccessor();
       const received = vi.fn();
       (storage[channel] as Observable<unknown>).subscribe(received);
       vi.stubGlobal('SomsFcm', { getConnState: () => 'closed' });

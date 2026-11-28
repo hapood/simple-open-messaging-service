@@ -32,7 +32,7 @@ describe('GroupInfoComponent reactive display identity', () => {
     });
   let component: GroupInfoComponent;
   let items: ReturnType<typeof signal<ConversationItem[]>>;
-  let openThreadId: ReturnType<typeof signal<number | undefined>>;
+  let activeThreadId: ReturnType<typeof signal<number | undefined>>;
   let first: Subject<ProfileNamespaceBinding>;
   let second: Subject<ProfileNamespaceBinding>;
   let resolve: ReturnType<typeof vi.fn>;
@@ -54,7 +54,7 @@ describe('GroupInfoComponent reactive display identity', () => {
 
   beforeEach(() => {
     items = signal([group(42, 7), group(43, 0)]);
-    openThreadId = signal<number | undefined>(42);
+    activeThreadId = signal<number | undefined>(42);
     first = new Subject();
     second = new Subject();
     resolve = vi.fn().mockReturnValueOnce(first).mockReturnValueOnce(second);
@@ -72,7 +72,7 @@ describe('GroupInfoComponent reactive display identity', () => {
           MESSAGE_THREAD_ADAPTER,
           ContactCardShareService,
         ].map((provide) => ({ provide, useValue: {} })),
-        { provide: ConversationListService, useValue: { items, openThreadId } },
+        { provide: ConversationListService, useValue: { items, activeThreadId } },
         { provide: ProfileNamespaceRepository, useValue: { resolve } },
       ],
     });
@@ -97,7 +97,7 @@ describe('GroupInfoComponent reactive display identity', () => {
 
   it('clears a previous address on a thread switch and ignores its old stream', () => {
     first.next(binding('remote.test'));
-    openThreadId.set(43);
+    activeThreadId.set(43);
     TestBed.tick();
     expect(resolve).toHaveBeenLastCalledWith({
       publisherNamespaceId: 0,
@@ -108,7 +108,7 @@ describe('GroupInfoComponent reactive display identity', () => {
     expect(component.displayDomain()).toBe('');
     second.next({ ...binding('home.test'), profileNamespaceId: 0 });
     expect(component.displayDomain()).toBe('home.test');
-    openThreadId.set(undefined);
+    activeThreadId.set(undefined);
     TestBed.tick();
     expect(component.displayDomain()).toBe('');
   });
@@ -117,7 +117,7 @@ describe('GroupInfoComponent reactive display identity', () => {
     first.next(binding('remote.test'));
     first.error(new Error('unrecoverable'));
     expect(component.displayDomain()).toBe('');
-    openThreadId.set(43);
+    activeThreadId.set(43);
     TestBed.tick();
     second.next({ ...binding('home.test'), profileNamespaceId: 0 });
     expect(component.displayDomain()).toBe('home.test');

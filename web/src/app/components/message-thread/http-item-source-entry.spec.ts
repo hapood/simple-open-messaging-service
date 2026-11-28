@@ -111,10 +111,9 @@ function mountKernel(source: HttpItemSource, height = 200) {
     hooks: {
       messageSeqs: (item) =>
         item.data.type === 'serverGap' ? [] : (item.ids ?? [item.id]),
-      createItem: (item, _previous, presentation) => {
+      createItem: (item) => {
         const el = document.createElement('div');
         el.style.height = '40px';
-        el.dataset['presentation'] = presentation.kind;
         el.dataset['kind'] = item.data.type === 'serverGap' ? 'gap' : 'message';
         if (item.data.type === 'serverGap') el.textContent = item.data.state;
         return {
@@ -199,7 +198,6 @@ describe('HttpItemSource to kernel entry', () => {
       const gap =
         mounted.content.querySelector<HTMLElement>('[data-kind="gap"]');
       expect(gap).not.toBeNull();
-      expect(gap?.dataset['presentation']).toBe('message');
     } finally {
       warning.mockRestore();
       mounted.destroy();
@@ -277,9 +275,6 @@ describe('HttpItemSource to kernel entry', () => {
           { kind: 'newer', after: 101, count: 50 },
         ]),
       );
-      expect(
-        mounted.content.querySelectorAll('[data-presentation="loading"]'),
-      ).toHaveLength(2);
       const olderCall = query.mock.calls.find(
         (call) => call[1].kind === 'older',
       );

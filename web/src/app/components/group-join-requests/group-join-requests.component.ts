@@ -79,7 +79,7 @@ type RequestListKind = 'INVITATION' | 'APPLICATION';
 export class GroupJoinRequestsComponent implements OnInit, OnDestroy {
   @Input() threadId?: number;
   @Input() initialTab?: 'invitations' | 'applications';
-  /** Frozen on mount: compact chat animations may retain the previous openThreadId. */
+  /** Frozen on mount: compact chat animations may retain the previous activeThreadId. */
   private groupThreadId?: number;
   readonly UserAvatarType = UserAvatarType;
   private readonly groups = inject(GroupService);
@@ -131,7 +131,7 @@ export class GroupJoinRequestsComponent implements OnInit, OnDestroy {
   private applicationBefore?: string;
 
   ngOnInit(): void {
-    const threadId = this.threadId ?? this.conversations.openThreadId();
+    const threadId = this.threadId ?? this.conversations.activeThreadId();
     this.groupThreadId = threadId;
     const thread = this.conversations
       .items()

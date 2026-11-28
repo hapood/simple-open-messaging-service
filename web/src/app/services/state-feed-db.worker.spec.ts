@@ -153,7 +153,7 @@ describe('database worker Group Meta completion', () => {
 
   it('schedules pending resource heads and publishes committed facts without member profile requests', async () => {
     pendingMeta = [12];
-    fetch.mockResolvedValue({ ok: true, json: async () => page('3', false) });
+    fetch.mockResolvedValue(Response.json(page('3', false)));
     await bind(1);
     await vi.waitFor(() =>
       expect(post).toHaveBeenCalledWith(
@@ -173,7 +173,7 @@ describe('database worker Group Meta completion', () => {
   it('publishes each committed page before scheduling the next one', async () => {
     pendingMeta = [12];
     fetch
-      .mockResolvedValueOnce({ ok: true, json: async () => page('1', true) })
+      .mockResolvedValueOnce(Response.json(page('1', true)))
       .mockImplementationOnce(async () => {
         expect(post).toHaveBeenCalledWith(
           expect.objectContaining({
@@ -186,7 +186,7 @@ describe('database worker Group Meta completion', () => {
             ],
           }),
         );
-        return { ok: true, json: async () => page('3', false) };
+        return Response.json(page('3', false));
       });
     await bind(2);
     await vi.waitFor(() => expect(apply).toHaveBeenCalledTimes(2));

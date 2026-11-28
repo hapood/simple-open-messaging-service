@@ -1,4 +1,9 @@
 import { AsyncPipe } from '@angular/common';
+import {
+  CdkFixedSizeVirtualScroll,
+  CdkVirtualForOf,
+  CdkVirtualScrollViewport,
+} from '@angular/cdk/scrolling';
 import { NamespaceDomainPipe } from '../../pipes/namespace-domain.pipe';
 import {
   Component,
@@ -8,12 +13,13 @@ import {
   Output,
   inject,
   OnInit,
-  ElementRef,
   afterRenderEffect,
   effect,
   DestroyRef,
   signal,
   viewChild,
+  viewChildren,
+  untracked,
   ChangeDetectionStrategy,
 } from '@angular/core';
 import { TranslocoService, TranslocoPipe } from '@jsverse/transloco';
@@ -24,7 +30,6 @@ import {
 } from '../../services/conversation-list.service';
 import { UserService } from '../../services/user.service';
 import { ConversationItem, displayThreadName } from '../../services/model';
-import { DemandAvatarComponent } from '../user-avatar/demand-avatar.component';
 import { UserAvatarType } from '../user-avatar/model';
 import {
   conversationAvatarType,
@@ -32,34 +37,33 @@ import {
   conversationAvatarNamespaceId,
 } from '../user-avatar/conversation-avatar.util';
 import { conversationAvatarProfile } from '../../services/avatar-profile-ref';
-import { IconComponent, AppIconType } from '../icon/icon.component';
-import { UserIdentityLabelComponent } from '../user-identity-label/user-identity-label.component';
-import { SendingTaskIndicatorComponent } from '../message-header/sending-task-indicator.component';
 import { SendingTaskPresentation } from '../../services/sending-task-presentation.service';
 import { EmptyStateComponent } from '../empty-state/empty-state.component';
 import { LanguageService } from '../../services/language.service';
 import { formatListTime } from '../message-cards/date-format';
-import { FlipListAnimator, FlipListLayout } from './thread-list-animator';
-import { THREAD_ROW_HEIGHT, threadListWindow } from './thread-list-window';
+import { ThreadListItemComponent } from './thread-list-item.component';
+import { UnreadPresentation } from '../../services/unread-presentation.service';
 import { ComposerDraftService } from '../../services/composer-draft.service';
 import { hasUnreadGroupJoinRequests } from '../../services/group-join-request-state';
+
+const THREAD_ROW_HEIGHT = 72;
 
 /**
  * Conversation list view. A thin view over the shared ConversationListService (the client-side source
  * of truth, also driven by mark-read and realtime SSE). Folder + local-search filtering stay here as
- * computeds over the shared items; the active row is the store's openThreadId.
+ * computeds over the shared items; the active row is the store's activeThreadId.
  */
 @Component({
   selector: 'app-thread-list',
   imports: [
-    DemandAvatarComponent,
     NamespaceDomainPipe,
     AsyncPipe,
-    IconComponent,
     EmptyStateComponent,
-    SendingTaskIndicatorComponent,
     TranslocoPipe,
-    UserIdentityLabelComponent,
+    ThreadListItemComponent,
+    CdkVirtualScrollViewport,
+    CdkVirtualForOf,
+    CdkFixedSizeVirtualScroll,
   ],
   templateUrl: './thread-list.component.html',
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -68,8 +72,6 @@ import { hasUnreadGroupJoinRequests } from '../../services/group-join-request-st
 export class ThreadListComponent implements OnInit {
   readonly sendingTasks = inject(SendingTaskPresentation);
   readonly UserAvatarType = UserAvatarType;
-  /** exposes the icon enum to the template (mute indicator on muted threads). */
-  readonly AppIconType = AppIconType;
   /** local name search; '' = no filter. */
   readonly searchText = input('');
 
@@ -78,73 +80,127 @@ export class ThreadListComponent implements OnInit {
   private readonly userService = inject(UserService);
   private readonly transloco = inject(TranslocoService);
   private readonly language = inject(LanguageService);
-  private readonly viewport =
-    viewChild<ElementRef<HTMLElement>>('listViewport');
+  private readonly viewport = viewChild(CdkVirtualScrollViewport);
+  private readonly rows = viewChildren(ThreadListItemComponent);
+  readonly rowHeight = THREAD_ROW_HEIGHT;
+  readonly trackThread = (_index: number, thread: ConversationItem) =>
+    thread.threadId;
   readonly composerDrafts = inject(ComposerDraftService);
-  private readonly listAnimator = new FlipListAnimator();
-  private previousSearch = '';
-  private readonly viewportHeight = signal(0);
-  private readonly scrollState = signal({ search: '', top: 0 });
+  private readonly unreadPresentation = inject(UnreadPresentation);
+  private previousItems: ConversationItem[] = [];
+  private readonly heldPins = signal(new Map<number, number>());
+  private readonly pinTimers = new Map<number, ReturnType<typeof setTimeout>>();
   private readonly pendingFocus = signal<number | null>(null);
+  private readonly renderedRange = signal({ start: 0, end: 0 });
 
   constructor() {
-    inject(DestroyRef).onDestroy(() => this.listAnimator.destroy());
+    inject(DestroyRef).onDestroy(() => {
+      for (const timer of this.pinTimers.values()) clearTimeout(timer);
+    });
     effect(() => {
-      this.scrollState.set({ search: this.searchText(), top: 0 });
-    });
-    afterRenderEffect((onCleanup) => {
-      const container = this.viewport()?.nativeElement;
-      if (!container) return;
-      const measure = () => this.viewportHeight.set(container.clientHeight);
-      measure();
-      const observer = new ResizeObserver(measure);
-      observer.observe(container);
-      onCleanup(() => observer.disconnect());
-    });
-    // Angular commits the keyed window before both animation axes start. Scrolling
-    // changes only the window, not the complete layout's identity or revisions.
-    afterRenderEffect(() => {
-      const container = this.viewport()?.nativeElement;
-      const layout = this.animationLayout();
-      const window = this.renderedWindow();
-      const search = this.searchText();
-      const status = this.status();
-      if (
-        search !== this.previousSearch ||
-        status !== ConversationLoadStatus.READY
-      )
-        this.listAnimator.destroy();
-      if (container) {
-        // Clamp after shrinking/filtering as well as when resetting search.
-        if (container.scrollTop !== window.scrollTop)
-          container.scrollTop = window.scrollTop;
-        if (this.scrollState().top !== window.scrollTop)
-          this.scrollState.set({ search, top: window.scrollTop });
-        if (status === ConversationLoadStatus.READY)
-          this.listAnimator.play(container, layout);
-        const focus = this.pendingFocus();
-        if (focus !== null) {
-          container
-            .querySelector<HTMLElement>(`[data-flip-key="${focus}"]`)
-            ?.focus({ preventScroll: true });
-          this.pendingFocus.set(null);
+      const items = this.items();
+      const visibleIds = new Set(
+        Array.from(
+          untracked(() => this.viewport())?.elementRef.nativeElement.querySelectorAll<HTMLElement>('[data-thread-id]') ?? [],
+          (element) => Number(element.dataset['threadId']),
+        ),
+      );
+      const currentById = new Map(items.map((item) => [item.threadId, item]));
+      const originalHeld = untracked(this.heldPins);
+      const held = new Map(originalHeld);
+      // A second unpin must retain its displayed slot, not its index in the
+      // canonical order that already moved earlier, still-exiting pins.
+      const previousPresentation = this.withPinHolds(
+        this.previousItems,
+        originalHeld,
+      );
+      for (const [index, previous] of previousPresentation.entries()) {
+        const current = currentById.get(previous.threadId);
+        if (
+          previous.pinned &&
+          current &&
+          !current.pinned &&
+          visibleIds.has(current.threadId) &&
+          !matchMedia('(prefers-reduced-motion: reduce)').matches
+        ) {
+          held.set(current.threadId, index);
+          clearTimeout(this.pinTimers.get(current.threadId));
+          // transitionend releases early; this also covers unmount and reduced motion.
+          this.pinTimers.set(
+            current.threadId,
+            setTimeout(() => this.releasePin(current.threadId), 200),
+          );
         }
       }
-      this.previousSearch = search;
+      for (const id of held.keys()) {
+        if (!currentById.has(id) || currentById.get(id)?.pinned) {
+          held.delete(id);
+          clearTimeout(this.pinTimers.get(id));
+          this.pinTimers.delete(id);
+        }
+      }
+      this.previousItems = items;
+      if (
+        held.size !== originalHeld.size ||
+        [...held].some(([id, index]) => originalHeld.get(id) !== index)
+      )
+        this.heldPins.set(held);
+    });
+    afterRenderEffect(() => {
+      this.searchText();
+      this.viewport()?.scrollToIndex(0);
+      this.pendingFocus.set(null);
+    });
+    afterRenderEffect((onCleanup) => {
+      const viewport = this.viewport();
+      if (!viewport) return;
+      // CDK observes window resize; panel resize and hidden-to-visible layout
+      // changes also need a viewport check. CDK owns all range geometry.
+      const observer = new ResizeObserver(() => viewport.checkViewportSize());
+      observer.observe(viewport.elementRef.nativeElement);
+      const subscription = viewport.renderedRangeStream.subscribe((range) =>
+        this.renderedRange.set(range),
+      );
+      this.renderedRange.set(viewport.getRenderedRange());
+      onCleanup(() => {
+        observer.disconnect();
+        subscription.unsubscribe();
+      });
+    });
+    // Scroll events update CDK's range asynchronously. Keep the request until
+    // that range is committed, rather than consuming it on the first render.
+    afterRenderEffect(() => {
+      const focus = this.pendingFocus();
+      if (focus === null) return;
+      const index = this.rowIndices().get(focus);
+      if (index === undefined) {
+        this.pendingFocus.set(null);
+        return;
+      }
+      const range = this.renderedRange();
+      this.rows();
+      if (index < range.start || index >= range.end) return;
+      const row = this.viewport()?.elementRef.nativeElement
+        .querySelector<HTMLElement>(`[data-thread-id="${focus}"]`);
+      if (row) {
+        row.focus({ preventScroll: true });
+        this.pendingFocus.set(null);
+      }
     });
   }
 
   readonly items = this.convList.items;
   readonly status = this.convList.status;
   readonly errorMsg = this.convList.error;
-  readonly openThreadId = this.convList.openThreadId;
+  readonly activeThreadId = this.convList.activeThreadId;
   /** exposes the enum to the template's @switch */
   readonly LoadStatus: typeof ConversationLoadStatus = ConversationLoadStatus;
 
   /** View model after applying the local search filter. */
   readonly filteredThreadList = computed(() => {
     const q = this.searchText().trim().toLowerCase();
-    return this.items().filter((t) => {
+    const items = this.withPinHolds(this.items(), this.heldPins());
+    return items.filter((t) => {
       if (q) {
         const name = displayThreadName(t);
         if (!name.toLowerCase().includes(q)) return false;
@@ -153,57 +209,55 @@ export class ThreadListComponent implements OnInit {
     });
   });
 
-  readonly renderedWindow = computed(() => {
-    const scroll = this.scrollState();
-    return threadListWindow(
-      this.filteredThreadList().length,
-      this.viewportHeight(),
-      scroll.search === this.searchText() ? scroll.top : 0,
-    );
-  });
+  /** Apply transient holds identically when rendering and capturing the next exit. */
+  private withPinHolds(
+    canonical: readonly ConversationItem[],
+    holds: ReadonlyMap<number, number>,
+  ): ConversationItem[] {
+    const items = [...canonical];
+    for (const [id, index] of [...holds].sort((a, b) => a[1] - b[1])) {
+      const current = items.findIndex((item) => item.threadId === id);
+      if (current >= 0)
+        items.splice(
+          Math.min(index, items.length - 1),
+          0,
+          ...items.splice(current, 1),
+        );
+    }
+    return items;
+  }
 
-  readonly visibleThreadList = computed(() => {
-    const window = this.renderedWindow();
-    return this.filteredThreadList().slice(window.start, window.end);
-  });
-
-  // O(n) data-only work happens on list updates, never on scroll. DOM work and
-  // visual snapshots remain bounded by the viewport plus its small buffer.
-  private readonly animationLayout = computed<FlipListLayout>(
+  private readonly rowIndices = computed(
     () =>
       new Map(
-        this.filteredThreadList().map((item, index) => [
-          String(item.threadId),
-          {
-            top: index * THREAD_ROW_HEIGHT,
-            revision: JSON.stringify([
-              item.pinned,
-              item.pinnedAt,
-              item.threadFeedId,
-              item.lastMessageAt,
-            ]),
-          },
-        ]),
+        this.filteredThreadList().map((item, index) => [item.threadId, index]),
       ),
   );
 
-  onViewportScroll(): void {
-    const container = this.viewport()?.nativeElement;
-    if (container)
-      this.scrollState.set({
-        search: this.searchText(),
-        top: container.scrollTop,
-      });
+  releasePin(threadId: number): void {
+    clearTimeout(this.pinTimers.get(threadId));
+    this.pinTimers.delete(threadId);
+    this.heldPins.update((held) => {
+      const next = new Map(held);
+      next.delete(threadId);
+      return next;
+    });
+  }
+
+  presentedUnread(thread: ConversationItem): number {
+    return this.activeThreadId() === thread.threadId &&
+      this.unreadPresentation.suppresses(thread.threadId)
+      ? 0
+      : thread.unreadCount;
   }
 
   /** Arrow navigation can reach rows beyond the mounted window; native Enter,
    * Space and Tab behavior remains on the actual conversation buttons. */
   onRowKeydown(event: KeyboardEvent, threadId: number): void {
-    const position = this.animationLayout().get(String(threadId));
-    const container = this.viewport()?.nativeElement;
+    const index = this.rowIndices().get(threadId);
+    const viewport = this.viewport();
     const items = this.filteredThreadList();
-    if (!position || !container || !items.length) return;
-    const index = position.top / THREAD_ROW_HEIGHT;
+    if (index === undefined || !viewport || !items.length) return;
     let target: number;
     switch (event.key) {
       case 'ArrowDown':
@@ -223,17 +277,16 @@ export class ThreadListComponent implements OnInit {
     }
     event.preventDefault();
     const top = target * THREAD_ROW_HEIGHT;
-    const height = Math.max(THREAD_ROW_HEIGHT, this.viewportHeight());
-    const current = this.renderedWindow().scrollTop;
+    const height = viewport.getViewportSize();
+    const current = viewport.measureScrollOffset();
     const offset =
       top < current
         ? top
         : top + THREAD_ROW_HEIGHT > current + height
           ? top + THREAD_ROW_HEIGHT - height
           : current;
-    container.scrollTop = offset;
-    this.scrollState.set({ search: this.searchText(), top: offset });
     this.pendingFocus.set(items[target].threadId);
+    viewport.scrollToOffset(offset);
   }
 
   /** A search term is set but the filter yields nothing → "no search results" state (distinct from the true
@@ -354,11 +407,12 @@ export class ThreadListComponent implements OnInit {
         : this.previewText(t),
       this.fmtTime(t.lastMessageAt),
     ];
-    if (t.unreadCount > 0) {
-      const count = t.unreadCount >= 100 ? '99+' : t.unreadCount;
+    const unread = this.presentedUnread(t);
+    if (unread > 0) {
+      const count = unread >= 100 ? '99+' : unread;
       parts.push(this.transloco.translate('threadList.unreadCount', { count }));
     }
-    if ((t.mentionUnread?.length ?? 0) > 0) {
+    if (unread > 0 && (t.mentionUnread?.length ?? 0) > 0) {
       parts.push(this.transloco.translate('threadList.mentionedYou'));
     }
     if (this.hasUnreadJoinRequests(t))

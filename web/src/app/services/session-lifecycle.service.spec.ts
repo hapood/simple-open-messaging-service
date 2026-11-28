@@ -1,86 +1,66 @@
+import { AppDataLifetime } from './app-data-lifetime.service';
 import { SessionLifecycleService } from './session-lifecycle.service';
 import {
   createSessionCacheDescriptor,
   SessionSupersededError,
 } from './session/session-identity';
 
-describe('SessionLifecycleService renderer mirror', () => {
-  it('publishes only the identity supplied by the session authority', () => {
-    const lifecycle = new SessionLifecycleService();
+describe('SessionLifecycleService protocol facade', () => {
+  it('publishes the authority identity without creating another cancellation scope', () => {
+    const appData = new AppDataLifetime();
+    const lifecycle = new SessionLifecycleService(appData);
     const publicWork = lifecycle.capture();
-    expect(publicWork.sessionId).toBeNull();
     const id = createSessionCacheDescriptor().id;
-    const invalidated = vi.fn();
-    lifecycle.invalidated$.subscribe(invalidated);
-    lifecycle.bindSession(id);
+    lifecycle.publishIdentity(id);
     expect(lifecycle.capture().sessionId).toBe(id);
+    expect(lifecycle.capture().signal).toBe(appData.workSignal);
     expect(publicWork.signal.aborted).toBe(true);
     expect(lifecycle.isCurrent(publicWork)).toBe(false);
-    expect(invalidated).not.toHaveBeenCalled();
+    const admitted = lifecycle.capture();
+    lifecycle.publishIdentity(id);
+    expect(lifecycle.capture()).toBe(admitted);
   });
 
-  it('preserves a bound UUID and lease on duplicate publication', () => {
-    const lifecycle = new SessionLifecycleService();
-    const id = createSessionCacheDescriptor().id;
-    lifecycle.bindSession(id);
-    const scope = lifecycle.capture();
-    lifecycle.bindSession(id);
-    expect(lifecycle.capture()).toBe(scope);
-    expect(scope.signal.aborted).toBe(false);
-  });
-
-  it('invalidates synchronously before notifying reset consumers', () => {
-    const lifecycle = new SessionLifecycleService();
-    lifecycle.bindSession(createSessionCacheDescriptor().id);
+  it('delegates termination synchronously to the app owner before reset notifications', () => {
+    const appData = new AppDataLifetime();
+    const lifecycle = new SessionLifecycleService(appData);
+    lifecycle.publishIdentity(createSessionCacheDescriptor().id);
     const scope = lifecycle.capture();
     const invalidated = vi.fn(() => {
-      expect(scope.signal.aborted).toBe(true);
+      expect(appData.signal.aborted).toBe(true);
       expect(lifecycle.capture().sessionId).toBeNull();
       expect(lifecycle.isCurrent(scope)).toBe(false);
     });
     lifecycle.invalidated$.subscribe(invalidated);
     lifecycle.invalidateSession();
-    expect(invalidated).toHaveBeenCalledTimes(1);
+    expect(invalidated).toHaveBeenCalledOnce();
     expect(() => lifecycle.assertCurrent(scope)).toThrow(
       SessionSupersededError,
     );
+    expect(() =>
+      lifecycle.publishIdentity(createSessionCacheDescriptor().id),
+    ).toThrow(SessionSupersededError);
   });
 
-  it('never revives old work even when the same persistent UUID is restored', () => {
+  it('cannot revive even the same persistent UUID in an ended renderer', () => {
     const lifecycle = new SessionLifecycleService();
     const id = createSessionCacheDescriptor().id;
-    lifecycle.bindSession(id);
-    const old = lifecycle.capture();
+    lifecycle.publishIdentity(id);
     lifecycle.invalidateSession();
-    lifecycle.bindSession(id);
-    expect(lifecycle.capture().sessionId).toBe(id);
-    expect(lifecycle.isCurrent(old)).toBe(false);
-    expect(lifecycle.isCurrent(lifecycle.capture())).toBe(true);
+    expect(() => lifecycle.publishIdentity(id)).toThrow(SessionSupersededError);
+    expect(lifecycle.capture().signal.aborted).toBe(true);
   });
 
-  it('separates cancellation of signed-out work and in-memory end notifications', () => {
-    const lifecycle = new SessionLifecycleService();
+  it('uses the app owner for cancellable pre-admission preparation', () => {
+    const appData = new AppDataLifetime();
+    const lifecycle = new SessionLifecycleService(appData);
     const first = lifecycle.capture();
-    const ended = vi.fn();
-    lifecycle.ended$.subscribe(ended);
     lifecycle.invalidateSession();
-    const second = lifecycle.capture();
-    lifecycle.invalidateSession();
-    expect(lifecycle.isCurrent(first)).toBe(false);
-    expect(lifecycle.isCurrent(second)).toBe(false);
-    expect(ended).not.toHaveBeenCalled();
-    lifecycle.endSession();
-    expect(ended).toHaveBeenCalledTimes(1);
-  });
-
-  it('makes the old lease stale before synchronous abort callbacks run', () => {
-    const lifecycle = new SessionLifecycleService();
-    const previous = lifecycle.capture();
-    const onAbort = vi.fn(() =>
-      expect(lifecycle.isCurrent(previous)).toBe(false),
-    );
-    previous.signal.addEventListener('abort', onAbort);
-    lifecycle.bindSession(createSessionCacheDescriptor().id);
-    expect(onAbort).toHaveBeenCalledTimes(1);
+    expect(first.signal.aborted).toBe(true);
+    expect(lifecycle.capture().signal).toBe(appData.workSignal);
+    expect(appData.signal.aborted).toBe(false);
+    lifecycle.publishIdentity(createSessionCacheDescriptor().id);
+    appData.end();
+    expect(lifecycle.isCurrent(lifecycle.capture())).toBe(false);
   });
 });

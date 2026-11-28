@@ -40,13 +40,13 @@ import {
   `,
 })
 export class FlipCountComponent {
-  readonly value = input(0);
+  readonly value = input<number | string>(0);
   readonly animate = input(true);
   private readonly previous =
     viewChild.required<ElementRef<HTMLElement>>('previous');
   private readonly current =
     viewChild.required<ElementRef<HTMLElement>>('current');
-  private lastValue: number | undefined;
+  private lastValue: number | string | undefined;
   private animations: Animation[] = [];
 
   constructor() {
@@ -64,11 +64,49 @@ export class FlipCountComponent {
       const enabled = this.animate();
       const previous = this.previous().nativeElement;
       const current = this.current().nativeElement;
-      this.cancelAnimations();
       const old = this.lastValue;
+      if (old === value && enabled && !preference.matches) return;
+      const running = this.animations.some(
+        (animation) => animation.playState === 'running',
+      );
+      const visual = getComputedStyle(current);
+      const transform = visual.transform;
+      const opacity = visual.opacity;
+      const outgoing = getComputedStyle(previous);
+      const outgoingTransform = outgoing.transform;
+      const outgoingOpacity = outgoing.opacity;
+      this.cancelAnimations();
       this.lastValue = value;
       if (old === undefined || old === value || !enabled || preference.matches)
         return;
+      if (running) {
+        // Retarget from the rendered face, not the original animation endpoint.
+        this.animations = [
+          previous.animate(
+            [
+              {
+                visibility: 'visible',
+                transform: outgoingTransform,
+                opacity: outgoingOpacity,
+              },
+              {
+                visibility: 'visible',
+                transform: 'rotateX(90deg)',
+                opacity: 0,
+              },
+            ],
+            { duration: 220, easing: 'ease-out' },
+          ),
+          current.animate(
+            [
+              { transform, opacity },
+              { transform: 'rotateX(0)', opacity: 1 },
+            ],
+            { duration: 220, easing: 'ease-out' },
+          ),
+        ];
+        return;
+      }
       previous.textContent = String(old);
       this.animations = [
         previous.animate(

@@ -53,7 +53,7 @@ type SlotKey = 'A' | 'B';
  * inline styles) — blanking a content-bearing foreground on rapid switches. There is no animation lifecycle
  * to race or leak here, by construction.
  *
- * The target comes from `ConversationListService.openThreadId` (driven by NavStateMachineService via the
+ * The target comes from `ConversationListService.activeThreadId` (driven by NavStateMachineService via the
  * home shell). This component is always-mounted as a direct child of HomeShell (NO router, NO route-reuse
  * strategy) — the kernel never remounts on open/close.
  */
@@ -249,12 +249,12 @@ export class ChatPaneComponent implements OnDestroy {
   private readonly nativeComposer = inject(NativeComposerService);
 
   /** The thread the shell has marked open (URL-driven; sole writer is the home shell). */
-  readonly openThreadId = this.convList.openThreadId;
-  readonly active = computed(() => this.openThreadId() !== undefined);
+  readonly activeThreadId = this.convList.activeThreadId;
+  readonly active = computed(() => this.activeThreadId() !== undefined);
 
   /** Compact layout flag — drives the `.compact` host class and the compact branch of {@link showLoading}.
    *  Template-facing alias of the (private) LayoutService so the template never reaches past the component
-   *  boundary — mirrors the `convList`→`openThreadId` alias pattern below. */
+   *  boundary — mirrors the `convList`→`activeThreadId` alias pattern below. */
   readonly isCompact = computed(() => this.layout.mode() === 'compact');
 
   /** Each slot holds the threadId its pane is bound to (undefined → empty, no kernel). The LIVE
@@ -295,7 +295,7 @@ export class ChatPaneComponent implements OnDestroy {
     if (!this.active()) return false;
     if (this.isCompact()) {
       const fgId = this.fgSlot() === 'A' ? this.slotA() : this.slotB();
-      return fgId !== this.openThreadId();
+      return fgId !== this.activeThreadId();
     }
     return !this.fgItem();
   });
@@ -331,7 +331,7 @@ export class ChatPaneComponent implements OnDestroy {
 
   constructor() {
     afterRenderEffect(() => {
-      const target = this.openThreadId();
+      const target = this.activeThreadId();
       const a = this.threadA();
       const b = this.threadB();
       const itemA = this.itemA();
@@ -350,7 +350,7 @@ export class ChatPaneComponent implements OnDestroy {
     });
     // Navigation chooses a slot; afterRenderEffect dispatches its explicit binding command.
     effect(() => {
-      const target = this.openThreadId();
+      const target = this.activeThreadId();
       const fgKey = this.fgSlot();
       const fgTid = fgKey === 'A' ? this.slotA() : this.slotB();
 

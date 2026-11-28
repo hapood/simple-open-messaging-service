@@ -5,21 +5,46 @@ import {
   HttpXhrBackend,
   HttpErrorResponse,
   HttpEvent,
+  HttpEventType,
   HttpHeaders,
+  HttpHeaderResponse,
+  ɵHTTP_FETCH_MAX_RESPONSE_SIZE as HTTP_FETCH_MAX_RESPONSE_SIZE,
   HttpRequest,
   HttpResponse,
 } from '@angular/common/http';
-import { Observable, catchError, from, throwError } from 'rxjs';
+import { Observable } from 'rxjs';
 import { isTauri, tauriInvoke } from './services/runtime';
 import { withFetchApiDeadline } from './fetch-api-deadline';
 import { withXhrUploadDeadline } from './xhr-upload-deadline';
-import { REPLAY_SAFE } from './request-context';
+import { REPLAY_SAFE, REQUEST_SCOPE } from './request-context';
+import { browserShortRequestScheduler } from './lib/bounded-request-scheduler';
+import { fetchShortText } from './lib/short-fetch';
+
+/** Short JSON API calls only. Bulk transfer, progress transports and event streams
+ * must not occupy the lane used by interactive API operations. */
+export function isShortApiRequest(req: HttpRequest<unknown>): boolean {
+  const path = req.url.split('?')[0];
+  return (
+    path.startsWith('/api/v1/') &&
+    req.responseType === 'json' &&
+    !req.reportProgress &&
+    !req.reportUploadProgress &&
+    !req.reportDownloadProgress &&
+    !req.headers.get('accept')?.includes('text/event-stream') &&
+    !/\/api\/v1\/(?:upload|uploads)(?:\/|$)/.test(path) &&
+    !(req.body instanceof Blob) &&
+    !(req.body instanceof FormData) &&
+    !(req.body instanceof ArrayBuffer) &&
+    !ArrayBuffer.isView(req.body)
+  );
+}
 
 /**
  * The webview→backend HTTP transport (custom `HttpBackend`).
  *
- * Browser: delegate to Angular's stock `FetchBackend` — same-origin fetch, the httpOnly session cookie
- * authenticates. Under the Tauri shell (desktop + Android):
+ * Browser: short JSON API calls share bounded promise-backed fetch admission; other requests
+ * delegate to Angular's stock backends. The httpOnly session cookie authenticates.
+ * Under the Tauri shell (desktop + Android):
  *  - `/api/v1/...` and media URLs (`media://localhost/...`, `http://media.localhost/...`) are routed
  *    through the unified Rust `http_request` IPC command instead of `fetch()`. Android's Chromium system
  *    WebView rejects non-standard schemes in `fetch()`, and routing through Rust lets Rust own the
@@ -60,13 +85,24 @@ export class TauriHttpBackend implements HttpBackend {
   /** Stock fetch backend for the browser path + non-routed requests under Tauri. */
   private readonly fetchBackend = inject(FetchBackend);
   private readonly xhrBackend = inject(HttpXhrBackend);
+  private readonly maxResponseSize = inject(HTTP_FETCH_MAX_RESPONSE_SIZE);
 
   handle(req: HttpRequest<any>): Observable<HttpEvent<any>> {
     if (!isTauri()) {
-      return req.reportProgress && req.method === 'PUT' && req.url.includes('/uploads/resumable/')
+      if (isShortApiRequest(req)) {
+        return browserShortRequestScheduler.schedule<HttpEvent<unknown>>(
+          (signal, emit) => this.fetchShortRequest(req, signal, emit),
+        );
+      }
+      return req.reportProgress &&
+        req.method === 'PUT' &&
+        req.url.includes('/uploads/resumable/')
         ? withXhrUploadDeadline(this.xhrBackend.handle(req), req.urlWithParams)
         : req.url.startsWith('/api/v1/')
-          ? withFetchApiDeadline(this.fetchBackend.handle(req.clone({ reportProgress: true })), req.urlWithParams)
+          ? withFetchApiDeadline(
+              this.fetchBackend.handle(req.clone({ reportProgress: true })),
+              req.urlWithParams,
+            )
           : this.fetchBackend.handle(req);
     }
     const url = req.urlWithParams;
@@ -84,8 +120,12 @@ export class TauriHttpBackend implements HttpBackend {
             ? crypto.randomUUID()
             : `req-${Date.now()}-${Math.random().toString(36).slice(2)}`;
         let finished = false;
+        let dispatched = false;
+        const cancellation = new AbortController();
 
-        this.invoke(req, targetPath, reqId)
+        this.invoke(req, targetPath, reqId, cancellation.signal, () => {
+          dispatched = true;
+        })
           .then((event) => {
             finished = true;
             subscriber.next(event);
@@ -98,7 +138,11 @@ export class TauriHttpBackend implements HttpBackend {
 
         return () => {
           if (!finished) {
-            void tauriInvoke('cancel_http_request', { reqId }).catch(() => undefined);
+            cancellation.abort();
+            if (dispatched)
+              void tauriInvoke('cancel_http_request', { reqId }).catch(
+                () => undefined,
+              );
           }
         };
       });
@@ -106,19 +150,133 @@ export class TauriHttpBackend implements HttpBackend {
     return this.fetchBackend.handle(req);
   }
 
+  /** Own the fetch promise through the last body read. Angular's FetchBackend exposes only
+   * Observable teardown, which cannot acknowledge when an aborted fetch actually settles. */
+  private async fetchShortRequest(
+    req: HttpRequest<unknown>,
+    signal: AbortSignal,
+    emit: (event: HttpEvent<unknown>) => void,
+  ): Promise<HttpResponse<unknown>> {
+    try {
+      const headers = new Headers();
+      for (const name of req.headers.keys())
+        headers.set(name, req.headers.getAll(name)!.join(','));
+      if (!headers.has('accept'))
+        headers.set('accept', 'application/json, text/plain, */*');
+      const contentType = req.detectContentTypeHeader();
+      if (contentType && !headers.has('content-type'))
+        headers.set('content-type', contentType);
+      const { response, text } = await fetchShortText(
+        req.urlWithParams,
+        {
+          method: req.method,
+          headers,
+          body: req.serializeBody(),
+          credentials: req.withCredentials ? 'include' : req.credentials,
+          cache: req.cache,
+          mode: req.mode,
+          redirect: req.redirect,
+          referrer: req.referrer,
+          referrerPolicy: req.referrerPolicy,
+          integrity: req.integrity,
+          keepalive: req.keepalive,
+          priority: req.priority,
+        },
+        signal,
+        {
+          timeout: req.timeout,
+          maxResponseSize: this.maxResponseSize,
+          onSent: () => emit({ type: HttpEventType.Sent }),
+          onResponse: (response) =>
+            emit(
+              new HttpHeaderResponse({
+                headers: new HttpHeaders(response.headers),
+                status: response.status,
+                statusText: response.statusText,
+                url: response.url || req.urlWithParams,
+              }),
+            ),
+          onDownloadProgress: (loaded, total) =>
+            emit({ type: HttpEventType.DownloadProgress, loaded, total }),
+        },
+      );
+      const responseHeaders = new HttpHeaders(response.headers);
+      const url = response.url || req.urlWithParams;
+      const normalized = text.replace(/^\)\]\}',?\n/, '');
+      let body: unknown = normalized;
+      try {
+        body = normalized ? JSON.parse(normalized) : null;
+      } catch (error) {
+        if (response.ok)
+          throw new HttpErrorResponse({
+            error,
+            headers: responseHeaders,
+            status: response.status,
+            statusText: response.statusText,
+            url,
+          });
+      }
+      if (!response.ok)
+        throw new HttpErrorResponse({
+          error: body,
+          headers: responseHeaders,
+          status: response.status,
+          statusText: response.statusText,
+          url,
+          redirected: response.redirected,
+          responseType: response.type,
+        });
+      return new HttpResponse({
+        body,
+        headers: responseHeaders,
+        status: response.status,
+        statusText: response.statusText,
+        url,
+        redirected: response.redirected,
+        responseType: response.type,
+      });
+    } catch (error) {
+      throw this.toError(error, req);
+    }
+  }
+
   /** Perform the unified IPC round-trip and map the result to an `HttpResponse`, or throw an `HttpErrorResponse`
    *  for non-2xx (so the trace interceptor + `AuthInterceptor.on401` keep working). */
   private async invoke(
     req: HttpRequest<any>,
     path: string,
-    reqId?: string,
+    reqId: string,
+    signal: AbortSignal,
+    onDispatch: () => void,
   ): Promise<HttpEvent<any>> {
-    const isBinary = req.responseType === 'blob' || req.responseType === 'arraybuffer';
+    const isBinary =
+      req.responseType === 'blob' || req.responseType === 'arraybuffer';
     const { body, contentType } = await this.serializeBody(req.body);
     const headers = this.pickHeaders(req.headers);
-    if (contentType && !headers['content-type']) headers['content-type'] = contentType;
-    const r = await tauriInvoke<HttpResponseResult>('http_request', {
+    if (contentType && !headers['content-type'])
+      headers['content-type'] = contentType;
+    signal.throwIfAborted();
+    await tauriInvoke<HttpResponseResult>('http_request', {
       reqId,
+      method: req.method,
+      path,
+      headers: {},
+      binary: false,
+      replaySafe: false,
+      prepareOnly: true,
+    });
+    // Cancellation during the acknowledgement must cancel the reserved token, not
+    // race a not-yet-registered execution command. Rust rejects expired reservations.
+    onDispatch();
+    if (signal.aborted) {
+      await tauriInvoke('cancel_http_request', { reqId });
+      signal.throwIfAborted();
+    }
+    const r = await tauriInvoke<HttpResponseResult>('http_request', {
+      prepared: true,
+      reqId,
+      scope: req.context.get(REQUEST_SCOPE),
+      shortRequest: isShortApiRequest(req),
       method: req.method,
       path,
       headers,
@@ -129,13 +287,19 @@ export class TauriHttpBackend implements HttpBackend {
         req.context.get(REPLAY_SAFE),
     });
     const respHeaders = new HttpHeaders(r.headers);
-    const contentTypeHeader = r.headers['content-type'] || r.headers['Content-Type'];
+    const contentTypeHeader =
+      r.headers['content-type'] || r.headers['Content-Type'];
     const isSuccess = r.status >= 200 && r.status < 300;
     const parsed = isSuccess
       ? this.parseResponseBody(r, req.responseType, contentTypeHeader)
       : this.parseErrorResponseBody(r, req.responseType, contentTypeHeader);
     if (isSuccess) {
-      return new HttpResponse({ body: parsed, headers: respHeaders, status: r.status, url: req.url });
+      return new HttpResponse({
+        body: parsed,
+        headers: respHeaders,
+        status: r.status,
+        url: req.url,
+      });
     }
     throw new HttpErrorResponse({
       status: r.status,
@@ -156,7 +320,10 @@ export class TauriHttpBackend implements HttpBackend {
         case 'arraybuffer':
           return u8.buffer;
         case 'blob':
-          return new Blob([u8.slice()], contentType ? { type: contentType } : undefined);
+          return new Blob(
+            [u8.slice()],
+            contentType ? { type: contentType } : undefined,
+          );
         case 'text':
           return new TextDecoder().decode(u8);
         case 'json':
@@ -217,13 +384,22 @@ export class TauriHttpBackend implements HttpBackend {
    *    Blob → `blob.type` (Angular returns `blob.type || null`, so an untyped Blob stays unset),
    *    URLSearchParams → urlencoded, FormData → a synthesized multipart boundary (Angular leaves multipart
    *    to the browser, which the IPC path can't reach), objects → `application/json`, strings → `text/plain`. */
-  private async serializeBody(body: unknown): Promise<{ body: Uint8Array | undefined; contentType?: string }> {
+  private async serializeBody(
+    body: unknown,
+  ): Promise<{ body: Uint8Array | undefined; contentType?: string }> {
     if (body == null) return { body: undefined };
     if (body instanceof Uint8Array) return { body };
     if (body instanceof ArrayBuffer) return { body: new Uint8Array(body) };
-    if (body instanceof Blob) return { body: new Uint8Array(await body.arrayBuffer()), contentType: body.type || undefined };
+    if (body instanceof Blob)
+      return {
+        body: new Uint8Array(await body.arrayBuffer()),
+        contentType: body.type || undefined,
+      };
     if (body instanceof URLSearchParams) {
-      return { body: new TextEncoder().encode(body.toString()), contentType: 'application/x-www-form-urlencoded;charset=UTF-8' };
+      return {
+        body: new TextEncoder().encode(body.toString()),
+        contentType: 'application/x-www-form-urlencoded;charset=UTF-8',
+      };
     }
     if (body instanceof FormData) {
       return this.serializeMultipart(body);
@@ -235,14 +411,22 @@ export class TauriHttpBackend implements HttpBackend {
     // Content-Type and Fastify rejects the JSON body with 415 (every `/api/v1` POST/PUT/PATCH under Tauri).
     const isString = typeof body === 'string';
     const text = isString ? body : JSON.stringify(body);
-    return { body: new TextEncoder().encode(text), contentType: isString ? 'text/plain' : 'application/json' };
+    return {
+      body: new TextEncoder().encode(text),
+      contentType: isString ? 'text/plain' : 'application/json',
+    };
   }
 
   /** Build a `multipart/form-data` body from a `FormData` (Android uploads reach the backend as FormData —
    *  the old `api://` proxy forwarded the buffered multipart Tauri assembled; with IPC we assemble it in
    *  JS). Each File/Blob part is read async. The boundary is random per request. */
-  private async serializeMultipart(fd: FormData): Promise<{ body: Uint8Array; contentType: string }> {
-    const boundary = '----soms-boundary-' + Math.random().toString(36).slice(2) + Date.now().toString(36);
+  private async serializeMultipart(
+    fd: FormData,
+  ): Promise<{ body: Uint8Array; contentType: string }> {
+    const boundary =
+      '----soms-boundary-' +
+      Math.random().toString(36).slice(2) +
+      Date.now().toString(36);
     const enc = new TextEncoder();
     const parts: Uint8Array[] = [];
     const crlf = enc.encode('\r\n');
@@ -261,7 +445,9 @@ export class TauriHttpBackend implements HttpBackend {
         parts.push(new Uint8Array(await file.arrayBuffer()));
         parts.push(crlf);
       } else {
-        parts.push(enc.encode(`Content-Disposition: form-data; name="${name}"\r\n\r\n`));
+        parts.push(
+          enc.encode(`Content-Disposition: form-data; name="${name}"\r\n\r\n`),
+        );
         parts.push(enc.encode(String(value)));
         parts.push(crlf);
       }
@@ -271,8 +457,14 @@ export class TauriHttpBackend implements HttpBackend {
     for (const p of parts) total += p.length;
     const out = new Uint8Array(total);
     let off = 0;
-    for (const p of parts) { out.set(p, off); off += p.length; }
-    return { body: out, contentType: `multipart/form-data; boundary=${boundary}` };
+    for (const p of parts) {
+      out.set(p, off);
+      off += p.length;
+    }
+    return {
+      body: out,
+      contentType: `multipart/form-data; boundary=${boundary}`,
+    };
   }
 
   /** Map an IPC failure (http_request rejected — backend unreachable / timeout) to a status-0
@@ -282,7 +474,7 @@ export class TauriHttpBackend implements HttpBackend {
     if (err instanceof HttpErrorResponse) return err;
     return new HttpErrorResponse({
       status: 0,
-      url: req.url,
+      url: req.urlWithParams,
       error: err,
     });
   }

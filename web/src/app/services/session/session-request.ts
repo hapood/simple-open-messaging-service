@@ -1,5 +1,5 @@
-import { Observable, firstValueFrom, takeUntil, timeout } from 'rxjs';
-import { SessionSupersededError } from './session-identity';
+import { Observable, firstValueFrom, timeout } from 'rxjs';
+import { abortWork } from './abort-work';
 
 /** Unsubscribing aborts Angular's actual HTTP backend, not just response publication. */
 export function sessionRequest<T>(
@@ -7,13 +7,7 @@ export function sessionRequest<T>(
   signal: AbortSignal,
   timeoutMs?: number,
 ): Promise<T> {
-  const cancelled = new Observable<never>((subscriber) => {
-    const abort = () => subscriber.error(new SessionSupersededError());
-    signal.addEventListener('abort', abort, { once: true });
-    if (signal.aborted) abort();
-    return () => signal.removeEventListener('abort', abort);
-  });
-  let request = source.pipe(takeUntil(cancelled));
+  let request = source.pipe(abortWork(signal));
   if (timeoutMs !== undefined)
     request = request.pipe(timeout({ first: timeoutMs }));
   return firstValueFrom(request);

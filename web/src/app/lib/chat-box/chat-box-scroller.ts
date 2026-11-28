@@ -44,7 +44,6 @@ import { isDevMode } from '@angular/core';
 import { applyJumpHighlight } from './jump-highlight';
 import { MeasuredRegionView } from './measured-region-view';
 import { selectHistoryEdges } from './history-edge-slots';
-import { renderGhostState } from './ghost-renderer';
 
 import { EdgeDemandState } from './edge-demand-state';
 import {
@@ -129,10 +128,6 @@ export interface CbElement<T = unknown> {
 }
 
 /** createItem: wraps an item into a CbElement. prev = the older neighbor (index-1 within mounted), used to compute grouping (head/continuation); null if none. */
-export type CbRowPresentation =
-  | { kind: 'message' }
-  | { kind: 'loading' | 'retry'; edge: 'older' | 'newer' | 'both' };
-
 export interface CbHooks<T = unknown> {
   messageSeqs?: (item: CbItem<T>) => readonly number[];
   /** Update attached tail presentation before measurement, never from a scroll notification.
@@ -141,7 +136,6 @@ export interface CbHooks<T = unknown> {
   createItem: (
     item: CbItem<T>,
     prev: CbItem<T> | null,
-    presentation: CbRowPresentation,
   ) => CbElement<T>;
   /** Called on each source batch before createItem: presentation aggregation (e.g. merge consecutive same-creator IMAGE msgs into an album). Default noop. scope = batch (per-batch, cut across batches). */
   mergeItems?: (items: CbItem<T>[]) => CbItem<T>[];
@@ -492,17 +486,8 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
   private noOlder = false;
   private noNewer = false;
   private arrivalDemand = false;
-  /** The entry currently showing the skeleton (= mounted[0] when !noOlder); null = no skeleton. Compared by entry reference (immune to array shifts). */
-  private ghostEntry: Entry<T> | null = null;
-
-  /** Tail cap: a persistent non-message element kept as the last child of content (NEVER in mounted[]), mirroring the top
-   *  ghost at the newer edge. Gap mode (noNewer, at the global newest) = a small spacer; loading mode (!noNewer) = the same
-   *  spinner as the top ghost. Its height is folded into totalH() but never into prefix[]/topOf, so it neither shifts any
-   *  real item's position nor corrupts the newer cursor (mounted[last].item.id). Created once in the ctor; reused, never
-   *  duplicated, across batches — every append inserts before it, so it is continuously the last child (no accumulation). */
   private bottomReserveView?: MeasuredRegionView;
   private bottomReserveH = 0;
-  private newerGhostEntry: Entry<T> | null = null;
   private readonly olderDemand = new EdgeDemandState<T>();
   private readonly newerDemand = new EdgeDemandState<T>();
   private initializationSubscription?: Subscription;
@@ -743,7 +728,6 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
         this.absorbBoundary(merged);
         this.mountBatch(merged, 'init');
         this.measurePending();
-        this.updateHistoryEdges();
         this.positionAtBottom();
       }),
       map(() => undefined),
@@ -761,7 +745,6 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
         this.measurePending();
         this.noOlder = true;
         if (merged.length === 0) this.noNewer = true;
-        this.updateHistoryEdges();
         this.viewport.scrollTop = 0;
       }),
       map(() => undefined),
@@ -776,19 +759,15 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
           this.noOlder = true;
           this.noNewer = true;
           this.positionAtBottom();
-          this.updateHistoryEdges();
           return of(undefined);
         }
         this.absorbBoundary(merged);
         this.mountBatch(merged, 'init');
-        // Prime the ghost before the first prepend, and pin before yielding.
-        this.updateHistoryEdges();
         this.positionAtBottom();
         return of(undefined);
       }),
       tap(() => {
         this.measurePending();
-        this.updateHistoryEdges();
         this.positionAtBottom();
       }),
     );
@@ -832,7 +811,6 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
       this.dirtyPrefix = true;
       this.measurePending();
       this.finishLayoutChange(layout);
-      this.updateHistoryEdges(); // mounted 0→1 (e.g. first pending in an empty thread): flip the cap hidden→gap so the bottom padding shows
       return true;
     }
     const idx = this.indexOfId(afterId);
@@ -863,7 +841,6 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     this.dirtyPrefix = true;
     this.measurePending(); // `measuring` suppresses onElHeight → unified applyAnchor below
     this.finishLayoutChange(layout);
-    this.updateHistoryEdges(); // keep the newer-edge cap in sync after a mounted mutation
     return true;
   }
 
@@ -932,7 +909,6 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     if (successor) this.rebuildEntry(successor);
     this.dirtyPrefix = true;
     this.finishLayoutChange(layout);
-    this.updateHistoryEdges();
     this.emit();
     return true;
   }
@@ -956,7 +932,6 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
           chatId !== this.windowContext.chatId || !this.noNewer) return false;
     }
     this.measurePending();
-    this.updateHistoryEdges();
     this.cancelArrivalWindow();
     this.followAcceptedBottom();
     this.onViewportStateChanged();
@@ -1329,17 +1304,6 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
   /** Preserve the visible message across content mutations; new-message following is a separate decision. */
   private captureAnchor(): Anchor {
     let idx = this.topVisibleIdx();
-    // The oldest slot can be a loading placeholder, not readable message content.
-    // Revealing it may change its height; anchor the next visible message instead
-    // so an older backfill does not move that message by the placeholder delta.
-    if (idx >= 0 && this.mounted[idx] === this.ghostEntry) {
-      const next = idx + 1;
-      if (
-        next < this.mounted.length &&
-        this.topOf(next) < this.viewport.scrollTop + this.vh
-      )
-        idx = next;
-    }
     if (idx >= 0 && !this.entrySeqs(this.mounted[idx].item).length) {
       const newer = this.mounted.findIndex((entry, index) => index > idx && this.entrySeqs(entry.item).length > 0);
       if (newer >= 0) idx = newer;
@@ -1465,12 +1429,10 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
           console.warn('[chat-box] skipping unavailable target positioning', {
             messageId: id,
           });
-          this.updateHistoryEdges();
           return of(undefined);
         }
         this.positionMounted(targetIndex, anchor);
         if (request.highlight) this.flashHighlight(targetIndex, id);
-        this.updateHistoryEdges();
         return of(undefined);
       }),
     );
@@ -1516,7 +1478,6 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     this.shifting = true;
     this.viewport.scrollTop = 0; // content is empty, reset to zero
     this.shifting = false;
-    this.updateHistoryEdges(); // window emptied → hide the cap (mounted.length === 0 → height 0) until the new batch mounts
   }
 
   /** Add a one-shot highlight flash to the target entry (animationend removes the class; a reflow guarantees the animation restarts on repeated jumps). */
@@ -1684,7 +1645,6 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     this.dirtyPrefix = false;
     this.noOlder = false;
     this.noNewer = false;
-    this.newerGhostEntry = null;
     this.fullyVisibleIds.clear();
     this.olderDemand.error = null;
     this.newerDemand.error = null;
@@ -1775,18 +1735,15 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
             prev,
             merged[i + 1] ?? null,
             undefined,
-            this.selectEdgePresentation(
-              this.mounted.length === 0,
-              i === merged.length - 1,
-            ),
           ),
         );
       }
       oldTail?.vs.updateNext?.(merged[0]);
     } else {
       // init / older both prepend (when init, mounted is empty, anchorEl = null → appendChild)
-      const anchorEl = this.mounted.length > 0 ? this.mounted[0].el : null;
-      const oldHead = this.mounted[0]?.item ?? null;
+      const oldHeadEntry = this.mounted[0] ?? null;
+      const anchorEl = oldHeadEntry ? oldHeadEntry.el : null;
+      const oldHead = oldHeadEntry?.item ?? null;
       const fresh: Entry<T>[] = [];
       for (let i = 0; i < merged.length; i++) {
         const prev = i > 0 ? merged[i - 1] : null;
@@ -1796,68 +1753,17 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
             prev,
             merged[i + 1] ?? oldHead,
             anchorEl,
-            this.selectEdgePresentation(
-              i === 0,
-              oldHead === null && i === merged.length - 1,
-            ),
           ),
         ); // never animate prepended history
       }
       this.mounted.unshift(...fresh);
+      if (oldHeadEntry) {
+        oldHeadEntry.vs.update(oldHeadEntry.item, merged[merged.length - 1]);
+        this.pendingMeasure.push(oldHeadEntry);
+      }
     }
     this.dirtyPrefix = true;
     if (side !== 'older') this.measurePending();
-    this.updateHistoryEdges(); // re-measure the cap every batch mount: a newer batch reaching the global newest flips loading→gap
-  }
-
-  /** Explicit rendering state is independent of grouping neighbors. */
-  private rowPresentations = new WeakMap<CbElement<T>, CbRowPresentation>();
-
-  private renderRow(
-    item: CbItem<T>,
-    prev: CbItem<T> | null,
-    presentation: CbRowPresentation,
-  ): CbElement<T> {
-    // Non-message rows (including server gaps) retain their own content. They
-    // cannot become edge slots, including during the initial positional mount.
-    if (this.entrySeqs(item).length === 0) presentation = { kind: 'message' };
-    const rendered = this.hooks.createItem(item, prev, presentation);
-    this.rowPresentations.set(rendered, presentation);
-    return rendered;
-  }
-
-  private syncRowPresentation(
-    entry: Entry<T>,
-    presentation: CbRowPresentation,
-  ): void {
-    const current = this.rowPresentations.get(entry.vs);
-    if (
-      current?.kind === presentation.kind &&
-      (current.kind === 'message' ||
-        (presentation.kind !== 'message' && current.edge === presentation.edge))
-    )
-      return;
-    this.rebuildEntry(entry, entry.item, presentation);
-  }
-
-  private selectEdgePresentation(
-    atOlder: boolean,
-    atNewer: boolean,
-  ): CbRowPresentation {
-    const older = atOlder && !this.noOlder;
-    const newer =
-      atNewer &&
-      (this.hasBottomHistoryLoading ||
-        this.newerDemand.retrying ||
-        this.newerDemand.error !== null);
-    if (!older && !newer) return { kind: 'message' };
-    const failed =
-      (older && this.olderDemand.error !== null) ||
-      (newer && this.newerDemand.error !== null);
-    return {
-      kind: failed ? 'retry' : 'loading',
-      edge: older && newer ? 'both' : older ? 'older' : 'newer',
-    };
   }
 
   /** Mount hidden only until synchronous measurement; new content has no entry effect. */
@@ -1866,9 +1772,8 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     prev: CbItem<T> | null,
     next: CbItem<T> | null,
     anchorEl?: HTMLElement | null,
-    presentation: CbRowPresentation = { kind: 'message' },
   ): Entry<T> {
-    const vs = this.renderRow(item, prev, presentation);
+    const vs = this.hooks.createItem(item, prev);
     vs.updateNext?.(next);
     const el = vs.el;
     el.dataset['cbId'] = String(item.id);
@@ -1982,7 +1887,6 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     }
     this.dirtyPrefix = true;
     this.measurePending();
-    this.updateHistoryEdges();
     if (latestGap) this.finishLayoutChange(before);
     else this.restoreLayout(before.snapshot);
     this.trimOlder();
@@ -2009,15 +1913,12 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
   private rebuildEntry(
     entry: Entry<T>,
     newItem: CbItem<T> = entry.item,
-    presentation: CbRowPresentation = this.rowPresentations.get(entry.vs) ?? {
-      kind: 'message',
-    },
   ): void {
     const idx = this.mounted.indexOf(entry);
     if (idx < 0) return;
     const newPrev = idx > 0 ? this.mounted[idx - 1].item : null;
     const newNext = this.mounted[idx + 1]?.item ?? null;
-    const newVs = this.renderRow(newItem, newPrev, presentation);
+    const newVs = this.hooks.createItem(newItem, newPrev);
     newVs.updateNext?.(newNext);
     const newEl = newVs.el;
     newEl.dataset['cbId'] = String(newItem.id);
@@ -2120,7 +2021,6 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     this.prefix = [0];
     this.dirtyPrefix = true;
     this.pendingMeasure = [];
-    this.ghostEntry = null;
     if (errors.length) throw new AggregateError(errors, 'Chat window disposal failed');
     // Invariant (dev-only — isDevMode() is stripped in AOT, so prod pays nothing): after unmounting every tracked
     // row, .msg-content must hold NO kernel-tagged ([data-cb-id]) children.
@@ -2137,62 +2037,6 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
         );
       }
     }
-  }
-
-  /** History is not yet connected to its known newest edge. A parked live subscription is not loading. */
-  private get hasBottomHistoryLoading(): boolean {
-    return !this.noNewer;
-  }
-
-  /** Both boundaries select presentation in one pass, including a shared sole row. */
-  private updateHistoryEdges(): void {
-    const edges = selectHistoryEdges(
-      this.mounted,
-      (entry) => this.entrySeqs(entry.item).length > 0,
-    );
-    const older = this.noOlder || this.mounted[0]?.item.displayInterval ? null : edges.older;
-    const newer = !this.mounted[this.mounted.length - 1]?.item.displayInterval && (
-      this.hasBottomHistoryLoading ||
-      this.newerDemand.retrying ||
-      this.newerDemand.error !== null)
-        ? edges.newer
-        : null;
-    const previous = new Set([this.ghostEntry, this.newerGhostEntry]);
-    this.ghostEntry = older;
-    this.newerGhostEntry = newer;
-    for (const entry of previous) {
-      if (
-        entry &&
-        entry !== older &&
-        entry !== newer &&
-        this.mounted.includes(entry)
-      )
-        this.syncRowPresentation(entry, { kind: 'message' });
-    }
-    for (const entry of new Set([older, newer])) {
-      if (!entry) continue;
-      const atOlder = entry === older;
-      const atNewer = entry === newer;
-      const olderFailed = atOlder && this.olderDemand.error !== null;
-      const newerFailed =
-        atNewer && this.newerDemand.error !== null;
-      const edge = atOlder && atNewer ? 'both' : atOlder ? 'older' : 'newer';
-      const failed = olderFailed || newerFailed;
-      this.syncRowPresentation(
-        entry,
-        this.selectEdgePresentation(atOlder, atNewer),
-      );
-      renderGhostState(
-        entry.el,
-        failed ? 'failed' : 'loading',
-        () => {
-          if (olderFailed) this.retryOlder();
-          if (newerFailed) this.retryNewer();
-        },
-        edge,
-      );
-    }
-    this.measurePending();
   }
 
   // ---------- balance: checkpoint + loading ----------
@@ -2436,7 +2280,6 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
         this.commitNewerDelivery(result);
       },
     );
-    this.updateHistoryEdges();
   }
 
   private commitNewerDelivery(result: CbDemandResult<T>): void {
@@ -2447,7 +2290,6 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     const known = new Set(before.flatMap((row) => [...row.seqs]));
     const attached = this.isFollowingBottom();
     const loaded = this.applyNewerResult(result);
-    this.updateHistoryEdges();
     if (loaded <= 0) {
       this.consumeMountedTombs();
       return;
@@ -2484,21 +2326,18 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     const edge = this.olderDemand;
     if (result.kind === 'error') {
       edge.error = result.error;
-      this.updateHistoryEdges();
       return false;
     }
     edge.error = null;
     if (!this.revalidateTop()) return false; // A fling may reverse while the request is pending.
     if (result.kind === 'boundary') {
       this.noOlder = true;
-      this.updateHistoryEdges();
       return true;
     }
     const merged = this.mergeBatch(result.items);
     if (this.inactive || merged.length === 0) {
       if (merged.length === 0) {
         this.noOlder = true;
-        this.updateHistoryEdges();
       }
       return true;
     }
@@ -2509,7 +2348,6 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     this.onRegionResize();
     const before = this.snapshotLayout();
     this.mountBatch(merged, 'older');
-    this.updateHistoryEdges();
     this.measurePending();
     this.restoreLayout(before);
     return true;
@@ -2522,7 +2360,11 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
       edge.error = result.error;
       return 0;
     }
-    if (result.kind === 'boundary') return 0;
+    if (result.kind === 'boundary') {
+      this.noNewer = true;
+      this.arrivalDemand = false;
+      return 0;
+    }
     const batch = result.items;
     edge.error = null;
     if (batch.length === 0) {
@@ -2555,7 +2397,6 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
 
     this.dirtyPrefix = true;
     this.measurePending();
-    this.updateHistoryEdges();
     this.emit();
     // mounted delta + absorbed: an absorbed item changes the view (album grew) and may need reconcile (its optimistic is
     // still mounted), so it counts as progress and the demand callback still reconciles its optimistic bubble.
@@ -2567,17 +2408,13 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
   }
 
   private cancelNewerDemand(): void {
-    const hadActive = this.newerDemand.active !== null;
     this.newerDemand.cancel();
-    if (!hadActive) return;
-    this.updateHistoryEdges();
   }
 
   retryOlder(): void {
     if (this.olderDemand.error === null || this.inactive) return;
     this.olderDemand.error = null;
     this.olderDemand.retrying = true;
-    this.updateHistoryEdges();
     this.startOlderDemand();
   }
 
@@ -2585,7 +2422,6 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     if (this.newerDemand.error === null || this.inactive) return;
     this.newerDemand.error = null;
     this.newerDemand.retrying = true;
-    this.updateHistoryEdges();
     this.startNewerDemand();
   }
 
@@ -2598,7 +2434,6 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     if (!mountedLatest) return;
     this.arrivalDemand = true;
     this.noNewer = false;
-    this.updateHistoryEdges();
     this.startNewerDemand();
   }
 
@@ -2764,7 +2599,6 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
       this.arrivalDemand = false;
       this.cancelNewerDemand();
       this.noNewer = false;
-      this.updateHistoryEdges();
     }
   }
 
@@ -3042,7 +2876,7 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     });
     return indexes.flatMap((index) => {
       const entry = this.mounted[index];
-      return entry && this.entrySeqs(entry.item).length > 0 && !entry.el.classList.contains('cb-ghost')
+      return entry && this.entrySeqs(entry.item).length > 0
         ? [{ item: entry.item, el: entry.el }]
         : [];
     });

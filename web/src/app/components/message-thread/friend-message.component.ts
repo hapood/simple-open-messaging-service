@@ -67,7 +67,6 @@ import {
 import {
   createMsgCbElement,
   createServerGapCbElement,
-  createGhostCbElement,
   computeRowFlags,
 } from '../message-cards/create-item';
 import { VOICE_BAR_W, VOICE_BAR_H } from '../message-cards/media-row/layout';
@@ -193,6 +192,7 @@ import {
   type ThreadPasteItem,
 } from './thread-paste-queue.controller';
 import { ThreadScrollController } from './thread-scroll.controller';
+import { UnreadPresentation } from '../../services/unread-presentation.service';
 import { ThreadSendRetryController } from './thread-send-retry.controller';
 import { ThreadComposerController } from './thread-composer.controller';
 import { NativeComposerBoundsController } from './native-composer-bounds.controller';
@@ -477,6 +477,7 @@ export class MessageThreadComponent implements OnDestroy {
     }
   });
 
+  private readonly unreadPresentation = inject(UnreadPresentation);
   readonly atBottom = this.scrollState.atBottom;
   /** Incoming message signals received while the user is reading history. Cleared only after the viewport
    *  reaches the visible newest zone, not merely the kernel's much wider newer-prefetch threshold. */
@@ -608,8 +609,21 @@ export class MessageThreadComponent implements OnDestroy {
 
   constructor() {
     effect(() => {
+      const threadId = this.threadId();
+      this.unreadPresentation.report(
+        this,
+        threadId,
+        this.interactionActive() &&
+          this.currentTrdId === threadId &&
+          this.convList.activeThreadId() === threadId &&
+          this.presentation() === 'history',
+        this.scrollState.pinnedToBottom(),
+      );
+    });
+    effect(() => {
       const tid = this.threadId() ?? 0;
       const { messages, uploads, messageCount, uploadCount, failedCount } = this.sendingPresentation.forThread(tid);
+      const hasSelfTasks = messageCount > 0 || uploadCount > 0 || failedCount > 0;
       untracked(() => {
         if (this.tailCacheThreadId !== tid) {
           this.tailCacheThreadId = tid;
@@ -621,10 +635,8 @@ export class MessageThreadComponent implements OnDestroy {
             .map((row) => row.task.clientMessageId),
           this.latestTailEnd(),
         );
-        if (!gapChanged && this.tailSummary.messageCount === messageCount &&
-            this.tailSummary.uploadCount === uploadCount &&
-            this.tailSummary.failedCount === failedCount) return;
-        this.tailSummary = { messageCount, uploadCount, failedCount };
+        if (!gapChanged && this.tailHasSelfTasks === hasSelfTasks) return;
+        this.tailHasSelfTasks = hasSelfTasks;
         this.scroller?.refreshTailPresentation();
       });
     });
@@ -648,9 +660,9 @@ export class MessageThreadComponent implements OnDestroy {
     effect(() => {
       const thread = this.userMsgTrd();
       const active = this.nativeComposerActive();
-      const openId = this.convList.openThreadId();
+      const activeId = this.convList.activeThreadId();
       const dialogOpen = this.chatboxDialogOpen();
-      if (!active || !thread || openId !== thread.threadId) {
+      if (!active || !thread || activeId !== thread.threadId) {
         this.openedAnnouncementKey = null;
         return;
       }
@@ -1082,7 +1094,7 @@ export class MessageThreadComponent implements OnDestroy {
     const binding = this.lifecycle.binding;
     const foreground =
       this.nativeComposerActive() &&
-      this.convList.openThreadId() === binding?.threadId;
+      this.convList.activeThreadId() === binding?.threadId;
     if (binding)
       untracked(() => this.lifecycle.activate(binding, foreground));
   }
@@ -1126,9 +1138,7 @@ export class MessageThreadComponent implements OnDestroy {
         updateTailPresentation: (newest) => this.syncTailCue(newest),
         messageSeqs: (item) =>
           item.data.type === 'serverGap' ? [] : (item.ids ?? [item.id]),
-        createItem: (item, prev, presentation) => presentation.kind !== 'message'
-          ? createGhostCbElement()
-          : this.createItem(item, prev),
+        createItem: (item, prev) => this.createItem(item, prev),
         mergeItems: (items) =>
           mergeAlbumItemsAtBoundary(items, this.scrollState.firstUnreadSeq),
         absorbTail: (target, incoming) =>
@@ -1430,7 +1440,7 @@ export class MessageThreadComponent implements OnDestroy {
     () => this.userMsgTrd()?.type === 'GROUP',
   );
   private tailCacheThreadId = 0;
-  private tailSummary = { messageCount: 0, uploadCount: 0, failedCount: 0 };
+  private tailHasSelfTasks = false;
   readonly tailCueVisible = signal(false);
   private readonly tailCues = new Map<HTMLElement, { sync: (enabled: boolean) => boolean; cue: HTMLElement; contains: (seq: number) => boolean }>();
 
@@ -1439,7 +1449,6 @@ export class MessageThreadComponent implements OnDestroy {
     const app = this.envInjector.get(ApplicationRef);
     app.attachView(ref.hostView);
     const cue = ref.location.nativeElement as HTMLElement;
-    ref.setInput('summary', this.tailSummary);
     ref.setInput('selfContinuation', item.data.type === 'msg' && item.data.isSelf && item.data.contentType === 'PURE_TEXT');
     ref.setInput('peerContinuation', item.data.type === 'msg' && !item.data.isSelf && item.data.contentType === 'PURE_TEXT');
     const lifetime = new CbItemLifetime();
@@ -1458,17 +1467,11 @@ export class MessageThreadComponent implements OnDestroy {
       if (!lifetime.active) return false;
       const beforeHeight = cue.offsetHeight;
       const snap = this.tailAuthorCache.project();
-      const hasSelfSummary =
-        this.tailSummary.messageCount > 0 ||
-        this.tailSummary.uploadCount > 0 ||
-        this.tailSummary.failedCount > 0;
       const primary = snap.primaryPeer
         ? this.tailPeerAvatar(snap.primaryPeer)
         : null;
       ref.setInput('enabled', next);
-      ref.setInput('summary', this.tailSummary);
-      ref.setInput('selfVisible', hasSelfSummary || snap.hasPendingSelf);
-      ref.setInput('selfDotsVisible', snap.hasPendingSelf);
+      ref.setInput('selfVisible', this.tailHasSelfTasks || snap.hasPendingSelf);
       ref.setInput('peerVisible', snap.hasPendingPeer);
       ref.setInput('primaryPeerProfile', primary?.profile);
       ref.setInput('primaryPeerAccount', primary?.account ?? null);
@@ -2067,8 +2070,10 @@ export class MessageThreadComponent implements OnDestroy {
   }
 
   private syncTailCue(newestItem: CbItem<ChatItemData> | null): HTMLElement[] {
-    // The kernel selects the live-tail host. Row identity only locates that host;
-    // neither mounted bodies nor album members are evidence of a fetched gap.
+    if (newestItem !== null) {
+      const newestSeq = Math.max(...(newestItem.ids ?? [newestItem.id]));
+      if (newestSeq > 0) this.tailAuthorCache?.consumeCoveredInterval(0, newestSeq);
+    }
     const changed: HTMLElement[] = [];
     for (const [el, row] of this.tailCues) {
       if (row.sync(newestItem !== null && row.contains(newestItem.id))) changed.push(el);
@@ -2085,7 +2090,9 @@ export class MessageThreadComponent implements OnDestroy {
     )
       this.closeContextMenu();
     this.lastMessageScrollTop = info.scrollTop;
-    const unreadReanchor = this.scrollState.update(info, this.scroller);
+    const unreadReanchor = this.scrollState.update(
+      info, this.scroller, Boolean(this.scroller?.isPinnedToBottom()),
+    );
     this.stableRead.noteScroll();
     if (unreadReanchor !== null) {
       if (this.lifecycle.binding) {
@@ -2722,6 +2729,7 @@ export class MessageThreadComponent implements OnDestroy {
   }
 
   ngOnDestroy(): void {
+    this.unreadPresentation.clear(this);
     this.lifecycle.destroy();
   }
 }

@@ -6,7 +6,6 @@ import {
   output,
 } from '@angular/core';
 import { TranslocoPipe } from '@jsverse/transloco';
-import { OutboxIndicatorComponent } from '../message-header/outbox-indicator.component';
 import { DemandAvatarComponent } from '../user-avatar/demand-avatar.component';
 import { UserAvatarType, type AvatarDomainSource } from '../user-avatar/model';
 import type { AvatarProfileRef } from '../../services/avatar-profile-ref';
@@ -27,13 +26,13 @@ export interface TailOverlapPeerAvatar {
 @Component({
   selector: 'app-tail-activity-row',
   changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [OutboxIndicatorComponent, DemandAvatarComponent, TranslocoPipe],
+  imports: [DemandAvatarComponent, TranslocoPipe],
   template: `
     @if (visible()) {
       <div class="tail-activity-row">
         <div class="tail-side tail-peer">
           @if (peerVisible()) {
-            <div class="tail-avatar-slot">
+            <div class="msg-avatar tail-avatar-slot">
               @if (!peerContinuation()) {
                 <app-demand-avatar
                   [profile]="primaryPeerProfile()"
@@ -44,7 +43,7 @@ export interface TailOverlapPeerAvatar {
               }
             </div>
             <div
-              class="msg-bubble msg-peer tail-bubble"
+              class="msg-bubble msg-other tail-bubble"
               [class.msg-tail]="peerContinuation()"
               [class.msg-single]="!peerContinuation()"
             >
@@ -77,26 +76,16 @@ export interface TailOverlapPeerAvatar {
               [class.msg-tail]="selfContinuation()"
               [class.msg-single]="!selfContinuation()"
             >
-              <div class="cue-content">
-                @if (selfDotsVisible()) {
-                  <button
-                    type="button"
-                    class="dots"
-                    [attr.aria-label]="'transfer.openDetails' | transloco"
-                    (click)="openPanel.emit()"
-                  >
-                    <i></i><i></i><i></i>
-                  </button>
-                }
-                <app-outbox-indicator
-                  [messageCount]="showOutboxIndicator() ? summary().messageCount : 0"
-                  [uploadCount]="showOutboxIndicator() ? summary().uploadCount : 0"
-                  [failedCount]="summary().failedCount"
-                  (openPanel)="openPanel.emit()"
-                />
-              </div>
+              <button
+                type="button"
+                class="dots"
+                [attr.aria-label]="'transfer.openDetails' | transloco"
+                (click)="openPanel.emit()"
+              >
+                <i></i><i></i><i></i>
+              </button>
             </div>
-            <div class="tail-avatar-slot">
+            <div class="msg-avatar tail-avatar-slot">
               @if (!selfContinuation()) {
                 <app-demand-avatar [type]="selfType" />
               }
@@ -116,10 +105,8 @@ export interface TailOverlapPeerAvatar {
       align-items: center;
       justify-content: space-between;
       gap: 12px;
-      height: 40px;
-      min-height: 40px;
       line-height: 20px;
-      padding: 0 12px;
+      padding: var(--chat-timeline-gap-compact) var(--chat-timeline-inset-inline) 0;
       box-sizing: border-box;
     }
     .tail-side {
@@ -133,13 +120,12 @@ export interface TailOverlapPeerAvatar {
       margin-left: auto;
       justify-content: flex-end;
     }
-    .tail-avatar-slot {
-      width: 36px;
-      height: 36px;
-      flex: 0 0 36px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
+    // Primary avatars inherit the normal message row's 40px, top-aligned slot.
+    .tail-self .tail-avatar-slot {
+      display: none;
+    }
+    :host-context([data-show-self-avatar='true']) .tail-self .tail-avatar-slot {
+      display: block;
     }
     .tail-bubble {
       width: max-content;
@@ -147,14 +133,6 @@ export interface TailOverlapPeerAvatar {
       box-sizing: border-box;
       height: 40px;
       padding: 10px 12px;
-      line-height: 20px;
-    }
-    .cue-content {
-      display: flex;
-      align-items: center;
-      gap: 12px;
-      width: max-content;
-      height: 20px;
       line-height: 20px;
     }
     .dots {
@@ -239,9 +217,7 @@ export interface TailOverlapPeerAvatar {
 export class TailActivityRowComponent {
   readonly enabled = input(false);
   readonly selfVisible = input(false);
-  readonly selfDotsVisible = input(false);
   readonly selfContinuation = input(false);
-  readonly summary = input({ messageCount: 0, uploadCount: 0, failedCount: 0 });
   readonly peerVisible = input(false);
   readonly peerContinuation = input(false);
   readonly primaryPeerProfile = input<AvatarProfileRef | undefined>(undefined);
@@ -283,13 +259,4 @@ export class TailActivityRowComponent {
     () => this.enabled() && (this.selfVisible() || this.peerVisible()),
   );
 
-  protected readonly activeCount = computed(
-    () => this.summary().messageCount + this.summary().uploadCount,
-  );
-
-  protected readonly showOutboxIndicator = computed(
-    () =>
-      this.activeCount() > (this.selfDotsVisible() ? 1 : 0) ||
-      (this.activeCount() === 0 && this.summary().failedCount > 0),
-  );
 }

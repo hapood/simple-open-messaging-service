@@ -4,6 +4,7 @@ import type { ConversationItem, Message } from './model';
 import type { ProfileSnapshot } from './webdb.service';
 import { WebdbService, provideWebdbService } from './webdb.service';
 import { SessionLifecycleService } from './session-lifecycle.service';
+import { AppDataLifetime } from './app-data-lifetime.service';
 
 describe('WebdbService native SQLite routing', () => {
   type TauriWindow = {
@@ -65,6 +66,33 @@ describe('WebdbService native SQLite routing', () => {
     await service.close();
     tauriWindow().__TAURI_INTERNALS__ = undefined;
     tauriWindow().__TAURI__ = undefined;
+  });
+
+  it('fences native renderer results and drains IPC without claiming to cancel Rust', async () => {
+    let resolve!: (value: unknown) => void;
+    responses.set(
+      'native_db_threads',
+      new Promise((done) => {
+        resolve = done;
+      }),
+    );
+    const pending = service.getThreads();
+    const rejected = expect(pending).rejects.toThrow('lifetime ended');
+    TestBed.inject(AppDataLifetime).end();
+    const closed = vi.fn();
+    const closing = service.close().then(closed);
+    await Promise.resolve();
+    expect(closed).not.toHaveBeenCalled();
+    resolve([]);
+    await rejected;
+    await closing;
+    calls.length = 0;
+    await expect(service.getThreads()).rejects.toThrow('lifetime ended');
+    await expect(service.openExistingForUser('42')).rejects.toThrow(
+      'lifetime ended',
+    );
+    await expect(service.recreateForUser('42')).resolves.toBeNull();
+    expect(calls).toEqual([]);
   });
 
   it('routes pending intents through SQLite with original attachment identities and MIME', async () => {

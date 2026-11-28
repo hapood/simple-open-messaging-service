@@ -140,13 +140,13 @@ export class MessageHeaderComponent {
    *  Reads `unreadCount` (server-authoritative — own messages are 0, so a sent group-invite never inflates
    *  this total) and excludes the canonical open-thread signal (not the input — robust to input staleness). */
   readonly otherUnreadCount = computed(() => {
-    const openId = this.convList.openThreadId();
+    const activeId = this.convList.activeThreadId();
     return this.convList
       .items()
       .reduce(
         (sum, item) =>
           sum +
-          (item.threadId === openId ? 0 : Math.max(0, item.unreadCount ?? 0)),
+          (item.threadId === activeId ? 0 : Math.max(0, item.unreadCount ?? 0)),
         0,
       );
   });
@@ -220,7 +220,7 @@ export class MessageHeaderComponent {
 
   /**
    * Open (or toggle) the peer-profile / group-info panel in the `aside` slot. The panels resolve their
-   * thread from `ConversationListService.openThreadId`, so no threadId is needed. Toggling the SAME panel
+   * thread from `ConversationListService.activeThreadId`, so no threadId is needed. Toggling the SAME panel
    * closed just clears the aside signal (≈ hardware-back). This is intentionally reached from the MORE
    * button; the centered title is presentation only.
    */

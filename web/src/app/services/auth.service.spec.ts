@@ -3,17 +3,26 @@ import {
   registrationDouble,
   workerDouble,
 } from './service-worker-test-doubles';
+import { RESTART_APP_DOCUMENT } from './app-data-lifetime.service';
+import { LOGOUT_REQUEST_AUTHORITY, LogoutRequestAuthority } from './session/logout-request-authority';
+import { HttpClient, HttpContext } from '@angular/common/http';
+import { SessionSupersededError } from './session/session-identity';
+import { apiPrefix } from './constants';
 import { DatabaseRestorationError } from './session/database-restoration-error';
 import { SessionStartupService } from './session-startup.service';
 import type { Mock } from 'vitest';
 import { TestBed } from '@angular/core/testing';
 import { provideZonelessChangeDetection } from '@angular/core';
-import { provideHttpClient, withXhr } from '@angular/common/http';
+import { HTTP_INTERCEPTORS, provideHttpClient, withInterceptors, withInterceptorsFromDi, withXhr } from '@angular/common/http';
+import { AuthInterceptor } from '../auth.interceptor';
+import { httpResilienceInterceptor, HTTP_RETRY_CONFIG, DEFAULT_HTTP_RETRY_CONFIG } from '../http-resilience.interceptor';
+import { AppDataLifetime } from './app-data-lifetime.service';
 import {
   HttpTestingController,
   provideHttpClientTesting,
 } from '@angular/common/http/testing';
-import { firstValueFrom } from 'rxjs';
+import { firstValueFrom, Observable } from 'rxjs';
+import { BusinessCode } from './biz-code';
 import { TranslocoService } from '@jsverse/transloco';
 import { LogoutDecisionService } from './logout-decision.service';
 import { BROWSER_SESSION } from './browser-session.service';
@@ -78,9 +87,12 @@ describe('AuthService (session-token contract, browser path)', () => {
     TestBed.configureTestingModule({
       providers: [
         provideZonelessChangeDetection(),
-        provideHttpClient(withXhr()),
+        provideHttpClient(withXhr(), withInterceptorsFromDi(), withInterceptors([httpResilienceInterceptor])),
+        { provide: HTTP_INTERCEPTORS, useClass: AuthInterceptor, multi: true },
+        { provide: HTTP_RETRY_CONFIG, useValue: DEFAULT_HTTP_RETRY_CONFIG },
         provideHttpClientTesting(),
         AuthService,
+        { provide: RESTART_APP_DOCUMENT, useValue: vi.fn() },
         {
           provide: LogoutDecisionService,
           useValue: { decide: vi.fn().mockResolvedValue('localOnly') },
@@ -195,6 +207,70 @@ describe('AuthService (session-token contract, browser path)', () => {
     expect(svc.isLoggedIn()).toBe(true);
   });
 
+  it('actively aborts ordinary HTTP without success completion or auth bounce', () => {
+    const error = vi.fn();
+    const complete = vi.fn();
+    const next = vi.fn();
+    const bounce = vi.spyOn(svc, 'redoLoginAuth');
+    TestBed.inject(HttpClient).get('/api/v1/data').subscribe({ error, complete, next });
+    const request = httpMock.expectOne('/api/v1/data');
+    TestBed.inject(AppDataLifetime).end();
+    expect(request.cancelled).toBe(true);
+    expect(error).toHaveBeenCalledWith(expect.any(SessionSupersededError));
+    expect(complete).not.toHaveBeenCalled();
+    expect(next).not.toHaveBeenCalled();
+    expect(bounce).not.toHaveBeenCalled();
+  });
+
+  it('actively unsubscribes a retry delay on runtime termination', () => {
+    const stopped = vi.fn();
+    const retry = TestBed.inject(HTTP_RETRY_CONFIG);
+    vi.spyOn(retry, 'retryDelay').mockReturnValue(new Observable(() => stopped));
+    const error = vi.fn();
+    TestBed.inject(HttpClient).get('/api/v1/data').subscribe({ error });
+    httpMock.expectOne('/api/v1/data').flush({ code: BusinessCode.RATE_LIMITED }, { status: 429, statusText: 'Limited' });
+    expect(stopped).not.toHaveBeenCalled();
+    TestBed.inject(AppDataLifetime).end();
+    expect(stopped).toHaveBeenCalledOnce();
+    expect(error).toHaveBeenCalledWith(expect.any(SessionSupersededError));
+    httpMock.expectNone('/api/v1/data');
+  });
+
+  it('cancels cleanup by its own bounded authority while app data is already ended', () => {
+    TestBed.inject(AppDataLifetime).end();
+    const owner = new AbortController();
+    const authority = new LogoutRequestAuthority(owner.signal);
+    const context = new HttpContext().set(REQUEST_SCOPE, RequestScope.Authentication).set(LOGOUT_REQUEST_AUTHORITY, authority);
+    const error = vi.fn();
+    const complete = vi.fn();
+    TestBed.inject(HttpClient).post(`${apiPrefix()}/auth/logout`, {}, { context }).subscribe({ error, complete });
+    const request = httpMock.expectOne(`${apiPrefix()}/auth/logout`);
+    expect(request.cancelled).toBe(false);
+    owner.abort();
+    expect(request.cancelled).toBe(true);
+    expect(error).toHaveBeenCalledWith(expect.any(SessionSupersededError));
+    expect(complete).not.toHaveBeenCalled();
+  });
+
+  it('permits only bounded logout cleanup, not ordinary authentication after runtime end', async () => {
+    TestBed.inject(AppDataLifetime).end();
+    const owner = new AbortController();
+    const authority = new LogoutRequestAuthority(owner.signal);
+    const context = new HttpContext()
+      .set(REQUEST_SCOPE, RequestScope.Authentication)
+      .set(LOGOUT_REQUEST_AUTHORITY, authority);
+    const http = TestBed.inject(HttpClient);
+    await expect(firstValueFrom(http.post(`${apiPrefix()}/auth/login`, {}, { context })))
+      .rejects.toBeInstanceOf(SessionSupersededError);
+    await expect(firstValueFrom(http.post(`${apiPrefix()}/auth/logout`, {}, {
+      context: new HttpContext().set(REQUEST_SCOPE, RequestScope.Authentication),
+    }))).rejects.toBeInstanceOf(SessionSupersededError);
+    owner.abort();
+    await expect(firstValueFrom(http.post(`${apiPrefix()}/auth/logout`, {}, { context })))
+      .rejects.toBeInstanceOf(SessionSupersededError);
+    httpMock.expectNone(() => true);
+  });
+
   it('logout() resolves the session from the httpOnly cookie (no JS token to send) and clears the presence cookie', async () => {
     // Simulate a logged-in browser: the backend set the `logged_in` presence cookie at login; the session
     // token is JS-unreadable (httpOnly), so logout identifies the session via the cookie, not a JS-held token.
@@ -205,6 +281,7 @@ describe('AuthService (session-token contract, browser path)', () => {
       TestBed.inject(BROWSER_SESSION)!.activate(signal),
     );
     const done = firstValueFrom(svc.logout());
+    expect(TestBed.inject(AppDataLifetime).signal.aborted).toBe(true);
     expect(TestBed.inject(WebPushService).unsubscribe).not.toHaveBeenCalled();
     const req = await vi.waitFor(() =>
       httpMock.expectOne((r) => /\/auth\/logout$/.test(r.url)),
@@ -216,6 +293,8 @@ describe('AuthService (session-token contract, browser path)', () => {
     req.flush({ code: 0, message: 'ok' });
     await done;
     expect(TestBed.inject(WebPushService).unsubscribe).toHaveBeenCalledOnce();
+    expect(TestBed.inject(LogoutDecisionService).decide).not.toHaveBeenCalled();
+    expect(TestBed.inject(RESTART_APP_DOCUMENT)).toHaveBeenCalledOnce();
 
     // Presence is cleared only after revocation and local cleanup finish.
     expect(svc.isLoggedIn()).toBe(false);

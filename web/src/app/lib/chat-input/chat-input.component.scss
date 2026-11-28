@@ -35,8 +35,8 @@ app-chat-input {
   // strip). The keyboard region itself is covered by the translated bar + the IME, so there is no gap.
   // --soms-safe-bottom is 0 on desktop/browser, so this resolves to the base 8px there.
   padding: 8px 12px calc(8px + var(--soms-safe-bottom, 0px));
-  background: var(--im-composer-bar-bg);
-  border-top: 1px solid var(--app-border);
+  background: transparent;
+  border-top: 0;
 }
 
 .ci-controls {

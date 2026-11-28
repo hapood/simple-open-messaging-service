@@ -10,6 +10,7 @@ import { Observable, EMPTY, throwError, catchError, defer, tap } from 'rxjs';
 import { AuthService } from './services/auth.service';
 import { SessionLifecycleService } from './services/session-lifecycle.service';
 import { REQUEST_SCOPE, RequestScope } from './request-context';
+import { LOGOUT_REQUEST_AUTHORITY } from './services/session/logout-request-authority';
 
 /**
  * Session-auth error handling for the HTTP pipeline. The session credential itself is NO LONGER attached
@@ -35,12 +36,18 @@ export class AuthInterceptor implements HttpInterceptor {
       if (scope === RequestScope.Server) {
         return next.handle(req);
       }
+      const cleanup = req.context.get(LOGOUT_REQUEST_AUTHORITY);
       const owner = this.lifecycle.capture();
+      const assertCurrent = () =>
+        cleanup
+          ? cleanup.assertRequest(req)
+          : this.lifecycle.assertCurrent(owner);
+      assertCurrent();
       return next.handle(req).pipe(
-        tap(() => this.lifecycle.assertCurrent(owner)),
+        tap(assertCurrent),
         catchError((error) => {
           // Check before handling 401: an old request must not log out its successor.
-          this.lifecycle.assertCurrent(owner);
+          assertCurrent();
           return scope === RequestScope.Authentication
             ? throwError(() => error)
             : this.on401(error);

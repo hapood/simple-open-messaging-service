@@ -12,13 +12,12 @@ import {
 } from '@angular/core';
 import { TranslocoService } from '@jsverse/transloco';
 import { LiveAnnouncer } from '@angular/cdk/a11y';
-import { type AnimationPlaybackControls } from 'motion';
 import {
   WebsocketService,
   ConnectionState,
 } from '../../services/websocket.service';
 import { LanguageService } from '../../services/language.service';
-import { prefersReducedMotion, springGradient } from '../../lib/motion-utils';
+import { InterruptibleMotion, springGradient } from '../../lib/motion-utils';
 import { SessionStartupService } from '../../services/session-startup.service';
 import { statusRingTemplate } from '../../lib/status-ring';
 
@@ -57,18 +56,17 @@ const PALETTE: Record<ConnVisual, { from: string; to: string; ic: string }> = {
  * (each shape is `pathLength="100"`, so dashoffset 100→0 is a uniform draw-on regardless of geometry), with a
  * `transition` crossing opacity/dashoffset over ~0.28–0.45s. The perpetual idle spin is CSS too.
  *
- * Motion is used ONLY for the gradient morph — on each visual-state change a Motion `effect` springs the
- * chip's gradient stops (`--g-from`/`--g-to`) and icon color (`--ic`), the registered `<color>` vars that
- * interpolate cleanly. This split is deliberate: Motion's imperative opacity tween on these SVG elements
- * rides WAAPI with the default fill:none, so it reverts to the CSS base (opacity:0) the instant the crossfade
- * finishes — the spinner/check would disappear after ~0.3s. CSS transitions hold their end state reliably.
+ * The shared interruptible Motion owner springs the gradient stops (`--g-from`/`--g-to`) and icon color
+ * (`--ic`) and retargets chip opacity/scale during recovery and interruption. It samples the current visual
+ * before cancelling and writes resting styles, so interrupted exits never jump back to a stale endpoint.
+ * The icon's continuous shape transitions remain CSS-owned.
  * Motion is DOM-direct, so it is fully zoneless-safe (no reliance on Angular change detection).
  * `prefers-reduced-motion` snaps every transition/morph to its end state and halts the spin/shimmer CSS.
  *
  * Visual states (driven by `show()`):
  *  - `connecting` / `reconnecting`: amber gradient + revolving arc (reconnecting spins faster, stays
  *    expanded with the live countdown).
- *  - `recovered`: green gradient + check drawn on, then the chip fades out (`.recovering`).
+ *  - `recovered`: green gradient + check drawn on, then the chip fades out.
  *  - `closed` (playground only): red gradient + offline ring/slash.
  *  - hidden otherwise (steady `open`, or production `closed` = logged out → navigate away).
  */
@@ -82,7 +80,6 @@ const PALETTE: Record<ConnVisual, { from: string; to: string; ic: string }> = {
         #chip
         type="button"
         [class.expanded]="expanded()"
-        [class.recovering]="s === 'recovered'"
         [attr.data-state]="s"
         [style.--spin-dur]="spinDur() + 'ms'"
         [attr.aria-label]="ariaLabel()"
@@ -341,12 +338,6 @@ const PALETTE: Record<ConnVisual, { from: string; to: string; ic: string }> = {
         opacity: 1;
         transition-delay: 0.08s; /* let the pill begin opening before the text shows */
       }
-      /* Recover exit: the chip scales in, holds while Motion draws the check, then fades out before the
-       recovering signal flips to false and the element is removed. Background/color are NOT set here —
-       Motion's green morph owns them; this only animates opacity/scale (non-box, exempt). */
-      .chip.recovering {
-        animation: conn-recover 1.4s cubic-bezier(0.2, 0, 0, 1) forwards;
-      }
       @keyframes conn-spin {
         to {
           transform: rotate(360deg);
@@ -359,24 +350,6 @@ const PALETTE: Record<ConnVisual, { from: string; to: string; ic: string }> = {
         }
         50% {
           stroke-dasharray: 34 66;
-        }
-      }
-      @keyframes conn-recover {
-        0% {
-          opacity: 0;
-          transform: scale(0.82);
-        }
-        18% {
-          opacity: 1;
-          transform: scale(1);
-        }
-        70% {
-          opacity: 1;
-          transform: scale(1);
-        }
-        100% {
-          opacity: 0;
-          transform: scale(0.9);
         }
       }
       @media (prefers-reduced-motion: reduce) {
@@ -440,28 +413,24 @@ export class ConnectionBannerComponent implements OnDestroy {
   private wasReconnecting = false;
 
   private recoverTimer?: ReturnType<typeof setTimeout>;
+  private recoveryGeneration = 0;
 
-  /** The chip button, populated by the `@if` once show() turns truthy. Motion drives its children. */
   private readonly chipRef = viewChild<ElementRef<HTMLButtonElement>>('chip');
-
-  /** Active Motion controls — stopped before each morph so transitions never overlap/fight. */
-  private controls: AnimationPlaybackControls[] = [];
+  private readonly gradientMotion = new InterruptibleMotion();
+  private readonly presenceMotion = new InterruptibleMotion();
 
   /** Per-state idle spin period (ms). Reconnecting spins faster (urgency); connecting is a calm scan. */
   readonly spinDur = computed(() =>
     this.effState() === 'reconnecting' ? 900 : 1600,
   );
 
-  /** Cached reduced-motion preference — snaps every morph to its end state instead of animating. */
-  private readonly reduceMotion = prefersReducedMotion();
-
   /** The visual state to render, or undefined (hidden). `closed` surfaces only in the playground.
    *  `disconnected` (OS offline) reuses the `reconnecting` amber visual — it's still transient connection
    *  trouble worth surfacing expanded — but its label is the static "no network" message (no countdown). */
   readonly show = computed<ConnVisual | undefined>(() => {
     if (this.restoring()) return this.startup.failed() ? 'closed' : 'restoring';
-    if (this.recovering()) return 'recovered';
     const s = this.effState();
+    if (s === 'open' && this.recovering()) return 'recovered';
     if (s === 'connecting' || s === 'reconnecting' || s === 'disconnected')
       return s === 'disconnected' ? 'reconnecting' : s;
     if (s === 'closed' && this.demoState() !== null) return 'closed'; // playground-only
@@ -530,10 +499,9 @@ export class ConnectionBannerComponent implements OnDestroy {
        driver while reconnecting. Reading effState() here is the single reactive input; writes go to
        independent signals. */
     effect(() => {
+      this.clearRecovery();
       if (this.restoring()) {
         this.wasReconnecting = false;
-        this.recovering.set(false);
-        clearTimeout(this.recoverTimer);
         this.expanded.set(true);
         this.liveAnnouncer.announce(this.transloco.translate(
           this.startup.failed() ? 'auth.notice.localCacheUnavailable' : 'connection.restoring',
@@ -577,38 +545,36 @@ export class ConnectionBannerComponent implements OnDestroy {
     effect(() => {
       const s = this.show();
       const el = this.chipRef();
-      if (!el || !s) return;
+      if (!el || !s) {
+        this.gradientMotion.cancel();
+        this.presenceMotion.cancel();
+        return;
+      }
       this.morphTo(s);
+      this.presenceMotion.retarget(el.nativeElement, { opacity: 1, transform: 'scale(1)' }, { duration: 0.252 });
+      if (s === 'recovered') {
+        const generation = this.recoveryGeneration;
+        this.recoverTimer = setTimeout(() => {
+          if (generation !== this.recoveryGeneration) return;
+          this.recoverTimer = undefined;
+          this.presenceMotion.retarget(el.nativeElement, { opacity: 0, transform: 'scale(0.9)' }, {
+            duration: 0.42,
+            onComplete: () => {
+              if (generation === this.recoveryGeneration) this.recovering.set(false);
+            },
+          });
+        }, 980);
+      }
     });
 
   }
 
-  /** Spring the gradient stops + icon color to the new state's palette. The icon shapes' visibility and
-   *  draw-on are owned by CSS — keyed off the `[data-state]` binding in the template — so Motion handles
-   *  only the gradient morph here, the one thing it does better than CSS (interpolating registered `<color>`
-   *  stops via a spring). See the styles block for why shape opacity/dashoffset are NOT Motion-driven. */
+  /** Retarget the registered color variables through the shared spring owner. Icon shape visibility
+   * and draw-on remain CSS-owned, keyed off the `[data-state]` binding. */
   private morphTo(s: ConnVisual): void {
     const chipEl = this.chipRef()?.nativeElement;
     if (!chipEl) return;
-    const cs = getComputedStyle(chipEl);
-    const p = PALETTE[s];
-    const read = (name: string): string => cs.getPropertyValue(name).trim();
-
-    this.controls.forEach((c) => c.stop());
-    this.controls = [];
-
-    // Reduced motion: snap the gradient/icon color (the shapes snap via the CSS reduced-motion transition:none).
-    if (this.reduceMotion) {
-      chipEl.style.setProperty('--g-from', read(p.from));
-      chipEl.style.setProperty('--g-to', read(p.to));
-      chipEl.style.setProperty('--ic', read(p.ic));
-      return;
-    }
-
-    // Gradient stops + icon color: spring the registered <color> vars (shared with the update banner).
-    this.controls.push(
-      springGradient(chipEl, { from: p.from, to: p.to, ic: p.ic }),
-    );
+    springGradient(this.gradientMotion, chipEl, PALETTE[s]);
   }
 
   /** Chip click. In `reconnecting` (the one state where the user has agency) it triggers an immediate
@@ -647,12 +613,18 @@ export class ConnectionBannerComponent implements OnDestroy {
   private playRecoverFlourish(): void {
     this.expanded.set(false);
     this.recovering.set(true);
+  }
+
+  private clearRecovery(): void {
+    this.recoveryGeneration++;
     clearTimeout(this.recoverTimer);
-    this.recoverTimer = setTimeout(() => this.recovering.set(false), 1400);
+    this.recoverTimer = undefined;
+    this.recovering.set(false);
   }
 
   ngOnDestroy(): void {
-    this.controls.forEach((c) => c.stop());
-    clearTimeout(this.recoverTimer);
+    this.clearRecovery();
+    this.gradientMotion.destroy();
+    this.presenceMotion.destroy();
   }
 }

@@ -796,10 +796,10 @@ describe('MessageThreadComponent binding lifecycle', () => {
   it('activates only the selected foreground shell while history is loading', () => {
     const { component, lifecycle } = pane();
     const foreground = signal(false);
-    const openThreadId = signal(6);
+    const activeThreadId = signal(6);
     Object.assign(component, {
       nativeComposerActive: foreground,
-      convList: { openThreadId },
+      convList: { activeThreadId },
     });
     component.bind();
     const binding = lifecycle.binding;
@@ -817,7 +817,7 @@ describe('MessageThreadComponent binding lifecycle', () => {
     });
     expect(component.kernelReady).toBe(false);
     expect(component.unreadDividerReady()).toBe(false);
-    openThreadId.set(7);
+    activeThreadId.set(7);
     component.synchronizeForeground();
     expect(lifecycle.state()).toMatchObject({
       phase: 'bound',

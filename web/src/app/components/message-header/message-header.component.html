@@ -67,6 +67,7 @@
         [composerActive]="composerEditing()"
         [messageCount]="taskSummary().messageCount"
         [failedCount]="taskSummary().failedCount"
+        [unavailable]="taskSummary().unavailable"
         [uploadCount]="taskSummary().uploadCount"
         (openPanel)="openSendingTasks()"
       />

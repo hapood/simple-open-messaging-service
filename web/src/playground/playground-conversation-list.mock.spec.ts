@@ -12,6 +12,22 @@ describe('PlaygroundConversationList', () => {
     });
   }
 
+  it('tracks one active selection independently of the available threads', () => {
+    const conversations = new PlaygroundConversationList();
+    conversations.setRelatedConversations([group(1), group(2)]);
+
+    conversations.open(1);
+    expect(conversations.activeThreadId()).toBe(1);
+    expect(conversations.current()?.threadId).toBe(1);
+    conversations.open(2);
+    expect(conversations.activeThreadId()).toBe(2);
+    expect(conversations.current()?.threadId).toBe(2);
+    conversations.close();
+    expect(conversations.activeThreadId()).toBeUndefined();
+    expect(conversations.current()).toBeUndefined();
+    expect(conversations.items()).toHaveLength(2);
+  });
+
   it('puts a new friend below pins even when the friend has no messages', () => {
     const conversations = new PlaygroundConversationList();
     conversations.setRelatedConversations([

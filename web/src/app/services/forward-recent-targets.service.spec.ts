@@ -3,7 +3,11 @@ import { vi } from 'vitest';
 import { ForwardRecentTargetsService } from './forward-recent-targets.service';
 import { AppStateStorage } from './preference-storage';
 import { SessionLifecycleService } from './session-lifecycle.service';
-import { parseLoginSessionId } from './session/session-identity';
+import {
+  parseLoginSessionId,
+  SessionSupersededError,
+  type LoginSessionId,
+} from './session/session-identity';
 
 const FIRST = parseLoginSessionId('11111111-1111-4111-8111-111111111111');
 const SECOND = parseLoginSessionId('22222222-2222-4222-8222-222222222222');
@@ -19,16 +23,27 @@ describe('ForwardRecentTargetsService', () => {
   let lifecycle: SessionLifecycleService;
   const appState = new AppStateStorage();
 
-  beforeEach(async () => {
+  function createRuntime(sessionId: LoginSessionId): void {
     TestBed.configureTestingModule({});
     lifecycle = TestBed.inject(SessionLifecycleService);
-    lifecycle.bindSession(FIRST);
+    lifecycle.bindSession(sessionId);
+    recent = TestBed.inject(ForwardRecentTargetsService);
+  }
+
+  function recreateForSuccessor(): void {
+    lifecycle.invalidateSession();
+    expect(() => lifecycle.bindSession(SECOND)).toThrow(SessionSupersededError);
+    TestBed.resetTestingModule();
+    createRuntime(SECOND);
+  }
+
+  beforeEach(async () => {
+    createRuntime(FIRST);
     await appState.update((state) => {
       state.delete('forwardRecentThreads');
       state.set('lifecycleState', 'active');
       state.set('sessionUuid', FIRST);
     });
-    recent = TestBed.inject(ForwardRecentTargetsService);
   });
 
   afterEach(async () => {
@@ -134,7 +149,8 @@ describe('ForwardRecentTargetsService', () => {
     );
     const reading = recent.read();
     await admitted.promise;
-    lifecycle.bindSession(SECOND);
+    recreateForSuccessor();
+    await appState.set('sessionUuid', SECOND);
     snapshot.resolve(
       new Map<string, unknown>([
         ['lifecycleState', 'active'],
@@ -143,15 +159,22 @@ describe('ForwardRecentTargetsService', () => {
       ]),
     );
     expect(await reading).toEqual([]);
+    expect(await recent.remember([9])).toEqual([9]);
+    expect(await recent.read()).toEqual([9]);
   });
 
   it('does not redirect an old dialog scope into a new login', async () => {
     const dialogScope = lifecycle.capture();
-    lifecycle.bindSession(SECOND);
+    const oldRecent = recent;
+    recreateForSuccessor();
     await appState.set('sessionUuid', SECOND);
+    expect(await oldRecent.remember([7], dialogScope)).toEqual([]);
+    expect(await oldRecent.read(dialogScope)).toEqual([]);
     expect(await recent.remember([7], dialogScope)).toEqual([]);
     expect(await recent.read(dialogScope)).toEqual([]);
     expect(await appState.get('forwardRecentThreads')).toBeUndefined();
+    expect(await recent.remember([9])).toEqual([9]);
+    expect(await recent.read()).toEqual([9]);
   });
 
   it('delegates native policy to session-bound IPC and suppresses stale responses', async () => {
@@ -169,7 +192,7 @@ describe('ForwardRecentTargetsService', () => {
       expectedSessionUuid: FIRST,
       threadIds: [2, 2, -1],
     });
-    lifecycle.bindSession(SECOND);
+    recreateForSuccessor();
     reply.resolve([2]);
     expect(await remembering).toEqual([]);
     invoke.mockResolvedValueOnce([9]);

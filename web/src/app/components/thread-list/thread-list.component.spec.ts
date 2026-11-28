@@ -1,4 +1,7 @@
-import { of, Subject } from 'rxjs';
+import { of } from 'rxjs';
+import { CdkVirtualScrollViewport } from '@angular/cdk/scrolling';
+import { ThreadListItemComponent } from './thread-list-item.component';
+import { FlipCountComponent } from '../message-header/flip-count.component';
 import { ProfileNamespaceRepository } from '../../services/profile-namespace-store.service';
 import type { Mock } from 'vitest';
 import { TestBed, ComponentFixture } from '@angular/core/testing';
@@ -26,6 +29,8 @@ import { WebdbService, WebdbStorage } from '../../services/webdb.service';
 import { SessionLifecycleService } from '../../services/session-lifecycle.service';
 import { By } from '@angular/platform-browser';
 import { AppIconType, IconComponent } from '../icon/icon.component';
+import { ForegroundPresentation } from '../../services/foreground-presentation.service';
+import { UnreadPresentation } from '../../services/unread-presentation.service';
 
 /**
  * ThreadListComponent is a thin view over the shared ConversationListService. This spec covers the
@@ -39,7 +44,7 @@ import { AppIconType, IconComponent } from '../icon/icon.component';
  * boundary. This also avoids instantiating the real repo → WebdbService → WebsocketService chain: the
  * SSE worker is a `file://` cross-origin Worker that Karma cannot load from its `localhost:9876` origin.
  * Rendering tests cover row semantics and the bounded virtual window with deterministic viewport
- * measurements. Animation geometry and offscreen transitions are covered separately by FlipListAnimator.
+ * measurements. Badge exit events release presentation ordering without mutating the shared list.
  */
 describe('ThreadListComponent', () => {
   let fixture: ComponentFixture<ThreadListComponent>;
@@ -48,8 +53,12 @@ describe('ThreadListComponent', () => {
   let loadSpy: Mock;
   let items: ReturnType<typeof signal<ConversationItem[]>>;
   let status: ReturnType<typeof signal<ConversationLoadStatus>>;
+  const focused = signal(true);
+  const activeThreadId = signal<number | undefined>(undefined);
 
   beforeEach(() => {
+    activeThreadId.set(undefined);
+    focused.set(true);
     popupSpy = vi.fn().mockName('popupDlg');
     loadSpy = vi.fn().mockName('load');
     items = signal<ConversationItem[]>([]);
@@ -58,6 +67,7 @@ describe('ThreadListComponent', () => {
       imports: [ThreadListComponent],
       providers: [
         provideZonelessChangeDetection(),
+        { provide: ForegroundPresentation, useValue: { focused } },
         {
           provide: ProfileNamespaceRepository,
           useValue: {
@@ -85,7 +95,7 @@ describe('ThreadListComponent', () => {
             items,
             status,
             error: signal(''),
-            openThreadId: signal(undefined),
+            activeThreadId,
             load: loadSpy,
           },
         },
@@ -109,6 +119,8 @@ describe('ThreadListComponent', () => {
     });
     fixture = TestBed.createComponent(ThreadListComponent);
     comp = fixture.componentInstance;
+    const host: HTMLElement = fixture.nativeElement;
+    host.style.height = '720px';
   });
 
   afterEach(() => {
@@ -116,14 +128,22 @@ describe('ThreadListComponent', () => {
     vi.unstubAllGlobals();
   });
 
-  async function renderLargeList(height: () => number = () => 720) {
-    // Keep native scroll clamping consistent with the measured viewport.
-    (fixture.nativeElement as HTMLElement).style.height = `${height()}px`;
-    vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockImplementation(
-      function (this: HTMLElement) {
-        return this.classList.contains('thread-list') ? height() : 0;
-      },
+  function viewport(): CdkVirtualScrollViewport {
+    return fixture.debugElement.query(By.directive(CdkVirtualScrollViewport))
+      .injector.get(CdkVirtualScrollViewport);
+  }
+
+  // CDK audits native scroll events on animation frames, outside Angular's
+  // stability tracking. Wait for those frames before checking committed rows.
+  async function settleViewport() {
+    await fixture.whenStable();
+    await new Promise<void>((resolve) =>
+      requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
     );
+    await fixture.whenStable();
+  }
+
+  async function renderLargeList() {
     items.set(
       Array.from({ length: 5000 }, (_, index) => {
         const item = p2p(index + 1, index + 1);
@@ -135,69 +155,74 @@ describe('ThreadListComponent', () => {
     );
     status.set(ConversationLoadStatus.READY);
     fixture.detectChanges();
-    await fixture.whenStable();
-    return fixture.nativeElement.querySelector('.thread-list') as HTMLElement;
+    await settleViewport();
+    return viewport();
   }
 
   it('mounts only the viewport and buffer rows for 5000 conversations', async () => {
-    const viewport = await renderLargeList();
-    expect(viewport.querySelectorAll('.thread-item')).toHaveLength(16);
-    expect(
-      viewport.querySelector<HTMLElement>('.thread-list-spacer')!.style.height,
-    ).toBe('360000px');
-    viewport.scrollTop = 2000 * 72;
-    viewport.dispatchEvent(new Event('scroll'));
-    await fixture.whenStable();
-    expect(viewport.querySelectorAll('.thread-item')).toHaveLength(22);
-    expect(viewport.querySelector('[data-flip-key="2001"]')).not.toBeNull();
-    expect(viewport.querySelector('[data-flip-key="1"]')).toBeNull();
-    expect(
-      viewport.querySelector('.thread-slot')?.getAttribute('aria-posinset'),
-    ).toBe('1995');
-    expect(
-      viewport.querySelector('.thread-slot')?.getAttribute('aria-setsize'),
-    ).toBe('5000');
-    expect(
-      viewport.querySelector<HTMLElement>('.thread-list-window')!.style
-        .transform,
-    ).toBe('translateY(143568px)');
+    const list = await renderLargeList();
+    const element = list.elementRef.nativeElement;
+    expect(list.getViewportSize()).toBe(720);
+    expect(list.getDataLength()).toBe(5000);
+    expect(element.querySelectorAll('.thread-item')).toHaveLength(16);
+    list.scrollToIndex(2000);
+    await settleViewport();
+    expect(element.querySelectorAll('.thread-item')).toHaveLength(22);
+    expect(element.querySelector('[data-thread-id="2001"]')).not.toBeNull();
+    expect(element.querySelector('[data-thread-id="1"]')).toBeNull();
+    expect(element.getAttribute('role')).toBe('list');
+    const slots = element.querySelectorAll('.thread-slot');
+    slots.forEach((slot, index) => {
+      expect(slot.getAttribute('role')).toBe('listitem');
+      expect(slot.getAttribute('aria-posinset')).toBe(
+        String(list.getRenderedRange().start + index + 1),
+      );
+      expect(slot.getAttribute('aria-setsize')).toBe('5000');
+    });
+    list.scrollToIndex(4999);
+    await settleViewport();
+    expect(list.getRenderedRange().end).toBe(5000);
+    expect(element.querySelectorAll('.thread-item').length).toBeLessThanOrEqual(22);
   });
 
   it('resets search to the top and clamps the window after the list shrinks', async () => {
-    const viewport = await renderLargeList();
-    viewport.scrollTop = 300000;
-    viewport.dispatchEvent(new Event('scroll'));
-    await fixture.whenStable();
+    const list = await renderLargeList();
+    const element = list.elementRef.nativeElement;
+    list.scrollToIndex(4000);
+    await settleViewport();
     fixture.componentRef.setInput('searchText', 'User 4999');
-    await fixture.whenStable();
-    expect(viewport.scrollTop).toBe(0);
-    expect(viewport.querySelectorAll('.thread-item')).toHaveLength(1);
-    expect(viewport.querySelector('[data-flip-key="4999"]')).not.toBeNull();
+    await settleViewport();
+    expect(list.measureScrollOffset()).toBe(0);
+    expect(element.querySelectorAll('.thread-item')).toHaveLength(1);
+    expect(element.querySelector('[data-thread-id="4999"]')).not.toBeNull();
     fixture.componentRef.setInput('searchText', '');
-    await fixture.whenStable();
-    viewport.scrollTop = 300000;
-    viewport.dispatchEvent(new Event('scroll'));
-    await fixture.whenStable();
+    await settleViewport();
+    list.scrollToIndex(4000);
+    await settleViewport();
+    items.set(items().slice(0, 30));
+    await settleViewport();
+    expect(list.measureScrollOffset()).toBe(20 * 72);
+    expect(element.querySelector('[data-thread-id="30"]')).not.toBeNull();
     items.set(items().slice(0, 3));
-    await fixture.whenStable();
-    expect(viewport.scrollTop).toBe(0);
-    expect(viewport.querySelectorAll('.thread-item')).toHaveLength(3);
+    await settleViewport();
+    expect(list.measureScrollOffset()).toBe(0);
+    expect(element.querySelectorAll('.thread-item')).toHaveLength(3);
   });
 
   it('moves keyboard focus beyond the mounted window without selecting a conversation', async () => {
-    const viewport = await renderLargeList();
+    const list = await renderLargeList();
     const select = vi.fn();
     comp.onSelect.subscribe(select);
-    viewport.querySelector<HTMLElement>('[data-flip-key="1"]')!.dispatchEvent(
+    list.elementRef.nativeElement.querySelector<HTMLElement>('[data-thread-id="1"]')!.dispatchEvent(
       new KeyboardEvent('keydown', {
         key: 'End',
         bubbles: true,
         cancelable: true,
       }),
     );
-    await fixture.whenStable();
-    expect(viewport.scrollTop).toBe(359280);
-    expect(document.activeElement?.getAttribute('data-flip-key')).toBe('5000');
+    await settleViewport();
+    expect(list.measureScrollOffset()).toBe(359280);
+    expect(document.activeElement?.getAttribute('data-thread-id')).toBe('5000');
     document.activeElement!.dispatchEvent(
       new KeyboardEvent('keydown', {
         key: 'Home',
@@ -205,9 +230,21 @@ describe('ThreadListComponent', () => {
         cancelable: true,
       }),
     );
-    await fixture.whenStable();
-    expect(viewport.scrollTop).toBe(0);
-    expect(document.activeElement?.getAttribute('data-flip-key')).toBe('1');
+    await settleViewport();
+    expect(list.measureScrollOffset()).toBe(0);
+    expect(document.activeElement?.getAttribute('data-thread-id')).toBe('1');
+    for (let index = 2; index <= 25; index++) {
+      document.activeElement!.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }),
+      );
+      await settleViewport();
+      expect(document.activeElement?.getAttribute('data-thread-id')).toBe(String(index));
+    }
+    document.activeElement!.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }),
+    );
+    await settleViewport();
+    expect(document.activeElement?.getAttribute('data-thread-id')).toBe('24');
     expect(select).not.toHaveBeenCalled();
   });
 
@@ -233,6 +270,145 @@ describe('ThreadListComponent', () => {
     expect(viewport.querySelectorAll('.thread-item')).toHaveLength(8);
     fixture.destroy();
     expect(disconnect).toHaveBeenCalledOnce();
+  });
+
+  it('holds an unpin in presentation order until badge exit without changing canonical items', async () => {
+    const pinned = { ...p2p(1, 1), pinned: true };
+    const other = p2p(2, 2);
+    items.set([pinned, other]);
+    status.set(ConversationLoadStatus.READY);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    const host: HTMLElement = fixture.nativeElement;
+    const row = host.querySelector('[data-thread-id="1"]');
+    items.set([other, { ...pinned, pinned: false }]);
+    fixture.detectChanges();
+    expect(items().map((item) => item.threadId)).toEqual([2, 1]);
+    expect(comp.filteredThreadList().map((item) => item.threadId)).toEqual([
+      1, 2,
+    ]);
+    expect(host.querySelector('[data-thread-id="1"]')).toBe(row);
+    row?.querySelector('.pin-corner-badge')?.dispatchEvent(
+      new TransitionEvent('transitionend', {
+        propertyName: 'opacity',
+        bubbles: true,
+      }),
+    );
+    fixture.detectChanges();
+    expect(comp.filteredThreadList().map((item) => item.threadId)).toEqual([
+      2, 1,
+    ]);
+  });
+
+  it.each([1, 2])(
+    'holds overlapping unpins in their displayed slots until badge %s exits',
+    async (firstExit) => {
+      const a = { ...p2p(1, 1), pinned: true };
+      const b = { ...p2p(2, 2), pinned: true };
+      const c = p2p(3, 3);
+      items.set([a, b, c]);
+      status.set(ConversationLoadStatus.READY);
+      fixture.detectChanges();
+      await fixture.whenStable();
+      const host: HTMLElement = fixture.nativeElement;
+      const displayedIds = () =>
+        Array.from(
+          host.querySelectorAll<HTMLElement>('[data-thread-id]'),
+          (row) => Number(row.dataset['threadId']),
+        );
+      const exitBadge = (id: number) => {
+        const badge = host.querySelector(
+          `[data-thread-id="${id}"] .pin-corner-badge`,
+        );
+        expect(badge).not.toBeNull();
+        badge?.dispatchEvent(
+          new TransitionEvent('transitionend', {
+            propertyName: 'opacity',
+            bubbles: true,
+          }),
+        );
+        fixture.detectChanges();
+      };
+
+      items.set([b, c, { ...a, pinned: false }]);
+      fixture.detectChanges();
+      expect(displayedIds()).toEqual([1, 2, 3]);
+      const canonical = [c, { ...a, pinned: false }, { ...b, pinned: false }];
+      items.set(canonical);
+      fixture.detectChanges();
+      // B was canonical index 0, but must retain its displayed index 1.
+      expect(displayedIds()).toEqual([1, 2, 3]);
+      expect(items()).toBe(canonical);
+      expect(items().map((item) => item.threadId)).toEqual([3, 1, 2]);
+      exitBadge(firstExit);
+      expect(displayedIds()).toEqual(firstExit === 1 ? [3, 2, 1] : [1, 3, 2]);
+      exitBadge(firstExit === 1 ? 2 : 1);
+      expect(displayedIds()).toEqual([3, 1, 2]);
+      expect(items()).toBe(canonical);
+    },
+  );
+
+  it('cancels an unpin hold on rapid repin and never transforms the row', async () => {
+    const pinned = { ...p2p(1, 1), pinned: true };
+    const other = p2p(2, 2);
+    items.set([pinned, other]);
+    status.set(ConversationLoadStatus.READY);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    items.set([other, { ...pinned, pinned: false }]);
+    fixture.detectChanges();
+    items.set([pinned, other]);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    const host: HTMLElement = fixture.nativeElement;
+    const row = host.querySelector<HTMLElement>('[data-thread-id="1"]');
+    expect(
+      row?.querySelector('.pin-corner-badge')?.classList.contains('visible'),
+    ).toBe(true);
+    expect(row && getComputedStyle(row).transform).toBe('none');
+    expect(row?.offsetHeight).toBe(72);
+    expect(items().map((item) => item.threadId)).toEqual([1, 2]);
+    // A delayed exit event from the interrupted unpin must not release the repin.
+    row?.querySelector('.pin-corner-badge')?.dispatchEvent(
+      new TransitionEvent('transitionend', {
+        propertyName: 'opacity',
+        bubbles: true,
+      }),
+    );
+    fixture.detectChanges();
+    expect(comp.filteredThreadList().map((item) => item.threadId)).toEqual([
+      1, 2,
+    ]);
+    expect(
+      row?.querySelector('.pin-corner-badge')?.classList.contains('visible'),
+    ).toBe(true);
+  });
+
+  it('suppresses only the presented unread badge and announcement, retaining durable counts', async () => {
+    const item = { ...p2p(1, 1), unreadCount: 8 };
+    items.set([item]);
+    status.set(ConversationLoadStatus.READY);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    const presentation = TestBed.inject(UnreadPresentation);
+    const owner = {};
+    focused.set(true);
+    activeThreadId.set(1);
+    presentation.report(owner, 1, true, true);
+    fixture.detectChanges();
+    const host: HTMLElement = fixture.nativeElement;
+    expect(
+      host.querySelector('.thread-item')?.classList.contains('unread'),
+    ).toBe(false);
+    expect(comp.accessibleLabel(item)).not.toContain('8 unread');
+    expect(items()[0].unreadCount).toBe(8);
+    focused.set(false);
+    fixture.detectChanges();
+    expect(
+      host.querySelector('.thread-item')?.classList.contains('unread'),
+    ).toBe(true);
+    presentation.clear(owner);
+    focused.set(true);
   });
 
   /** Empty profile projection; identity coordinates are available before profile hydration. */
@@ -449,9 +625,9 @@ describe('ThreadListComponent', () => {
     expect(rows[1].querySelectorAll('.thread-status-icon--muted')).toHaveLength(
       1,
     );
-    expect(row.querySelector('.thread-msg-text .bio')?.textContent?.trim()).toBe(
-      'Hello there',
-    );
+    expect(
+      row.querySelector('.thread-msg-text .bio')?.textContent?.trim(),
+    ).toBe('Hello there');
   });
 
   it('shows a separate @ badge only while the conversation has an unread mention', async () => {

@@ -12,8 +12,8 @@ import {
   withXhr,
 } from '@angular/common/http';
 import { filter, firstValueFrom } from 'rxjs';
-import { TauriHttpBackend } from './tauri-http.backend';
-import { REPLAY_SAFE } from './request-context';
+import { TauriHttpBackend, isShortApiRequest } from './tauri-http.backend';
+import { REPLAY_SAFE, REQUEST_SCOPE, RequestScope } from './request-context';
 
 /**
  * TauriHttpBackend DI wiring — regression guard for the NG0201 that occurred because `TauriHttpBackend`
@@ -24,6 +24,85 @@ import { REPLAY_SAFE } from './request-context';
  * override (last provider wins, so TauriHttpBackend stays the chain terminus while FetchBackend remains
  * the resolvable delegate).
  */
+describe('short API admission scope', () => {
+  it('excludes uploads, media, streams, binary and progress requests', () => {
+    for (const request of [
+      new HttpRequest('PUT', '/api/v1/uploads/resumable/1', {}),
+      new HttpRequest('POST', '/api/v1/upload/avatar', {}),
+      new HttpRequest('GET', '/uploads/avatar.webp'),
+      new HttpRequest('GET', '/api/v1/events', { headers: new HttpHeaders({ accept: 'text/event-stream' }) }),
+      new HttpRequest('GET', '/api/v1/file', { responseType: 'blob' }),
+      new HttpRequest('POST', '/api/v1/anything', new FormData()),
+      new HttpRequest('GET', '/api/v1/status', { reportDownloadProgress: true }),
+    ]) expect(isShortApiRequest(request)).toBe(false);
+    expect(isShortApiRequest(new HttpRequest('POST', '/api/v1/messages/query', {}))).toBe(true);
+  });
+});
+
+describe('TauriHttpBackend browser scheduling', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('preserves credentials, progress events, XSSI JSON and response metadata', async () => {
+    TestBed.configureTestingModule({ providers: [provideHttpClient(withFetch()), { provide: HttpBackend, useClass: TauriHttpBackend }] });
+    let captured: RequestInit | undefined;
+    const upstream = new Response(")]}'\n{\"ok\":true}", { headers: { 'content-type': 'application/json' } });
+    vi.stubGlobal('fetch', (_url: string, init: RequestInit) => { captured = init; return Promise.resolve(upstream); });
+    const events: import('@angular/common/http').HttpEvent<unknown>[] = [];
+    await new Promise<void>((resolve, reject) => TestBed.inject(HttpBackend).handle(new HttpRequest('POST', '/api/v1/test', { a: 1 }, { withCredentials: true })).subscribe({ next: event => events.push(event), error: reject, complete: resolve }));
+    expect(captured?.credentials).toBe('include');
+    expect(captured?.body).toBe('{"a":1}');
+    expect(new Headers(captured?.headers).get('content-type')).toBe('application/json');
+    expect(events.map(event => event.type)).toEqual([0, 2, 3, 4]);
+    const response = events.at(-1);
+    expect(response).toBeInstanceOf(HttpResponse);
+    if (response instanceof HttpResponse) {
+      expect(response.body).toEqual({ ok: true });
+      expect(response.responseType).toBe(upstream.type);
+      expect(response.redirected).toBe(upstream.redirected);
+    }
+  });
+
+  it('matches FetchBackend parse errors and preserves non-JSON failure bodies', async () => {
+    TestBed.configureTestingModule({ providers: [provideHttpClient(withFetch()), { provide: HttpBackend, useClass: TauriHttpBackend }] });
+    const responses = [new Response('{', { status: 200 }), new Response('unavailable', { status: 503 })];
+    vi.stubGlobal('fetch', () => Promise.resolve(responses.shift()));
+    const request = () => firstValueFrom(TestBed.inject(HttpBackend).handle(new HttpRequest('GET', '/api/v1/test?x=1')).pipe(filter(event => event instanceof HttpResponse)));
+    const parseError: unknown = await request().catch((error: unknown) => error);
+    expect(parseError).toBeInstanceOf(HttpErrorResponse);
+    if (parseError instanceof HttpErrorResponse) {
+      expect(parseError.status).toBe(200);
+      expect(parseError.error).toBeInstanceOf(SyntaxError);
+      expect(parseError.url).toBe('/api/v1/test?x=1');
+    }
+    const httpError: unknown = await request().catch((error: unknown) => error);
+    if (!(httpError instanceof HttpErrorResponse)) throw new Error('Expected HTTP error');
+    expect(httpError.status).toBe(503);
+    expect(httpError.error).toBe('unavailable');
+  });
+
+  it('retains a slot through body consumption and does not abort completed fetches', async () => {
+    TestBed.configureTestingModule({ providers: [provideHttpClient(withFetch()), { provide: HttpBackend, useClass: TauriHttpBackend }] });
+    const pending: Array<{ finish: () => void; signal: AbortSignal | null | undefined }> = [];
+    vi.stubGlobal('fetch', (_url: string, init: RequestInit) => Promise.resolve(new Response(new ReadableStream<Uint8Array>({
+      start(controller) {
+        pending.push({ signal: init.signal, finish: () => { controller.enqueue(new TextEncoder().encode('{}')); controller.close(); } });
+      },
+    }))));
+    const backend = TestBed.inject(HttpBackend);
+    const results = Array.from({ length: 9 }, () => firstValueFrom(backend.handle(new HttpRequest('GET', '/api/v1/status')).pipe(filter(event => event instanceof HttpResponse))));
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(pending.length).toBe(8);
+    pending[0].finish();
+    await results[0];
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(pending.length).toBe(9);
+    expect(pending[0].signal?.aborted).toBe(false);
+    pending.slice(1).forEach(job => job.finish());
+    await Promise.all(results);
+    expect(pending.every(job => !job.signal?.aborted)).toBe(true);
+  });
+});
+
 describe('TauriHttpBackend DI wiring', () => {
   it('constructs when HttpBackend is overridden on top of withFetch() (FetchBackend resolves)', () => {
     TestBed.configureTestingModule({
@@ -286,7 +365,7 @@ describe('TauriHttpBackend media proxy routing under Tauri', () => {
           cmd: string,
           args?: Record<string, unknown>,
         ): Promise<unknown> => {
-          calls.push({ cmd, args });
+          if (!args?.['prepareOnly']) calls.push({ cmd, args });
           return {
             status: 200,
             headers: { 'content-type': 'image/webp' },
@@ -364,12 +443,46 @@ describe('TauriHttpBackend media proxy routing under Tauri', () => {
     });
   }
 
+  it('passes transport scope and short-request admission explicitly', async () => {
+    for (const scope of [RequestScope.Session, RequestScope.Authentication, RequestScope.Server]) {
+      await firstValueFrom(TestBed.inject(HttpBackend).handle(new HttpRequest('GET', '/api/v1/config', {
+        context: new HttpContext().set(REQUEST_SCOPE, scope),
+      })));
+      expect(calls.at(-1)?.args).toMatchObject({ scope, shortRequest: true });
+    }
+    expect(calls.every(call => call.cmd === 'http_request')).toBe(true);
+  });
+
+  it('cancels the reservation when unsubscribed before its acknowledgement', async () => {
+    let acknowledge!: () => void;
+    tauriWindow().__TAURI__ = { core: { invoke: async (cmd, args) => {
+      calls.push({ cmd, args });
+      if (args?.['prepareOnly']) await new Promise<void>(resolve => { acknowledge = resolve; });
+      return { status: 204, headers: {} };
+    } } };
+    const subscription = TestBed.inject(HttpBackend).handle(new HttpRequest('GET', '/api/v1/test')).subscribe();
+    await new Promise(resolve => setTimeout(resolve, 0));
+    subscription.unsubscribe();
+    acknowledge();
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(calls.map(call => call.cmd)).toEqual(['http_request', 'cancel_http_request']);
+    expect(calls[0].args?.['prepareOnly']).toBe(true);
+  });
+
+  it('does not dispatch after unsubscribe during body serialization', async () => {
+    const subscription = TestBed.inject(HttpBackend).handle(new HttpRequest('POST', '/api/v1/upload', new Blob(['bytes']))).subscribe();
+    subscription.unsubscribe();
+    await new Promise(resolve => setTimeout(resolve, 20));
+    expect(calls).toEqual([]);
+  });
+
   it('triggers cancel_http_request when unsubscribed before completion', async () => {
     const backend = TestBed.inject(HttpBackend);
     let capturedReqId: string | undefined;
     tauriWindow().__TAURI__ = {
       core: {
         invoke: async (cmd: string, args?: Record<string, unknown>) => {
+          if (args?.['prepareOnly']) return { status: 204, headers: {} };
           calls.push({ cmd, args });
           if (cmd === 'http_request') {
             capturedReqId = args?.['reqId'] as string;

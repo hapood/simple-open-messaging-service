@@ -93,6 +93,17 @@
   align-items: baseline;
   gap: 3px;
   align-self: center;
+  transition: transform 240ms ease;
+}
+
+.msg-title:has(.msg-subtitle.empty) .msg-title-line {
+  transform: translateY(10px);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .msg-title-line {
+    transition: none;
+  }
 }
 
 .announcement-button {
@@ -163,8 +174,9 @@
   flex: 0 1 auto;
 }
 
-// Subtitle: the peer's bio (P2P) or the group description (GROUP). Rendered only when non-empty
-// (template @if), so an empty bio/description collapses the header to a single centered line.
+// Subtitle: the peer's bio (P2P) or the group description (GROUP), sharing its 20px slot with
+// the sending-task indicator. When both bio and tasks are absent (.empty), .msg-title-line
+// shifts down by half this height (10px) so the title stays vertically centered.
 .msg-subtitle {
   max-width: 100%;
   font-size: 12px;
@@ -176,7 +188,7 @@
   overflow: hidden;
   text-overflow: ellipsis;
   display: block;
-  margin-top: 1px;
+  margin-top: 0;
 }
 
 @media (min-width: 600px) {

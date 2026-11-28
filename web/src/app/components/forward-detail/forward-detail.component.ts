@@ -29,7 +29,6 @@ import type { ChatItemData, ChatMsgData } from '../message-cards/chat-item';
 import {
   computeRowFlags,
   createMsgCbElement,
-  createGhostCbElement,
 } from '../message-cards/create-item';
 import {
   absorbAlbumTail,
@@ -195,10 +194,7 @@ export class ForwardDetailComponent implements OnInit, OnDestroy {
         viewport,
         content,
         hooks: {
-          createItem: (item, prev, presentation) =>
-            presentation.kind === 'message'
-              ? this.createItem(item, prev)
-              : createGhostCbElement(),
+          createItem: (item, prev) => this.createItem(item, prev),
           mergeItems: (items) => mergeAlbumItemsAtBoundary(items, null),
           absorbTail: (target, incoming) => absorbAlbumTail(target, incoming),
         },

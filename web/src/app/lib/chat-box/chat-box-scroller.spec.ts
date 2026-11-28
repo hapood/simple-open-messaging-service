@@ -125,49 +125,7 @@ function controllableHooks(itemHeight = 100): {
   };
 }
 
-/** Hooks that supply a createSkeleton (a distinct .cb-ghost-loading spinner element), so skeleton-slot DOM is observable
- *  separate from real items. Needed to surface a stuck-spinner bug: a skeleton slot whose DOM is never rebuilt stays a
- *  spinner mid-list. Real items render via createItem (class 'real'); skeleton slots via createSkeleton (class
- *  'cb-ghost-loading'). Both carry a fixed measured height. */
-function skeletonHooks(
-  itemHeight = 40,
-  ghostHeight = 48,
-): {
-  hooks: {
-    createItem: (
-      item: CbItem<number>,
-      prev: CbItem<number> | null,
-      presentation:
-        | { kind: 'message' }
-        | { kind: 'loading' | 'retry'; edge: 'older' | 'newer' | 'both' },
-    ) => CbElement<number>;
-  };
-} {
-  const makeEl = (cls: string, h: number) => {
-    const el = document.createElement('div');
-    el.className = cls;
-    Object.defineProperty(el, 'offsetHeight', {
-      configurable: true,
-      get: () => h,
-    });
-    return el;
-  };
-  return {
-    hooks: {
-      createItem: (_item, _prev, presentation) => ({
-        el:
-          presentation.kind !== 'message'
-            ? makeEl('cb-ghost-loading', ghostHeight)
-            : makeEl('real', itemHeight),
-        update: () => {},
-        predestory: () => {},
-        destroy: () => {},
-      }),
-    },
-  };
-}
-
-/** Hooks that record each createItem's (id, prev.id) — verifies ghost rebuild re-invokes createItem with the new prev. */
+/** Hooks that record each createItem's (id, prev.id). */
 function recordingHooks(itemHeight = 100): {
   hooks: {
     createItem: (
@@ -2220,116 +2178,6 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
     expect(src.gets()).toBeGreaterThan(getsBefore);
   });
 
-  // ── Phase 1: skeleton item (cb-ghost + rebuild) ──
-
-  it('phase 1: after init the top mounted[0] shows cb-ghost (not yet at oldest), exactly one', async () => {
-    const { hooks } = controllableHooks();
-    scroller = createKernel<number>({
-      viewport,
-      content,
-      hooks,
-      source: fakeSource(500),
-    });
-    await scroller.openWindow({ kind: 'latest' });
-    const oldest = scroller.getInfo().oldestId!;
-    expect(
-      content
-        .querySelector(`[data-cb-id="${oldest}"]`)
-        ?.classList.contains('cb-ghost'),
-    ).toBe(true);
-    expect(content.querySelectorAll('.cb-ghost').length).toBe(1);
-  });
-
-  it('phase 1: scrolling to the global oldest (noOlder) → cb-ghost disappears', async () => {
-    const { hooks } = controllableHooks();
-    scroller = createKernel<number>({
-      viewport,
-      content,
-      hooks,
-      source: fakeSource(120),
-    });
-    await scroller.openWindow({ kind: 'latest' });
-    for (let i = 0; i < 6; i++) {
-      viewport.scrollTop = 0;
-      viewport.dispatchEvent(new Event('scroll'));
-      await Promise.resolve();
-      await Promise.resolve();
-    }
-    expect(scroller.getInfo().noOlder).toBe(true);
-    expect(scroller.getMountedGeometry(scroller.getInfo().oldestId!)!.el.classList.contains('cb-ghost')).toBe(false);
-  });
-
-  it('phase 1: loadOlder mounts an older neighbor → the old ghost rebuilds (createItem re-invoked with the new prev)', async () => {
-    const { hooks, calls } = recordingHooks();
-    scroller = createKernel<number>({
-      viewport,
-      content,
-      hooks,
-      source: fakeSource(500),
-    });
-    await scroller.openWindow({ kind: 'latest' });
-    const ghostId = scroller.getInfo().oldestId!; // 400: mounted with prev=null (top)
-    expect(calls.filter((c) => c.id === ghostId)[0].prev).toBeNull();
-
-    // scroll up to trigger loadOlder (mount older m-300..m-399): ghostId gains an older neighbor → rebuild
-    viewport.scrollTop = 0;
-    viewport.dispatchEvent(new Event('scroll'));
-    await flush();
-
-    const forGhost = calls.filter((c) => c.id === ghostId);
-    expect(forGhost.length).toBe(2); // mount + rebuild
-    expect(forGhost[1].prev).not.toBeNull(); // new prev = the older neighbor
-  });
-
-  it('ordinary edge delivery rebuilds each prior top ghost', async () => {
-    const { hooks } = skeletonHooks(40);
-    scroller = createKernel<number>({
-      viewport,
-      content,
-      hooks,
-      source: fakeSource(500),
-    });
-    await scroller.openWindow({ kind: 'latest' });
-    viewport.scrollTop = 0;
-    viewport.dispatchEvent(new Event('scroll'));
-    await flush();
-    expect(scroller.getInfo().mounted).toBeGreaterThan(100);
-    expect(scroller.getInfo().noOlder).toBe(false); // the global oldest has NOT been reached → the top ghost is expected
-    // Exactly ONE spinner element (the current top ghost). A second would mean a prior top was never rebuilt.
-    expect(content.querySelectorAll('.cb-ghost-loading').length).toBe(1);
-    // And that single spinner sits at the actual top of content (the first child = mounted[0]); none lurk mid-list.
-    expect(
-      content.firstElementChild?.classList.contains('cb-ghost-loading'),
-    ).toBe(true);
-  });
-
-  it('init fill: an empty older page reveals the top skeleton as a real row', async () => {
-    // A cache page may not carry an `oldest` boundary yet; the follow-up empty page is then the first
-    // authoritative floor signal. Merely setting noOlder used to leave the skeleton component mounted.
-    const source: CbSource<number> = {
-      loadWindow: async () => [{ id: 7, data: 7, boundary: 'newest' }],
-      requestMessagesForEmptyWindow: () => NEVER,
-      requestOlder: () => testDemand(async () => [], true),
-      requestNewer: () => testDemand(async () => []),
-      pushLive: () => {},
-      destroy: () => {},
-    };
-    const { hooks } = skeletonHooks();
-    scroller = createKernel<number>({
-      viewport,
-      content,
-      hooks,
-      source,
-    });
-
-    await scroller.openWindow({ kind: 'latest' });
-    await flush();
-
-    expect(scroller.getInfo().noOlder).toBe(true);
-    expect(content.querySelectorAll('.cb-ghost-loading').length).toBe(0);
-    expect(content.querySelectorAll('.real').length).toBe(1);
-  });
-
   it('first batch finishes positioned while ordinary older demand remains pending', async () => {
     const { hooks } = controllableHooks(); // 100px items
     const src = controllableSource(500); // getOlder resolved manually
@@ -3676,8 +3524,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
 
     src.pushLive(batches.shift()!);
     await flush(); // img1 mounts (newest wasn't an image → no absorb)
-    // Trimming also changes the oldest mounted row into the older loading slot.
-    expect(t.createdIds.slice(createsAfterInit)).toEqual([700, scroller.getInfo().oldestId]);
+    expect(t.createdIds.slice(createsAfterInit)).toEqual([700]);
     const albumElement = scroller.getMountedGeometry(700)!.el;
 
     src.pushLive(batches.shift()!);
@@ -3711,7 +3558,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
 
     src.pushLive(batch);
     await flush();
-    expect(t.createdIds.slice(createsAfterInit)).toEqual([700, 702, 703, scroller.getInfo().oldestId]);
+    expect(t.createdIds.slice(createsAfterInit)).toEqual([700, 702, 703]);
     expect(t.updateCount()).toBe(1); // only img2 absorbed into img1
     expect(t.dataOf(700)).toBe(1001 + 1002); // img1 grew by img2
     expect(content.querySelectorAll('[data-cb-id="701"]').length).toBe(0); // img2 has no own entry
@@ -4144,20 +3991,14 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
     await scroller.openWindow({ kind: 'latest' });
     await flush();
 
-    const cap = scroller.getMountedGeometry(0)!.el;
     expect(requests).toBe(1);
-    expect(cap.classList.contains('cb-edge-failed')).toBe(true);
-    expect(cap.querySelector('.cb-load-icon__retry')).not.toBeNull();
-    expect(cap.getAttribute('role')).toBe('button');
-    expect(cap.getAttribute('aria-label')).toContain('Retry');
     viewport.dispatchEvent(new Event('scroll'));
     await flush();
     expect(requests).toBe(1);
 
-    cap.click();
+    scroller.retryNewer();
     await flush();
     expect(requests).toBeGreaterThanOrEqual(2);
-    expect(content.querySelector('.cb-edge-failed')).toBeNull();
   });
 
   it('retains the live demand while its latest message stays mounted, regardless of viewport proximity', async () => {
@@ -4270,84 +4111,6 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
     await flush();
     expect(requests).toBe(2);
     expect(edgeState(scroller, 'newer').active).not.toBeNull();
-  });
-
-  it('a sole history row exposes both failures and retries both without duplicate slots', async () => {
-    const { hooks } = controllableHooks();
-    const states: string[] = [];
-    const source = fakeSource(100);
-    source.loadWindow = async () => [{ id: 50, data: 50 }];
-    let olderRequests = 0;
-    let newerRequests = 0;
-    source.requestOlder = () => ++olderRequests === 1
-      ? of({ kind: 'error', error: new Error('older offline') })
-      : new Observable<CbDemandResult<number>>(() => {});
-    source.requestNewer = () => ++newerRequests === 1
-      ? of({ kind: 'error', error: new Error('newer offline') })
-      : new Observable<CbDemandResult<number>>(() => {});
-    scroller = createKernel({ viewport, content, source, hooks: {
-      ...hooks,
-      createItem: (item, prev, presentation) => {
-        states.push(presentation.kind === 'message' ? 'message' : `${presentation.kind}:${presentation.edge}`);
-        return hooks.createItem(item, prev);
-      },
-    } });
-    await scroller.openWindow({ kind: 'message', messageId: 50, anchor: 'center' });
-    await flush();
-    expect(states[0]).toBe('loading:both');
-    expect(olderRequests).toBe(1);
-    expect(newerRequests).toBe(1);
-    expect(states.at(-1)).toBe('retry:both');
-    scroller.getMountedGeometry(50)!.el.click();
-    await flush();
-    expect(olderRequests).toBe(2);
-    expect(newerRequests).toBe(2);
-    expect(states.at(-1)).toBe('loading:both');
-    const beforeMutation = states.length;
-    expect(scroller.mutateItem(50, item => ({ ...item, data: 51 }))).toBe(true);
-    expect(states.slice(beforeMutation)).toEqual(['loading:both']);
-    const row = scroller.getMountedGeometry(50)!.el;
-    const renders = states.length;
-    viewport.dispatchEvent(new Event('scroll'));
-    await flush();
-    expect(states).toHaveLength(renders);
-    expect(scroller.getMountedGeometry(50)!.el).toBe(row);
-    expect(row.hasAttribute('role')).toBe(false);
-    expect(content.querySelectorAll('[data-cb-id="50"]')).toHaveLength(1);
-  });
-
-  it('renders retry and loading transitions for the same newer history slot', async () => {
-    const { hooks } = controllableHooks();
-    const states: string[] = [];
-    let requests = 0;
-    const source = fakeSource(1);
-    source.requestNewer = () => {
-      requests++;
-      return requests === 1
-        ? of({ kind: 'error', error: new Error('offline') })
-        : new Observable<CbDemandResult<number>>(() => {});
-    };
-    scroller = createKernel({
-      viewport, content, source,
-      hooks: {
-        ...hooks,
-        createItem: (item, prev, presentation) => {
-          states.push(presentation.kind);
-          return hooks.createItem(item, prev);
-        },
-      },
-    });
-    await scroller.openWindow({ kind: 'latest' });
-    await flush();
-    expect(states).toContain('retry');
-    const retryRow = scroller.getMountedGeometry(0)!.el;
-    expect(retryRow.getAttribute('role')).toBe('button');
-    retryRow.click();
-    await flush();
-    expect(requests).toBe(2);
-    expect(states.at(-1)).toBe('loading');
-    expect(scroller.getMountedGeometry(0)!.el.getAttribute('role')).toBeNull();
-    expect(content.querySelectorAll('[data-cb-id="0"]')).toHaveLength(1);
   });
 
   it('goToLatest delegates navigation instead of retaining a highlight intent', async () => {
@@ -4516,7 +4279,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
     }); // mid-history → noNewer=false
     expect(scroller.getInfo().noNewer).toBe(false);
     const cap = scroller.getMountedGeometry(scroller.getInfo().newestId!)!.el;
-    expect(cap.classList.contains('cb-ghost')).toBe(true);
+    expect(cap.classList.contains('cb-ghost')).toBe(false);
     expect(cap.offsetHeight).toBeGreaterThan(0);
   });
 
@@ -4529,10 +4292,10 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
       source: fakeSource(500),
     });
     await scroller.openWindow({ kind: 'latest' }); // noNewer=true → gap
-    scroller.smoothScrollToMessage(100); // re-seed mid-history → noNewer=false → loading
+    scroller.smoothScrollToMessage(100); // re-seed mid-history → noNewer=false
     await flush();
     expect(scroller.getInfo().noNewer).toBe(false);
-    expect(scroller.getMountedGeometry(scroller.getInfo().newestId!)!.el.classList.contains('cb-ghost')).toBe(true);
+    expect(scroller.getMountedGeometry(scroller.getInfo().newestId!)!.el.classList.contains('cb-ghost')).toBe(false);
     await scroller.goToLatest(); // Load latest through the window owner.
     await waitFor(
       () => scroller!.getInfo().noNewer,
@@ -4541,7 +4304,7 @@ describe('ChatBoxScroller (manual anchor · array index)', () => {
     expect(scroller.getInfo().noNewer).toBe(true);
     const cap = content.querySelector<HTMLElement>('.cb-bottom-reserve')!;
     expect(scroller.getMountedGeometry(499)!.el.classList.contains('cb-ghost')).toBe(false);
-    expect(cap.offsetHeight).toBe(0); // height re-measured 48→0 on the batch that reached newest
+    expect(cap.offsetHeight).toBe(0);
   });
 
   it('tail cap: never in mounted[] — newestId is the last real item, the cap carries no data-cb-id', async () => {

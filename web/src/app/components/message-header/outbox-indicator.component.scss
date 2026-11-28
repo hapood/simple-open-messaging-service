@@ -4,7 +4,7 @@
   height: 20px;
   line-height: 20px;
 }
-.counts {
+.status {
   display: flex;
   align-items: center;
   height: 20px;
@@ -15,7 +15,9 @@
   font: inherit;
   line-height: 20px;
 }
-button.counts { cursor: pointer; }
+button.status {
+  cursor: pointer;
+}
 svg {
   width: var(--task-icon-size, 16px);
   height: var(--task-icon-size, 16px);
@@ -24,21 +26,55 @@ svg {
   stroke-width: 1.5;
   stroke-linecap: round;
   stroke-linejoin: round;
-  overflow: visible;
+  transition: color 180ms ease;
 }
-.rear { opacity: 0; }
-.upload-active .arrow { animation: upload-arrow 1200ms ease-in-out infinite; }
-.messages-active .rear { animation: message-queue 1600ms ease-in-out infinite; }
-@keyframes upload-arrow {
-  0%, 100% { transform: translateY(2px); opacity: 0.4; }
-  60% { transform: translateY(-2px); opacity: 1; }
+.ring {
+  opacity: 0.2;
+  transition: opacity 180ms ease;
 }
-@keyframes message-queue {
-  0%, 100% { transform: translateY(1px); opacity: 0; }
-  55% { transform: translateY(-1px); opacity: 0.7; }
+.spinner {
+  opacity: 1;
+  transition: opacity 180ms ease;
+  circle {
+    stroke-dasharray: 18 39;
+    transform-origin: 12px 12px;
+    animation: spin 900ms linear infinite;
+  }
 }
-.failures { color: var(--app-danger, #d32f2f); }
+.cross {
+  opacity: 0;
+  transform: scale(0.6);
+  transform-origin: 12px 12px;
+  transition:
+    opacity 180ms ease,
+    transform 180ms ease;
+}
+.unavailable {
+  color: var(--app-danger, #d32f2f);
+  .ring {
+    opacity: 1;
+  }
+  .spinner {
+    opacity: 0;
+  }
+  .cross {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
 @media (prefers-reduced-motion: reduce) {
-  .upload-active .arrow, .messages-active .rear { animation: none; }
-  .messages-active .rear { opacity: 0.7; }
+  svg,
+  .ring,
+  .spinner,
+  .cross {
+    transition: none;
+  }
+  .spinner circle {
+    animation: none;
+  }
 }

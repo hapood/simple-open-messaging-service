@@ -29,8 +29,8 @@ describe('ConversationListService stable markRead flush', () => {
           provide: ThreadRepository,
           useValue: {
             commitLocalRead,
-            setOpenThread: vi.fn().mockName('setOpenThread'),
-            openThreadId: signal<number | undefined>(7).asReadonly(),
+            setActiveThread: vi.fn().mockName('setActiveThread'),
+            activeThreadId: signal<number | undefined>(7).asReadonly(),
             items: signal([]).asReadonly(),
             readCursorState: vi.fn(),
             refreshPeerOnOpen: vi.fn().mockName('refreshPeerOnOpen'),
@@ -71,7 +71,7 @@ describe('ConversationListService stable markRead flush', () => {
   it('captures unread before the nav effect opens the thread and preserves it after reads', () => {
     const repo = TestBed.inject(ThreadRepository);
     Object.assign(repo, {
-      openThreadId: signal<number | undefined>(undefined).asReadonly(),
+      activeThreadId: signal<number | undefined>(undefined).asReadonly(),
       items: signal([
         { threadId: 7, unreadCount: 2, messageEndSeq: 25, lastReadSeq: 23 },
       ]).asReadonly(),
@@ -105,6 +105,6 @@ describe('ConversationListService stable markRead flush', () => {
     });
     convList.open(7);
     expect(convList.captureUnreadEntryBoundary(7)).toBe(boundary);
-    expect(repo.setOpenThread).toHaveBeenCalledWith(7);
+    expect(repo.setActiveThread).toHaveBeenCalledWith(7);
   });
 });

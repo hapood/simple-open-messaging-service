@@ -43,6 +43,15 @@
     pointer-events: auto;
   }
 }
+.fade-only {
+  .bio {
+    transform: none;
+    opacity: 0;
+  }
+  .tasks {
+    transform: none;
+  }
+}
 @media (prefers-reduced-motion: reduce) {
   .bio, .tasks { transition: none; }
 }

@@ -6,7 +6,11 @@ import { SessionStateService } from './session-state.service';
 import { NativeCommitEventsService } from './native-commit-events.service';
 import { SessionLifecycleService } from './session-lifecycle.service';
 import { PushRegistrationService } from './push-registration.service';
-import { parseLoginSessionId } from './session/session-identity';
+import {
+  parseLoginSessionId,
+  SessionSupersededError,
+  type LoginSessionId,
+} from './session/session-identity';
 
 /**
  * WebsocketService unit tests — the countdown-clock + state plumbing of the realtime facade.
@@ -51,16 +55,11 @@ class FakeWorker {
 
 /** The most recently spawned FakeWorker (the facade spawns exactly one on the browser path). */
 let liveWorker: FakeWorker | undefined;
-/** The real `Worker` ctor, restored after each test so the stub never leaks to other specs. */
-let realWorker: typeof Worker | undefined;
 
 describe('WebsocketService (reconnect countdown clock)', () => {
   let ws: WebsocketService;
 
-  beforeEach(() => {
-    realWorker = globalThis.Worker;
-    globalThis.Worker = FakeWorker as unknown as typeof Worker;
-    liveWorker = undefined;
+  function createRuntime(sessionId?: LoginSessionId): void {
     TestBed.configureTestingModule({
       providers: [
         { provide: PushRegistrationService, useValue: { onEvent: vi.fn() } },
@@ -69,11 +68,20 @@ describe('WebsocketService (reconnect countdown clock)', () => {
       ],
     });
     document.cookie = 'logged_in=1; Path=/';
+    if (sessionId) {
+      TestBed.inject(SessionLifecycleService).bindSession(sessionId);
+    }
     TestBed.inject(SessionStateService).setAuthenticated(true);
     ws = TestBed.inject(WebsocketService);
     ws.connect();
     // Transport mechanics are driven explicitly; application lifecycle is tested separately.
     TestBed.inject(ApplicationRef).tick();
+  }
+
+  beforeEach(() => {
+    vi.stubGlobal('Worker', FakeWorker);
+    liveWorker = undefined;
+    createRuntime();
   });
 
   afterEach(async () => {
@@ -83,7 +91,7 @@ describe('WebsocketService (reconnect countdown clock)', () => {
     // One bounded task-turn drain of the teardown's pending promises. This is not a timed wait —
     // transport.stop() schedules no timers, so a single turn always suffices.
     await new Promise((resolve) => setTimeout(resolve, 0));
-    if (realWorker) globalThis.Worker = realWorker;
+    vi.unstubAllGlobals();
     liveWorker = undefined;
   });
 
@@ -147,23 +155,46 @@ describe('WebsocketService (reconnect countdown clock)', () => {
     };
     old.emit({ type: 'event', payload: message });
     expect(completed).toHaveBeenCalledWith(message);
-    lifecycle.bindSession(successorId);
-    ws.connect();
+    expect(() => lifecycle.bindSession(successorId)).toThrow(
+      SessionSupersededError,
+    );
+    lifecycle.invalidateSession();
+    expect(ws.state()).toBe('closed');
+    expect(() => lifecycle.bindSession(successorId)).toThrow(
+      SessionSupersededError,
+    );
     completed.mockClear();
+    TestBed.resetTestingModule();
+    createRuntime(successorId);
+    const currentCompleted = vi.fn();
+    TestBed.inject(NativeCommitEventsService).committed$.subscribe(
+      currentCompleted,
+    );
+    expect(liveWorker).not.toBe(old);
     old.emit({ type: 'event', payload: message });
     expect(completed).not.toHaveBeenCalled();
+    expect(currentCompleted).not.toHaveBeenCalled();
     liveWorker!.emit({ type: 'event', payload: message });
-    expect(completed).not.toHaveBeenCalled();
+    expect(currentCompleted).not.toHaveBeenCalled();
     liveWorker!.emit({
       type: 'event',
       payload: { ...message, loginSessionId: successorId },
     });
-    expect(completed).toHaveBeenCalledOnce();
+    expect(currentCompleted).toHaveBeenCalledOnce();
+    expect(currentCompleted).toHaveBeenCalledWith({
+      ...message,
+      loginSessionId: successorId,
+    });
     liveWorker!.emit({
       type: 'event',
-      payload: { ...message, event: 'HELLO_OTHER' },
+      payload: {
+        ...message,
+        event: 'HELLO_OTHER',
+        loginSessionId: successorId,
+      },
     });
-    expect(completed).toHaveBeenCalledOnce();
+    expect(currentCompleted).toHaveBeenCalledOnce();
+    expect(completed).not.toHaveBeenCalled();
   });
 
   it('transfers the DB port to the active SSE worker', () => {

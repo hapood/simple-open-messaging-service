@@ -7,8 +7,16 @@ import {
   DestroyRef,
 } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
-import { filter, firstValueFrom, map, Subject, Subscription } from 'rxjs';
-import { TrailingSingleFlight } from '../../../../shared/trailing-single-flight';
+import {
+  defer,
+  of,
+  firstValueFrom,
+  fromEvent,
+  Subject,
+  Subscription,
+  takeUntil,
+} from 'rxjs';
+import { KeyedProjectionScheduler } from '../lib/keyed-projection-scheduler';
 import { WebdbService } from './webdb.service';
 import type { ThreadAttentionProjection } from './webdb-storage';
 import type { GroupMetaCommitPatch } from './group-meta-model';
@@ -29,10 +37,8 @@ import {
   localSubjectIdentity,
 } from './model';
 import { MemberProfileRepository } from './member-profile-store.service';
-import {
-  SessionLifecycleService,
-  type SessionWorkScope,
-} from './session-lifecycle.service';
+import { AppDataLifetime } from './app-data-lifetime.service';
+import { ActiveThreadPresentation } from './active-thread-presentation.service';
 import { isAndroidNative } from './runtime';
 import type { ThreadNotificationUpdate } from './thread-notification';
 import { compareThreadItems, mergeThreadItems } from './thread-list-order';
@@ -49,11 +55,6 @@ import {
   type ThreadFeedSnapshot,
   type ThreadAliasApplied,
 } from '../../../../shared/thread-attention';
-
-type ThreadWorkScope = Readonly<{
-  session: SessionWorkScope;
-  projectionReset: AbortSignal;
-}>;
 
 type ThreadContentHead = Pick<ThreadFeedSnapshot, 'threadId' | 'messageEndSeq'>;
 
@@ -82,14 +83,39 @@ export class ThreadRepository {
   private readonly ws = inject(WebsocketService);
   private readonly messageRepo = inject(MessageRepository);
   private readonly memberProfiles = inject(MemberProfileRepository);
-  private readonly lifecycle = inject(SessionLifecycleService);
+  private readonly appData = inject(AppDataLifetime);
+  private readonly activePresentation = inject(ActiveThreadPresentation);
+  private readonly runtimeEnded = defer(() =>
+    this.appData.signal.aborted
+      ? of(undefined)
+      : fromEvent(this.appData.signal, 'abort'),
+  );
 
   private readonly _items = signal<ConversationItem[]>([]);
   private readonly threadStates = new Map<number, LocalThreadAttention>();
-  private readonly projectionTokens = new Map<number, object>();
-  // Projection resets can occur before HELLO without ending a login. Cancel those local reads
-  // separately; account lifetime comes only from the authority's captured session scope.
-  private projectionWork = new AbortController();
+  private readonly pendingNotifications = new Set<number>();
+  private readonly projections = new KeyedProjectionScheduler<
+    number,
+    ThreadAttentionProjection
+  >({
+    read: async (threadId) => {
+      const me = this.userService.sessionProfile();
+      if (!this.threadStates.has(threadId) || !me) return;
+      return this.webdb.projectThreadAttention(threadId, {
+        account: me.account,
+        namespaceId: me.namespaceId,
+      });
+    },
+    publish: (threadId, projection) => {
+      const state = attentionSnapshot(this.threadStates.get(threadId));
+      if (!state) return;
+      const item = this.applyThreadAttentionProjection(projection);
+      if (this.pendingNotifications.delete(threadId) && item)
+        this.threadNotifications.next([{ item, state }]);
+    },
+    onError: (_threadId, error) =>
+      console.warn('[thread-feed] attention projection failed', error),
+  });
   readonly items = computed(() =>
     this._items().filter(
       (item): item is ConversationItem & { threadFeedId: number } =>
@@ -108,10 +134,10 @@ export class ThreadRepository {
   private readonly _error = signal('');
   readonly error = this._error.asReadonly();
 
-  /** The thread currently being viewed — drives the active-row highlight. Set by the UI layer
-   *  ({@link setOpenThread} on open/close); in-memory only (not persisted, not a list field). */
-  private readonly _openThreadId = signal<number | undefined>(undefined);
-  readonly openThreadId = this._openThreadId.asReadonly();
+  /** The single active conversation, distinct from any set of mounted/open panes.
+   * The UI selects it; the presentation bridge reports it to the native notification owner. */
+  private readonly _activeThreadId = signal<number | undefined>(undefined);
+  readonly activeThreadId = this._activeThreadId.asReadonly();
 
   /** Authoritative server cursor versus the locally-dwelled lower bound. ConversationItem.lastReadSeq remains
    *  the effective projection consumed by existing views; these maps keep the two meanings explicit. */
@@ -157,14 +183,22 @@ export class ThreadRepository {
     };
   }
 
-  /** Account-scoped first thread initialization barrier. It is independent of HELLO payload state;
-   * both the list mount and a fast-arriving HELLO await this same single-flight operation. */
-
   private readonly confirmedAliases = new Map<number, ThreadAliasApplied>();
 
   private readonly sseSub: Subscription;
 
   constructor() {
+    const stop = () => {
+      this.clearProjection();
+      this.projections.destroy();
+      this.sseSub?.unsubscribe();
+    };
+    this.appData.signal.addEventListener('abort', stop, { once: true });
+    inject(DestroyRef).onDestroy(() => {
+      this.appData.end();
+      this.appData.signal.removeEventListener('abort', stop);
+      stop();
+    });
     if (isAndroidNative()) {
       document.addEventListener('visibilitychange', this.onAppVisibilityChange);
       inject(DestroyRef).onDestroy(() =>
@@ -174,33 +208,32 @@ export class ThreadRepository {
         ),
       );
     }
-    this.webdb.profileWake$.pipe(takeUntilDestroyed()).subscribe((wake) => {
-      if (wake.event !== 'PROFILE_AVAILABLE') return;
-      for (const item of this._items()) {
-        const reference = threadProfileReference(item);
-        if (
-          reference.namespaceId === wake.key.profileNamespaceId &&
-          reference.account === wake.key.account &&
-          reference.profileRev === wake.key.rev
-        )
-          void this.resolveThreadProfile(item);
-      }
-    });
+    this.webdb.profileWake$
+      .pipe(takeUntil(this.runtimeEnded), takeUntilDestroyed())
+      .subscribe((wake) => {
+        if (wake.event !== 'PROFILE_AVAILABLE') return;
+        for (const item of this._items()) {
+          const reference = threadProfileReference(item);
+          if (
+            reference.namespaceId === wake.key.profileNamespaceId &&
+            reference.account === wake.key.account &&
+            reference.profileRev === wake.key.rev
+          )
+            void this.resolveThreadProfile(item);
+        }
+      });
     this.messageRepo.slotsChanged$
-      .pipe(takeUntilDestroyed())
+      .pipe(takeUntil(this.runtimeEnded), takeUntilDestroyed())
       .subscribe((threadId) => {
         void this.projectThreadAttention(threadId);
       });
-    // Cached rows can be painted before HELLO, while sessionUserId is already null. Logout must
-    // reset them explicitly rather than relying on an identity signal transition.
-    this.lifecycle.ended$
-      .pipe(takeUntilDestroyed())
-      .subscribe(() => this.reset());
-    this.webdb.workerFailed$.pipe(takeUntilDestroyed()).subscribe(() => {
-      // A dead DB worker also destroys the direct port; a new HELLO binds a replacement.
-      this.ws.disconnect();
-      this.ws.connect();
-    });
+    this.webdb.workerFailed$
+      .pipe(takeUntil(this.runtimeEnded), takeUntilDestroyed())
+      .subscribe(() => {
+        // A dead DB worker also destroys the direct port; a new HELLO binds a replacement.
+        this.ws.disconnect();
+        this.ws.connect();
+      });
     // The database worker reports feed-drain completions directly (it used
     // to route through the SSE worker as LOCAL_*_COMMITTED events).
     // Browser path: the DB worker reports drain completions directly with the
@@ -208,19 +241,19 @@ export class ThreadRepository {
     // never re-reads the feed database. (Tauri walks sseSub below instead:
     // Rust emits LOCAL_* without states and the renderer reads the diff.)
     this.webdb.threadFeedCommitted$
-      .pipe(takeUntilDestroyed())
+      .pipe(takeUntil(this.runtimeEnded), takeUntilDestroyed())
       .subscribe((data) => {
         if (data.userId !== this.userService.sessionUserId()) return;
-        void this.applyThreadStates(data.states, true);
-      });
-    this.webdb.threadAttentionProjectionCommitted$
-      .pipe(takeUntilDestroyed())
-      .subscribe((data) => {
-        if (data.userId !== this.userService.sessionUserId()) return;
-        this.applyThreadAttentionProjection(data.projection);
+        void this.applyThreadStates(data.states, true).catch((error) => {
+          if (!this.appData.signal.aborted)
+            console.warn(
+              '[thread-feed] committed state projection failed',
+              error,
+            );
+        });
       });
     this.webdb.groupMetaCommitted$
-      .pipe(takeUntilDestroyed())
+      .pipe(takeUntil(this.runtimeEnded), takeUntilDestroyed())
       .subscribe((data) => {
         if (data.userId !== this.userService.sessionUserId()) return;
         this.applyGroupMetaPatches(data.patches);
@@ -234,83 +267,85 @@ export class ThreadRepository {
         );
       });
     this.webdb.stateFeedCommitted$
-      .pipe(takeUntilDestroyed())
+      .pipe(takeUntil(this.runtimeEnded), takeUntilDestroyed())
       .subscribe((data) => {
         if (data.userId !== this.userService.sessionUserId()) return;
-        void this.refreshCommittedStateFeed();
+        void this.refreshCommittedStateFeed().catch((error) => {
+          if (!this.appData.signal.aborted)
+            console.warn('[state-feed] committed state refresh failed', error);
+        });
       });
     // ── thread-list DATA SSE events (the DB layer is the sole consumer) ──
-    this.sseSub = this.ws.eventSubject.subscribe((m) => {
-      switch (m.event) {
-        case 'HELLO': {
-          const session = this.lifecycle.capture();
-          void this.onHello(m.data as HelloPayload | undefined).catch(
-            (error) => {
-              if (!this.lifecycle.isCurrent(session)) return;
-              // SSE already reconnects and redelivers HELLO. Do not enter local recovery.
-              console.warn('[sse] HELLO handling failed; reconnect retries', error);
-            },
-          );
-          break;
-        }
-        case 'STATE_FEED_UPDATED':
-          // SSE workers hand the wake directly to the owning database/Rust executor.
-          break;
-        case 'PROFILE_NAMESPACE_UPDATED': {
-          // Change-feed wake: pull (cursor, end] and converge bindings.
-          const wakeEnd = (m.data as { end?: unknown } | undefined)?.end;
-          if (typeof wakeEnd === 'number' && Number.isSafeInteger(wakeEnd))
-            void this.webdb
-              .pullProfileNamespaceChanges(wakeEnd)
-              .catch((error) =>
+    this.sseSub = this.ws.eventSubject
+      .pipe(takeUntil(this.runtimeEnded))
+      .subscribe((m) => {
+        switch (m.event) {
+          case 'HELLO': {
+            void this.onHello(m.data as HelloPayload | undefined).catch(
+              (error) => {
+                if (this.appData.signal.aborted) return;
+                // SSE already reconnects and redelivers HELLO. Do not enter local recovery.
                 console.warn(
-                  '[profile-namespace] wake sync failed; next wake retries',
+                  '[sse] HELLO handling failed; reconnect retries',
                   error,
-                ),
-              );
-          break;
-        }
-        case 'THREAD_FEED_UPDATED':
-          // Worker/Rust owns the feed. The renderer only observes its local completion.
-          break;
-        case 'PROFILE_AVAILABLE':
-        case 'PROFILE_UNAVAILABLE':
-          void this.webdb
-            .applyProfileEvent(m.event, m.data)
-            .catch((error) =>
-              console.warn('[profile] local materialization failed', error),
+                );
+              },
             );
-          break;
-        // ── Tauri only: Rust emits the thread-alias side effect separately
-        // from the thread-feed states; the renderer applies it inline. ──
-        case 'THREAD_ALIAS_APPLIED': {
-          const data = m.data as ThreadAliasApplied & { userId: number };
-          if (
-            data?.userId > 0 &&
-            data.userId === this.userService.sessionUserId()
-          )
-            this.applyThreadAlias(data);
-          break;
+            break;
+          }
+          case 'STATE_FEED_UPDATED':
+            // SSE workers hand the wake directly to the owning database/Rust executor.
+            break;
+          case 'PROFILE_NAMESPACE_UPDATED': {
+            // Change-feed wake: pull (cursor, end] and converge bindings.
+            const wakeEnd = (m.data as { end?: unknown } | undefined)?.end;
+            if (typeof wakeEnd === 'number' && Number.isSafeInteger(wakeEnd))
+              void this.webdb
+                .pullProfileNamespaceChanges(wakeEnd)
+                .catch((error) =>
+                  console.warn(
+                    '[profile-namespace] wake sync failed; next wake retries',
+                    error,
+                  ),
+                );
+            break;
+          }
+          case 'THREAD_FEED_UPDATED':
+            // Worker/Rust owns the feed. The renderer only observes its local completion.
+            break;
+          case 'PROFILE_AVAILABLE':
+          case 'PROFILE_UNAVAILABLE':
+            void this.webdb
+              .applyProfileEvent(m.event, m.data)
+              .catch((error) =>
+                console.warn('[profile] local materialization failed', error),
+              );
+            break;
+          // ── Tauri only: Rust emits the thread-alias side effect separately
+          // from the thread-feed states; the renderer applies it inline. ──
+          case 'THREAD_ALIAS_APPLIED': {
+            const data = m.data as ThreadAliasApplied & { userId: number };
+            if (
+              data?.userId > 0 &&
+              data.userId === this.userService.sessionUserId()
+            )
+              this.applyThreadAlias(data);
+            break;
+          }
         }
-      }
-    });
+      });
     // Reconnect refresh is HELLO-driven now: the SSE reconnect re-pushes HELLO → onHello re-runs
     // (cache-paint + state-feed replay). No separate reconnect→boot wiring needed.
 
-    // Session-end reset: when the session ends (sessionUserId → null after the session owner resets local state), drop
-    // the in-memory list so a second account logging into the same live SPA cannot inherit this user's
-    // cached list. The IDB partition is handled by WebdbService (closed on the same signal); this covers
-    // the in-memory layer. Reset flips status back to LOADING so the next login's ThreadListComponent
-    // re-enters the loading state until the fresh HELLO lands.
+    // Identity hydration can make the self coordinates available after cache paint.
+    // Later login admission requires a new app; this effect never reactivates one.
     effect(() => {
+      if (this.appData.signal.aborted) return;
       if (this.userService.sessionProfile())
         for (const threadId of this.threadStates.keys())
           void this.projectThreadAttention(threadId);
     });
-    effect(() => {
-      const id = this.userService.sessionUserId();
-      if (id === null) this.reset();
-    });
+    if (this.appData.signal.aborted) stop();
   }
 
   /** Both query results and local worker wakes refresh the selected immutable
@@ -321,8 +356,7 @@ export class ThreadRepository {
    * comes back PENDING simply stays subscribed until its wake delivers. */
   private async resolveThreadProfile(item: ConversationItem): Promise<void> {
     const reference = threadProfileReference(item);
-    if (reference.profileRev < 1) return;
-    const scope = this.captureWork();
+    if (this.appData.signal.aborted || reference.profileRev < 1) return;
     const demand = homeProfileDemand(
       reference.account,
       reference.namespaceId,
@@ -333,8 +367,10 @@ export class ThreadRepository {
         ? demand
         : unevidencedProfileDemand(demand);
     try {
-      const profile = await firstValueFrom(this.profiles.resolve(request));
-      if (!this.isCurrentWork(scope)) return;
+      const profile = await firstValueFrom(
+        this.profiles.resolve(request).pipe(takeUntil(this.runtimeEnded)),
+      );
+      if (this.appData.signal.aborted) return;
       this._items.update((items) =>
         items.map((current) => {
           if (
@@ -357,54 +393,36 @@ export class ThreadRepository {
         }),
       );
     } catch (error) {
-      if (this.isCurrentWork(scope))
+      if (!this.appData.signal.aborted)
         console.warn('[profile] thread resolution failed', error);
     }
   }
 
-  /**
-   * Drop ALL in-memory session state (logout / account switch). The IDB store is closed + deleted by
-   * WebdbService (on the same sessionUserId signal); this resets the in-memory caches so they cannot leak
-   * across users. Resets {@link _status} to LOADING so the freshly-mounted list re-loads on the next HELLO.
-   */
   private readonly onAppVisibilityChange = (): void => {
-    if (document.visibilityState !== 'visible') return;
+    if (this.appData.signal.aborted || document.visibilityState !== 'visible')
+      return;
     // The native stream can have been stopped in the background. Reconnect for a fresh
     // HELLO/feed ceiling before a resident or newly opened message pane resumes reads.
     this.ws.refreshHandshake();
   };
 
-  private captureWork(): ThreadWorkScope {
-    return Object.freeze({
-      session: this.lifecycle.capture(),
-      projectionReset: this.projectionWork.signal,
-    });
-  }
-
-  private isCurrentWork(scope: ThreadWorkScope): boolean {
-    return (
-      !scope.projectionReset.aborted && this.lifecycle.isCurrent(scope.session)
-    );
-  }
-
-  private reset(): void {
-    const previous = this.projectionWork;
-    this.projectionWork = new AbortController();
-    previous.abort();
+  /** Clear renderer data only when its one-shot app runtime ends. */
+  private clearProjection(): void {
+    for (const threadId of this.threadStates.keys())
+      this.projections.invalidate(threadId);
     this.threadStates.clear();
     this.confirmedAliases.clear();
-    this.projectionTokens.clear();
+    this.pendingNotifications.clear();
     this._items.set([]);
     this._status.set('LOADING');
     this._navigationReady.set(false);
     this._error.set('');
-    this._openThreadId.set(undefined);
+    this._activeThreadId.set(undefined);
     this.lastSeenSeq.clear();
     this.serverLastReadSeq.clear();
     this.localStableReadSeq.clear();
     this.pendingUnknownContentHeads.clear();
     this.threadFeedCursor = undefined;
-    // Clear the native durable copy too (logout / account switch) so a different user does not inherit it.
   }
 
   // ── boot: account thread initialization + HELLO delta replay ──────────────────────────────
@@ -426,6 +444,7 @@ export class ThreadRepository {
 
   /** Re-run the authoritative feed handshake after a mutation that creates a new thread. */
   async refreshAfterMutation(): Promise<void> {
+    this.appData.assertActive();
     this.ws.disconnect();
     this.ws.connect();
   }
@@ -433,12 +452,11 @@ export class ThreadRepository {
   /** Read the IDB `threads` store + apply it instantly (the eager pre-HELLO paint). Bails if the list is
    *  already populated so a late cache read cannot clobber a fresher HELLO delta that landed during it. */
   private async paintFromCache(): Promise<void> {
-    const scope = this.captureWork();
     try {
-      if (!this.isCurrentWork(scope)) return;
+      if (this.appData.signal.aborted) return;
       if (this._items().length > 0) return; // already populated — don't clobber a fresher state
-      const cached = await this.readCachedThreads(scope);
-      if (!this.isCurrentWork(scope)) return;
+      const cached = await this.readCachedThreads();
+      if (this.appData.signal.aborted) return;
       if (cached.length > 0 && this._items().length === 0) {
         for (const item of cached) {
           if (typeof item.lastReadSeq === 'number')
@@ -446,42 +464,25 @@ export class ThreadRepository {
         }
         this.applyItems(cached); // flips READY
         const states = await this.webdb.getThreadStates();
-        if (!this.isCurrentWork(scope)) return;
+        if (this.appData.signal.aborted) return;
         await this.applyThreadStates(states, false);
-        if (!this.isCurrentWork(scope)) return;
+        if (this.appData.signal.aborted) return;
         this._navigationReady.set(true);
       } else if (this._items().length === 0 && this._status() !== 'READY') {
         this._status.set('LOADING'); // cold start, no cache → await HELLO's delta
       }
     } catch (error) {
       // Cache paint is optional; HELLO owns initialization and authoritative recovery.
-      console.warn('[cache-paint] cached thread read failed', error);
+      if (!this.appData.signal.aborted)
+        console.warn('[cache-paint] cached thread read failed', error);
     }
   }
 
-  /** Set/clear the open thread (UI layer drives this on open/close; used for unread suppression). */
-  async setOpenThread(threadId: number | undefined): Promise<void> {
-    this._openThreadId.set(threadId);
-    await this.persistOpenThreadState(threadId ?? null);
-  }
-
-  /** Persisting the open-thread UI state is best-effort: callers fire it and
-   *  forget, and account cache teardown (login switch, logout, invalidation)
-   *  rejects every queued account operation with 'account cache lifetime
-   *  expired'. The stale UI write is meaningless once the cache is going
-   *  away, so only that expected rejection is swallowed; real storage errors
-   *  still propagate. */
-  private async persistOpenThreadState(threadId: number | null): Promise<void> {
-    try {
-      await this.webdb.setOpenThread(threadId);
-    } catch (error) {
-      if (
-        error instanceof Error &&
-        error.message === 'account cache lifetime expired'
-      )
-        return;
-      throw error;
-    }
+  /** Select/clear the active thread without changing which panes remain open. */
+  setActiveThread(threadId: number | undefined): void {
+    if (this.appData.signal.aborted) return;
+    this._activeThreadId.set(threadId);
+    this.activePresentation.reportActiveThread(threadId);
   }
 
   /** Resolve the ConversationItem for a thread the caller knows exists, waiting for a reload if it is not
@@ -494,7 +495,7 @@ export class ThreadRepository {
     if (found) return found;
     if (this._status() === 'READY') this.load();
     const deadline = Date.now() + timeoutMs;
-    while (Date.now() < deadline) {
+    while (!this.appData.signal.aborted && Date.now() < deadline) {
       await new Promise((r) => setTimeout(r, 80));
       const it = this._items().find((t) => t.threadId === threadId);
       if (it) return it;
@@ -604,11 +605,16 @@ export class ThreadRepository {
    *  Both IDB writes are best-effort + fire-and-forget. */
   async removeThread(threadId: number): Promise<void> {
     this._items.update((list) => list.filter((t) => t.threadId !== threadId));
-    if (this._openThreadId() === threadId) this._openThreadId.set(undefined);
+    if (this._activeThreadId() === threadId) {
+      this._activeThreadId.set(undefined);
+      this.activePresentation.reportActiveThread(undefined);
+    }
     this.lastSeenSeq.delete(threadId);
     this.serverLastReadSeq.delete(threadId);
     this.localStableReadSeq.delete(threadId);
     this.threadStates.delete(threadId);
+    this.projections.invalidate(threadId);
+    this.pendingNotifications.delete(threadId);
     this.pendingUnknownContentHeads.delete(threadId);
     await Promise.all([
       this.deleteThreadFromDb(threadId),
@@ -639,27 +645,45 @@ export class ThreadRepository {
       threadId,
       advanceLocalAttentionRead(currentState, seq),
     );
-    const scope = this.captureWork();
     void this.webdb
       .advanceThreadRead(threadId, seq)
       .then((state) => {
-        if (!this.isCurrentWork(scope)) return;
-        void this.applyThreadStates([state], false);
-        void this.projectThreadAttention(threadId);
+        if (this.appData.signal.aborted) return;
+        return this.applyThreadStates([state], false);
       })
-      .catch((error) =>
-        console.warn('[thread-feed] local read persistence failed', error),
-      );
+      .catch((error) => {
+        if (!this.appData.signal.aborted)
+          console.warn('[thread-feed] local read persistence failed', error);
+      });
     return true;
   }
 
   private applyItems(items: ConversationItem[]): void {
-    const incoming = items.map((item) => this.withConfirmedAlias(item));
-    // Cache re-reads are full snapshots, not feed pages. Extract their ordering delta first.
-    const byId = new Map(incoming.map((item) => [item.threadId, item]));
     const currentById = new Map(
       this._items().map((item) => [item.threadId, item]),
     );
+    const incoming = items.map((item) => {
+      const current = currentById.get(item.threadId);
+      // Hydration may seed attention once. Later cache reads must not bypass
+      // the per-thread publication lane with an older persisted projection.
+      return this.withConfirmedAlias(
+        current && this.threadStates.has(item.threadId)
+          ? {
+              ...item,
+              lastReadSeq: current.lastReadSeq,
+              unreadCount: current.unreadCount,
+              mentionUnread: current.mentionUnread,
+              lastMessagePreview: current.lastMessagePreview,
+              lastMessageAt: current.lastMessageAt,
+              lastMessageSenderAccount: current.lastMessageSenderAccount,
+              lastMessageSenderNamespaceId:
+                current.lastMessageSenderNamespaceId,
+            }
+          : item,
+      );
+    });
+    // Cache re-reads are full snapshots, not feed pages. Extract their ordering delta first.
+    const byId = new Map(incoming.map((item) => [item.threadId, item]));
     const retained = this._items()
       .filter((item) => byId.has(item.threadId))
       .map((item) => {
@@ -672,7 +696,11 @@ export class ThreadRepository {
     });
     const ordered = mergeThreadItems(retained, delta);
     this._items.set(ordered);
-    for (const item of ordered) void this.resolveThreadProfile(item);
+    for (const item of ordered) {
+      void this.resolveThreadProfile(item);
+      if (this.threadStates.has(item.threadId))
+        void this.projectThreadAttention(item.threadId);
+    }
     this._status.set('READY');
   }
 
@@ -741,18 +769,13 @@ export class ThreadRepository {
     //    start: already opened by restoreSession's restoreWebdb, idempotent here). The profile fetch is
     //    gated async inside establishSession. The cache-paint is NOT repeated here — load() already eager-
     //    painted from the IDB cache (and on a cold start the cache is empty, so the delta below populates).
-    const session = this.lifecycle.capture();
+    if (this.appData.signal.aborted) return;
     await this.userService.establishSession(
       d.userId,
       d.profileRev ?? 0,
       d.sessionId,
     );
-    if (!this.lifecycle.isCurrent(session)) return;
-    // Initial identity hydration may reset an empty projection without ending this login.
-    const scope: ThreadWorkScope = Object.freeze({
-      session,
-      projectionReset: this.projectionWork.signal,
-    });
+    if (this.appData.signal.aborted) return;
     // Profile-namespace change sync: the HELLO anchor skips the pull when the
     // persisted cursor already matches (fresh caches simply start at 0).
     if (
@@ -772,15 +795,15 @@ export class ThreadRepository {
     // not provide or own the deletion HWM; reconnects reuse the persisted result.
     if (this.threadFeedCursor === undefined) {
       const cursor = (await this.webdb.readAccountState()).threadFeedCursor;
-      if (!this.isCurrentWork(scope)) return;
+      if (this.appData.signal.aborted) return;
       this.threadFeedCursor = typeof cursor === 'number' ? cursor : 0;
     }
     const states = await this.webdb.getThreadStates();
-    if (!this.isCurrentWork(scope)) return;
+    if (this.appData.signal.aborted) return;
     await this.applyThreadStates(states, false);
-    if (!this.isCurrentWork(scope)) return;
+    if (this.appData.signal.aborted) return;
     const port = await this.webdb.createThreadFeedPort();
-    if (!this.isCurrentWork(scope)) {
+    if (this.appData.signal.aborted) {
       port?.close();
       return;
     }
@@ -788,20 +811,19 @@ export class ThreadRepository {
     // HELLO is a memory event. The worker/Rust executor commits the state feed,
     // then reports state-feed-committed; the UI only reads its projection.
     await this.refreshCommittedStateFeed();
-    if (!this.isCurrentWork(scope)) return;
+    if (this.appData.signal.aborted) return;
     // The HELLO wake reaches the worker/Rust independently. A concurrent completion also
     // delivers thread-feed-committed after the cursor and Group Meta pages commit.
     await this.refreshCommittedThreadFeed();
-    if (!this.isCurrentWork(scope)) return;
+    if (this.appData.signal.aborted) return;
     this._navigationReady.set(true);
   }
 
   private async refreshCommittedStateFeed(): Promise<void> {
-    const scope = this.captureWork();
     const cursor = await this.userService.refreshCommittedStateFeed();
-    if (!this.isCurrentWork(scope) || cursor === undefined) return;
-    const items = await this.readCachedThreads(scope);
-    if (!this.isCurrentWork(scope)) return;
+    if (this.appData.signal.aborted || cursor === undefined) return;
+    const items = await this.readCachedThreads();
+    if (this.appData.signal.aborted) return;
     this.applyItems(items);
   }
 
@@ -813,23 +835,22 @@ export class ThreadRepository {
   /** Completion wakes never initiate HTTP, including after a partially successful background drain. */
   private async refreshCommittedThreadFeed(): Promise<void> {
     if (this.threadFeedCursor === undefined) return;
-    const scope = this.captureWork();
     try {
       const changes = await this.webdb.readThreadFeedChanges(
         this.threadFeedCursor,
       );
-      if (!this.isCurrentWork(scope)) return;
+      if (this.appData.signal.aborted) return;
       const items = await this.webdb.getThreads();
-      if (!this.isCurrentWork(scope)) return;
+      if (this.appData.signal.aborted) return;
       this.applyItems(items);
       await this.applyThreadStates(changes.states, true);
-      if (!this.isCurrentWork(scope)) return;
+      if (this.appData.signal.aborted) return;
       this.threadFeedCursor = Math.max(
         this.threadFeedCursor ?? 0,
         changes.cursor,
       );
     } catch (error) {
-      if (this.isCurrentWork(scope))
+      if (!this.appData.signal.aborted)
         console.warn('[thread-feed] local completion refresh failed', error);
     }
   }
@@ -838,8 +859,8 @@ export class ThreadRepository {
     states: LocalThreadAttention[],
     emitLive: boolean,
   ): Promise<void> {
-    const scope = this.captureWork();
-    const notifications: ThreadNotificationUpdate[] = [];
+    if (this.appData.signal.aborted) return;
+    const refreshes: Promise<void>[] = [];
     const knownIds = new Set(this._items().map((item) => item.threadId));
     const missingIds = new Set(
       states
@@ -849,7 +870,7 @@ export class ThreadRepository {
     let additions: ConversationItem[] = [];
     if (missingIds.size) {
       const cached = await this.webdb.getThreads();
-      if (!this.isCurrentWork(scope)) return;
+      if (this.appData.signal.aborted) return;
       const stillKnown = new Set(this._items().map((item) => item.threadId));
       additions = cached
         .filter(
@@ -879,7 +900,7 @@ export class ThreadRepository {
       additions,
     );
     for (const stored of states) {
-      if (!this.isCurrentWork(scope)) return;
+      if (this.appData.signal.aborted) return;
       const delivered = attentionSnapshot(stored);
       const notify =
         delivered &&
@@ -918,46 +939,16 @@ export class ThreadRepository {
           this.applyContentHeadToKnownThread(pending);
         }
       }
-      const projection = await this.projectThreadAttention(state.threadId);
-      if (!this.isCurrentWork(scope)) return;
-      const item =
-        projection && snapshot
-          ? this.applyThreadAttentionProjection(projection, snapshot)
-          : undefined;
-      if (notify && item && snapshot)
-        notifications.push({ item, state: snapshot });
+      if (emitLive && notify) this.pendingNotifications.add(state.threadId);
+      refreshes.push(this.projectThreadAttention(state.threadId));
     }
-    if (emitLive && this.isCurrentWork(scope) && notifications.length)
-      this.threadNotifications.next(notifications);
+    await Promise.all(refreshes);
   }
 
-  private async projectThreadAttention(
-    threadId: number,
-  ): Promise<ThreadAttentionProjection | undefined> {
-    const state = this.threadStates.get(threadId);
-    const me = this.userService.sessionProfile();
-    if (!state || !me) return;
-    const scope = this.captureWork();
-    const token = {};
-    this.projectionTokens.set(threadId, token);
-    const projection = await this.webdb
-      .projectThreadAttention(threadId, {
-        account: me.account,
-        namespaceId: me.namespaceId,
-      })
-      .catch((error) => {
-        if (this.isCurrentWork(scope))
-          console.warn('[thread-feed] attention projection failed', error);
-        return null;
-      });
-    if (
-      projection === null ||
-      !this.isCurrentWork(scope) ||
-      this.threadStates.get(threadId) !== state ||
-      this.projectionTokens.get(threadId) !== token
-    )
-      return;
-    return projection;
+  /** All local attention reads share one lane per thread. The scheduler owns
+   * publication after a clean pass, including slot-only and profile wakes. */
+  private projectThreadAttention(threadId: number): Promise<void> {
+    return this.projections.request(threadId);
   }
 
   private applyGroupMetaPatches(patches: GroupMetaCommitPatch[]): void {
@@ -989,7 +980,6 @@ export class ThreadRepository {
 
   private applyThreadAttentionProjection(
     projection: ThreadAttentionProjection,
-    server?: ThreadFeedSnapshot,
   ): ConversationItem | undefined {
     let projected: ConversationItem | undefined;
     this._items.update((items) =>
@@ -998,20 +988,10 @@ export class ThreadRepository {
         const changed = {
           ...item,
           lastReadSeq: projection.lastReadSeq,
-          announcementReadFeedId: server
-            ? Math.max(
-                item.announcementReadFeedId ?? 0,
-                server.announcementReadFeedId ?? 0,
-              )
-            : item.announcementReadFeedId,
+          // Feed-owned heads are applied synchronously by applyThreadStates,
+          // never by a later attention read (which may follow a local acknowledgement).
           unreadCount: projection.unreadCount,
           mentionUnread: projection.mentionUnread,
-          joinRequestEndFeedId:
-            server?.joinRequestEndFeedId ?? item.joinRequestEndFeedId,
-          joinRequestReadFeedId:
-            server?.joinRequestReadFeedId ?? item.joinRequestReadFeedId,
-          groupInviteEndFeedId:
-            server?.groupInviteEndFeedId ?? item.groupInviteEndFeedId,
           lastMessagePreview: projection.lastMessagePreview,
           lastMessageAt: projection.lastMessageAt,
           lastMessageSenderAccount: projection.lastMessageSenderAccount,
@@ -1161,13 +1141,11 @@ export class ThreadRepository {
   // ── IDB persistence helpers (best-effort; IDB unavailable → graceful no-op) ────────────────
 
   /** Read cached threads and restore the authoritative account-scoped feed order. */
-  private async readCachedThreads(
-    scope: ThreadWorkScope,
-  ): Promise<ConversationItem[]> {
+  private async readCachedThreads(): Promise<ConversationItem[]> {
     const all = await this.webdb.getThreads();
-    if (!this.isCurrentWork(scope)) return [];
+    if (this.appData.signal.aborted) return [];
     const storedStates = await this.webdb.getThreadStates();
-    if (!this.isCurrentWork(scope)) return [];
+    if (this.appData.signal.aborted) return [];
     const states = new Map(
       storedStates
         .filter((state) => state.threadFeedId !== null)

@@ -12,7 +12,6 @@ import {
   takeUntil,
 } from 'rxjs';
 import { TranslocoService } from '@jsverse/transloco';
-import { RouteService, RoutePage } from './route.service';
 import { ServerConfigDialogService } from './server-config-dialog.service';
 import { apiPrefix } from './constants';
 import {
@@ -34,7 +33,6 @@ import { WebPushService } from './web-push.service';
 import { UserService } from './user.service';
 import { ToastService } from './toast.service';
 import { CALL_SESSION_ENDING_EVENT } from './web-call.adapter';
-import { ThreadSendOutbox } from './thread-send-outbox.service';
 
 import { SessionStateService } from './session-state.service';
 import type { LogoutOutcome } from './session/logout-outcome';
@@ -45,6 +43,10 @@ import { deleteBrowserSessionCache } from './session/browser-session-cache';
 import { DatabaseRestorationError } from './session/database-restoration-error';
 import { classifyDatabaseInitFailure } from './session/database-init-failure';
 import { SessionStore } from './session/session-store';
+import {
+  LOGOUT_REQUEST_AUTHORITY,
+  LogoutRequestAuthority,
+} from './session/logout-request-authority';
 import { SessionStartupService } from './session-startup.service';
 import { sessionRequest } from './session/session-request';
 import {
@@ -63,6 +65,10 @@ import {
 const IMPORTANT_NOTICE_MS = 6000;
 
 import { clearSessionNotifications } from './notification-session';
+import {
+  AppDataLifetime,
+  RESTART_APP_DOCUMENT,
+} from './app-data-lifetime.service';
 
 type LoginRes = {
   code: number;
@@ -133,19 +139,19 @@ export class AuthService {
   private readonly logoutDecision = inject(LogoutDecisionService);
   private readonly browserSession = inject(BROWSER_SESSION);
   private readonly lifecycle = inject(SessionLifecycleService);
+  private readonly appData = inject(AppDataLifetime);
+  private readonly restartDocument = inject(RESTART_APP_DOCUMENT);
   private readonly startup = inject(SessionStartupService);
   private readonly serverConfigDialog = inject(ServerConfigDialogService);
   readonly loggedIn = this.sessionState.loggedIn;
 
   constructor(
     private http: HttpClient,
-    private routeService: RouteService,
     private push: PushService,
     private webPush: WebPushService,
     private userService: UserService,
     private transloco: TranslocoService,
     private toast: ToastService,
-    private sendOutbox: ThreadSendOutbox,
   ) {
     this.serverConfigDialog.opened$.subscribe(() => {
       if (isTauri() && !this.isLoggedIn()) this.lifecycle.invalidateSession();
@@ -212,9 +218,15 @@ export class AuthService {
       this.sessionState.setAuthenticated(false);
       this.lifecycle.invalidateSession();
       recovery.work = this.lifecycle.capture();
+      if (this.appData.signal.aborted)
+        this.appData.restart(this.restartDocument);
       return true;
     } catch (error) {
-      if (!this.lifecycle.isCurrent(recovery.work) || isSessionSupersededError(error)) return false;
+      if (
+        !this.lifecycle.isCurrent(recovery.work) ||
+        isSessionSupersededError(error)
+      )
+        return false;
       throw error;
     }
   }
@@ -228,11 +240,13 @@ export class AuthService {
   ): Observable<T> {
     if (isTauri()) {
       return defer(() => {
+        this.appData.assertCanAuthenticate();
         if (this.serverConfigDialog.visible()) return EMPTY;
         return from(this.prepareNativeLogin()).pipe(
           mergeMap(async (context) => {
             await pickLoginOrigin();
             this.lifecycle.assertCurrent(context.work);
+            this.appData.assertCanAuthenticate();
             return context;
           }),
           mergeMap(request),
@@ -240,16 +254,17 @@ export class AuthService {
       }).pipe(takeUntil(this.serverConfigDialog.opened$));
     }
     const browser = this.requireBrowserSession();
-    return defer(() =>
-      browser.authenticate(async (signal) => {
+    return defer(() => {
+      this.appData.assertCanAuthenticate();
+      return browser.authenticate(async (signal) => {
         await pickLoginOrigin();
         return sessionRequest(
           request({ host: 'browser', signal }),
           signal,
           30_000,
         );
-      }),
-    );
+      });
+    });
   }
 
   private requireBrowserSession() {
@@ -274,6 +289,7 @@ export class AuthService {
     const work = this.lifecycle.capture();
     await released;
     this.lifecycle.assertCurrent(work);
+    this.appData.assertCanAuthenticate();
     const id = parseLoginSessionId(
       await tauriInvoke<string>('native_db_begin_login'),
     );
@@ -461,20 +477,15 @@ export class AuthService {
     void this.webPush.onLogin();
   }
 
-  /** Drop the session and route to login; the login page signals that the session ended. */
+  /** End this renderer before cleanup; only a new document may sign in again. */
   redoLoginAuth() {
     this.announceSessionEnding();
-    if (!isTauri()) {
-      void this.endBrowserSession().catch((error) =>
-        console.warn('[session] local termination failed', error),
-      );
-      this.routeService.redirect(RoutePage.AUTH_LOGIN);
-      return;
-    }
     void this.clearToken().catch((error) =>
-      console.warn('[session] native local termination failed', error),
+      console.warn(
+        '[session] local termination failed; renderer remains closed',
+        error,
+      ),
     );
-    this.routeService.redirect(RoutePage.AUTH_LOGIN);
   }
 
   /** Push a freshly obtained (login) or restored (cold-start) session token to the platforms that need the
@@ -493,14 +504,15 @@ export class AuthService {
     if (!isTauri())
       throw new Error('Native token installation requires the native host');
     this.lifecycle.assertCurrent(context.work);
+    this.appData.assertCanAuthenticate();
     // The original operation supplies the UUID, never the mutable current-login mirror.
     await tauriInvoke('set_session_token', {
       token,
       sessionUuid: context.id,
     });
     this.lifecycle.assertCurrent(context.work);
+    this.lifecycle.publishIdentity(context.id);
     this.nativeLoginUuid = context.id;
-    this.lifecycle.bindSession(context.id);
     const admitted = this.lifecycle.capture();
     onAdmitted?.(admitted);
     if (isAndroidNative()) {
@@ -551,14 +563,10 @@ export class AuthService {
       const hint = this.sessionState.hasBrowserSessionHint();
       this.sessionState.setAuthenticated(false);
       try {
-        await browser.restore(
-          hint,
-          undefined,
-          (restored) => {
-            this.sessionState.setAuthenticated(restored);
-            if (!restored) this.clearPresenceCookie();
-          },
-        );
+        await browser.restore(hint, undefined, (restored) => {
+          this.sessionState.setAuthenticated(restored);
+          if (!restored) this.clearPresenceCookie();
+        });
       } catch (error) {
         if (isSessionSupersededError(error)) return;
         const choice = await this.answerDatabaseInit(error);
@@ -583,8 +591,7 @@ export class AuthService {
           await this.restoreNativeSession({ token: t, sessionUuid }, recovery);
         }
       } catch (error) {
-        if ((await this.answerDatabaseInit(error, recovery.work)) === 'rebuild')
-          await this.resetNativeFrontend(recovery);
+        await this.handleNativeRestoreFailure(error, recovery);
       }
     } else if (isTauri()) {
       try {
@@ -598,11 +605,30 @@ export class AuthService {
           await this.restoreNativeSession(login, recovery);
         }
       } catch (error) {
-        if ((await this.answerDatabaseInit(error, recovery.work)) === 'rebuild')
-          await this.resetNativeFrontend(recovery);
+        await this.handleNativeRestoreFailure(error, recovery);
       }
     }
     // Browser: _canTrust stays false (web can never be trusted).
+  }
+
+  private async handleNativeRestoreFailure(
+    error: unknown,
+    recovery: { work: SessionWorkScope; sessionUuid: string | null },
+  ): Promise<void> {
+    if (
+      !this.lifecycle.isCurrent(recovery.work) ||
+      isSessionSupersededError(error)
+    )
+      return;
+    const choice = await this.answerDatabaseInit(error, recovery.work);
+    if (choice === 'rebuild') {
+      await this.resetNativeFrontend(recovery);
+    } else if (recovery.work.sessionId) {
+      // A transient cache read is not permission to delete the database. But this
+      // renderer already admitted data work, so retire its owner and restart only
+      // after credential/resource release, never expose a dead sign-in screen.
+      if (!(await this.clearToken())) throw error;
+    }
   }
 
   /** Validate stored credentials against the durable login before reading account data.
@@ -623,7 +649,10 @@ export class AuthService {
       });
     } catch (error) {
       this.lifecycle.assertCurrent(work);
-      if (typeof error === 'string' && error.startsWith('SESSION_DATABASE_ERROR:'))
+      if (
+        typeof error === 'string' &&
+        error.startsWith('SESSION_DATABASE_ERROR:')
+      )
         throw new DatabaseRestorationError(error);
       throw error;
     }
@@ -732,12 +761,24 @@ export class AuthService {
 
   /** Full clear (local state + native token). Used by {@link redoLoginAuth} / {@link revokeAndBounce},
    *  where NO authenticated request follows, so the native token can be cleared at once. */
-  async clearToken(): Promise<boolean> {
+  private localTermination: Promise<boolean> | null = null;
+
+  clearToken(): Promise<boolean> {
+    this.appData.end();
+    // Keep the terminal result, including failure: repeated callers must never
+    // reinterpret an incompletely ended owner as a residual credential.
+    return (this.localTermination ??= this.performLocalTermination());
+  }
+
+  private async performLocalTermination(): Promise<boolean> {
     if (!isTauri()) {
       await this.endBrowserSession();
+      this.appData.restart(this.restartDocument);
       return true;
     }
-    return this.endNativeSession();
+    const cleared = await this.endNativeSession();
+    if (cleared) this.appData.restart(this.restartDocument);
+    return cleared;
   }
 
   /** Forced invalidation and explicit local token clear do not attempt remote revocation. */
@@ -781,19 +822,22 @@ export class AuthService {
 
   private async performBrowserLogout(): Promise<void> {
     const completion = await this.requireBrowserSession().logoutWithDecision(
-      (signal) =>
-        sessionRequest(
+      async (signal) => {
+        const authority = new LogoutRequestAuthority(signal);
+        await sessionRequest(
           this.http.post<LogoutRes>(
             `${apiPrefix()}/auth/logout`,
             {},
             {
               context: new HttpContext()
                 .set(REQUEST_SCOPE, RequestScope.Authentication)
+                .set(LOGOUT_REQUEST_AUTHORITY, authority)
                 .set(SUPPRESS_HTTP_ERROR_TOAST, true),
             },
           ),
-          signal,
-        ).then(() => undefined),
+          authority.signal,
+        );
+      },
       (outcome) => this.logoutDecision.decide(outcome),
       async () => {
         await this.webPush.unsubscribe().catch((error) => {
@@ -810,6 +854,7 @@ export class AuthService {
       },
     );
     if (completion === 'superseded') throw new SessionSupersededError();
+    this.appData.restart(this.restartDocument);
   }
 
   private nativeLogout: Promise<void> | null = null;
@@ -832,7 +877,7 @@ export class AuthService {
   private async performNativeLogout(): Promise<void> {
     // Rust retains the credential and auth transition, including between IPC commands.
     await tauriInvoke('begin_logout');
-    await this.sendOutbox.clear();
+    // Rust owns pending-send cleanup. Renderer data admission is already closed.
     await this.userService.releaseSession();
     const status = await tauriInvoke<string>('logout_status');
     let localOnly = false;
@@ -854,9 +899,11 @@ export class AuthService {
     this.clearLocalSessionState();
     // Rust clears OS notifications before releasing logout admission. A second
     // renderer cleanup here could erase notifications belonging to a new login.
+    this.appData.restart(this.restartDocument);
   }
 
   logout() {
+    this.appData.end();
     if (!isTauri()) {
       if (!this.browserLogout) this.announceSessionEnding();
       return from(this.requestBrowserLogout()).pipe(
@@ -887,8 +934,8 @@ export class AuthService {
     const endedLogin = this.nativeLoginUuid;
     this.nativeLoginUuid = null;
     this.clearLocalSessionState();
-    const cleanup = this.sendOutbox.clear();
-    // Invalidate admission synchronously, but retain the physical cache and account preferences.
+    // Retain physical cache and account preferences under the ended Rust owner.
+    // Do not issue renderer database work after app data cancellation.
     let release: Promise<void>;
     try {
       release = this.userService.releaseSession();
@@ -899,7 +946,6 @@ export class AuthService {
       () => ({ failed: false as const }),
       (error: unknown) => ({ failed: true as const, error }),
     );
-    await cleanup;
     let nativeOk = true;
     if (endedLogin) {
       nativeOk = await this.clearNativeToken(endedLogin);

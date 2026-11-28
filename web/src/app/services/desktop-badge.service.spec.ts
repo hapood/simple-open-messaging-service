@@ -4,7 +4,11 @@ import { DesktopBadgeService } from './desktop-badge.service';
 import { ConversationListService } from './conversation-list.service';
 import { SessionLifecycleService } from './session-lifecycle.service';
 import { UserService } from './user.service';
-import { parseLoginSessionId } from './session/session-identity';
+import {
+  parseLoginSessionId,
+  SessionSupersededError,
+  type LoginSessionId,
+} from './session/session-identity';
 
 // Keep transitive application imports real; only the platform IPC and injected stores are replaced.
 describe('desktop Dock badge wake bridge', () => {
@@ -21,6 +25,10 @@ describe('desktop Dock badge wake bridge', () => {
     userId.set(1);
     invoke.mockReset();
     invoke.mockResolvedValue(undefined);
+    createRuntime(login);
+  });
+
+  function createRuntime(sessionId: LoginSessionId): void {
     TestBed.configureTestingModule({
       providers: [
         provideZonelessChangeDetection(),
@@ -28,8 +36,8 @@ describe('desktop Dock badge wake bridge', () => {
         { provide: UserService, useValue: { sessionUserId: userId } },
       ],
     });
-    TestBed.inject(SessionLifecycleService).bindSession(login);
-  });
+    TestBed.inject(SessionLifecycleService).bindSession(sessionId);
+  }
   afterEach(() => {
     TestBed.resetTestingModule();
     delete window.__TAURI_INTERNALS__;
@@ -70,13 +78,20 @@ describe('desktop Dock badge wake bridge', () => {
     expect(invoke).toHaveBeenCalledTimes(1);
   });
 
-  it('uses the successor login and account on switching', () => {
+  it('uses the successor login and account only in a fresh runtime', () => {
     start();
     const next = parseLoginSessionId('22222222-2222-4222-8222-222222222222');
-    TestBed.inject(SessionLifecycleService).bindSession(next);
+    const lifecycle = TestBed.inject(SessionLifecycleService);
+    lifecycle.invalidateSession();
+    expect(() => lifecycle.bindSession(next)).toThrow(SessionSupersededError);
     userId.set(2);
     items.set([]);
     TestBed.tick();
+    expect(invoke).toHaveBeenCalledTimes(1);
+    TestBed.resetTestingModule();
+    createRuntime(next);
+    start();
+    expect(invoke).toHaveBeenCalledTimes(2);
     expect(invoke).toHaveBeenLastCalledWith('desktop_badge_refresh', {
       sessionUuid: next,
       userId: 2,

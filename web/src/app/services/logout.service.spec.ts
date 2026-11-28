@@ -3,11 +3,11 @@ import { provideZonelessChangeDetection } from '@angular/core';
 import { Subject } from 'rxjs';
 import { AuthService } from './auth.service';
 import { LogoutService } from './logout.service';
-import { RoutePage, RouteService } from './route.service';
+import { RouteService } from './route.service';
 import { WebsocketService } from './websocket.service';
 
 describe('LogoutService', () => {
-  it('waits for logout completion before disconnecting and redirecting', () => {
+  it('waits for logout completion before disconnecting without route-only navigation', () => {
     const pending = new Subject<unknown>();
     const auth = {
       logout: vi.fn().mockName('logout').mockReturnValue(pending),
@@ -33,12 +33,11 @@ describe('LogoutService', () => {
 
     pending.next(undefined);
     expect(ws.disconnect).toHaveBeenCalledTimes(1);
-    expect(route.redirect).toHaveBeenCalledTimes(1);
-    expect(route.redirect).toHaveBeenCalledWith(RoutePage.AUTH_LOGIN);
+    expect(route.redirect).not.toHaveBeenCalled();
 
     // A late old-server failure must not navigate again and overwrite /config or a newer session.
     pending.error(new Error('old server unreachable'));
-    expect(route.redirect).toHaveBeenCalledTimes(1);
+    expect(route.redirect).not.toHaveBeenCalled();
   });
 
   it('keeps the authenticated UI when local cleanup throws synchronously', () => {

@@ -4,7 +4,6 @@ import {
   computed,
   effect,
   inject,
-  signal,
   DestroyRef,
 } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
@@ -29,6 +28,7 @@ import { uuid } from '../lib/uuid';
 import { notificationTarget } from './notification-routing';
 import { UserService } from './user.service';
 import { DesktopBadgeService } from './desktop-badge.service';
+import { ForegroundPresentation } from './foreground-presentation.service';
 
 /** Browser: bridge worker-projected updates to the push service worker, and answer active-chat
  * queries. Android sends only the selected chat to native; Rust projects its notifications. */
@@ -44,7 +44,7 @@ export class UnreadAttentionService {
   private readonly webPush = inject(WebPushService);
   private readonly baseTitle =
     typeof document !== 'undefined' ? document.title : 'SOMS';
-  private readonly focused = signal(true);
+  private readonly focused = inject(ForegroundPresentation).focused;
   private readonly unreadTotal = computed(() =>
     this.convList.items().reduce((sum, item) => sum + item.unreadCount, 0),
   );
@@ -75,23 +75,9 @@ export class UnreadAttentionService {
     if (!this.nativeAdapter)
       this.browserAdapter = new BrowserNotificationAdapter();
     if (isTauri()) this.installDesktopNavigation();
-    const blur = () => this.onFocusChange(false);
-    const focus = () =>
-      this.onFocusChange(document.visibilityState === 'visible');
-    const visibility = () =>
-      this.onFocusChange(
-        document.visibilityState === 'visible' && document.hasFocus(),
-      );
-    visibility();
     const message = (event: MessageEvent) => this.onSwMessage(event);
-    window.addEventListener('blur', blur);
-    window.addEventListener('focus', focus);
-    document.addEventListener('visibilitychange', visibility);
     navigator.serviceWorker?.addEventListener('message', message);
     this.destroyRef.onDestroy(() => {
-      window.removeEventListener('blur', blur);
-      window.removeEventListener('focus', focus);
-      document.removeEventListener('visibilitychange', visibility);
       navigator.serviceWorker?.removeEventListener('message', message);
       // Closing the app is not logout; retain system notifications and activation receipts.
       this.nativeAdapter?.dispose();
@@ -194,10 +180,6 @@ export class UnreadAttentionService {
       .catch((error) =>
         console.warn('[notification] desktop listener failed', error),
       );
-  }
-
-  private onFocusChange(focused: boolean): void {
-    this.focused.set(focused);
   }
 
   private dismissActive(): void {

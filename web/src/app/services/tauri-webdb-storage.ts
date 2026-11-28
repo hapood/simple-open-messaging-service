@@ -5,7 +5,6 @@ import { WebdbStorage } from './webdb-storage';
 import type { LocalThreadAttention } from '../../../../shared/thread-attention';
 import type { GroupMetaCommitPatch } from './group-meta-model';
 import { NativeCommitEventsService } from './native-commit-events.service';
-import { tauriInvoke } from './runtime';
 
 /**
  * Tauri (desktop + Android) `WebdbStorage` specialization.
@@ -15,9 +14,7 @@ import { tauriInvoke } from './runtime';
  * browser's `state-feed-db.worker`, not something the web shell drives through a
  * Worker. This class therefore:
  *
- *  - Routes open-thread notification suppression to Rust via
- *    `tauriInvoke('native_db_set_open_thread')` instead of a worker
- *    `postMessage`. No `state-feed-db.worker` is ever created under Tauri.
+ *  - Never creates a `state-feed-db.worker` under Tauri.
  *  - Subscribes to the native executor completion port and forwards Rust's local
  *    completion events (`LOCAL_THREAD_FEED_COMMITTED`,
  *    `LOCAL_STATE_FEED_COMMITTED`, `LOCAL_GROUP_META_COMMITTED`) into the same
@@ -126,30 +123,28 @@ export class TauriWebdbStorage extends WebdbStorage {
    *  durable state. We still record the active user and publish `ready` so the
    *  rest of the renderer (which treats `WebdbStorage` uniformly) keeps working. */
   override async openExistingForUser(userId: string): Promise<null> {
+    this.assertAppDataActive();
     ++this.cacheEpoch;
     this.currentUserId = userId;
     this.activateMessageLifetime();
     await this.initializeAccountState();
+    this.assertAppDataActive();
     this.ready.set(true);
     return null;
   }
 
   override async recreateForUser(userId: string): Promise<null> {
+    // Rust owns physical cleanup; a terminal renderer must not reinitialize it.
+    if (this.appDataEnded) {
+      await this.close();
+      return null;
+    }
     ++this.cacheEpoch;
     this.currentUserId = userId;
     this.activateMessageLifetime();
     await this.initializeAccountState();
+    this.assertAppDataActive();
     this.ready.set(true);
     return null;
-  }
-
-  /** Update the open thread in Rust for desktop notification suppression. */
-  override async setOpenThread(threadId: number | null): Promise<void> {
-    if (this.accountMaintenance || this.currentUserId === null)
-      throw new Error('account cache lifetime expired');
-    await tauriInvoke('native_db_set_open_thread', {
-      userId: Number(this.currentUserId),
-      threadId: threadId ?? 0,
-    });
   }
 }

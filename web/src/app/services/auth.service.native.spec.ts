@@ -1,4 +1,5 @@
 import '@angular/compiler';
+import { AppDataLifetime, RESTART_APP_DOCUMENT } from './app-data-lifetime.service';
 import { ThreadSendOutbox } from './thread-send-outbox.service';
 import {
   afterEach,
@@ -235,6 +236,7 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
         provideHttpClient(withXhr()),
         provideHttpClientTesting(),
         AuthService,
+        { provide: RESTART_APP_DOCUMENT, useValue: vi.fn() },
         {
           provide: ThreadSendOutbox,
           useValue: { clear: vi.fn().mockResolvedValue(undefined) },
@@ -547,7 +549,79 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
   });
 
   describe('desktop (Tauri) keyring path', () => {
-    it('clears message notifications on login but not on cold session restoration', async () => {
+    it.each([true, false])('coalesces concurrent local termination through native completion (success=%s)', async (success) => {
+      desktopGlobals();
+      await passwordLogin('old-token');
+      const invoke = invokeSpy.getMockImplementation()!;
+      let resolve!: () => void;
+      let reject!: (error: Error) => void;
+      invokeSpy.mockImplementation((command: string, args?: Record<string, unknown>) => {
+        if (command === 'clear_session_token') return new Promise<void>((yes, no) => { resolve = yes; reject = no; });
+        return invoke(command, args);
+      });
+      const first = svc.clearToken();
+      const second = svc.clearToken();
+      expect(second).toBe(first);
+      expect(TestBed.inject(AppDataLifetime).signal.aborted).toBe(true);
+      expect(TestBed.inject(RESTART_APP_DOCUMENT)).not.toHaveBeenCalled();
+      expect(invokeSpy.mock.calls.filter(([command]) => command === 'clear_session_token')).toHaveLength(1);
+      expect(invokeSpy.mock.calls.some(([command]) => command === 'secure_clear_residual_token')).toBe(false);
+      if (success) resolve(); else reject(new Error('native termination failed'));
+      expect(await first).toBe(success);
+      expect(await second).toBe(success);
+      expect(await svc.clearToken()).toBe(success);
+      expect(TestBed.inject(RESTART_APP_DOCUMENT)).toHaveBeenCalledTimes(success ? 1 : 0);
+      expect(invokeSpy.mock.calls.some(([command]) => command === 'secure_clear_residual_token')).toBe(false);
+    });
+
+    it('retires an admitted restore after an unclassified transient read failure before restarting', async () => {
+      desktopGlobals({ keyringToken: 'stored-token' });
+      vi.mocked(TestBed.inject(UserService).restoreWebdb).mockRejectedValueOnce(new Error('temporary read failure'));
+      const invoke = invokeSpy.getMockImplementation()!;
+      let finish!: () => void;
+      invokeSpy.mockImplementation((command: string, args?: Record<string, unknown>) =>
+        command === 'clear_session_token' ? new Promise<void>((resolve) => { finish = resolve; }) : invoke(command, args),
+      );
+      const restore = svc.restoreSession();
+      await vi.waitFor(() => expect(finish).toBeDefined());
+      expect(TestBed.inject(AppDataLifetime).signal.aborted).toBe(true);
+      expect(TestBed.inject(RESTART_APP_DOCUMENT)).not.toHaveBeenCalled();
+      await expect(firstValueFrom(svc.login({ account: 'next', password: 'pw' }))).rejects.toBeInstanceOf(SessionSupersededError);
+      finish();
+      await restore;
+      expect(TestBed.inject(RESTART_APP_DOCUMENT)).toHaveBeenCalledOnce();
+      expect(invokeSpy.mock.calls.some(([command]) => command === 'native_reset_frontend_storage')).toBe(false);
+      expect(svc.loggedIn()).toBe(false);
+    });
+
+    it('cancels data immediately and blocks all successor login before and after Rust cleanup', async () => {
+      desktopGlobals();
+      await passwordLogin('old-token');
+      const lifetime = TestBed.inject(AppDataLifetime);
+      const restart = TestBed.inject(RESTART_APP_DOCUMENT);
+      const invoke = invokeSpy.getMockImplementation()!;
+      let finish!: () => void;
+      invokeSpy.mockImplementation((command: string, args?: Record<string, unknown>) =>
+        command === 'finish_logout'
+          ? new Promise<void>((resolve) => { finish = resolve; })
+          : invoke(command, args),
+      );
+      const done = firstValueFrom(svc.logout());
+      expect(lifetime.signal.aborted).toBe(true);
+      await expect(firstValueFrom(svc.login({ account: 'next', password: 'pw' })))
+        .rejects.toBeInstanceOf(SessionSupersededError);
+      await vi.waitFor(() => expect(finish).toBeDefined());
+      expect(restart).not.toHaveBeenCalled();
+      finish();
+      await done;
+      expect(restart).toHaveBeenCalledOnce();
+      await expect(firstValueFrom(svc.otpLogin({ account: 'next', code: 'code' })))
+        .rejects.toBeInstanceOf(SessionSupersededError);
+      expect(invokeSpy.mock.calls.filter(([command]) => command === 'native_db_begin_login')).toHaveLength(1);
+      httpMock.expectNone((r) => /auth\/(login|otp\/login)$/.test(r.url));
+    });
+
+    it('preserves notifications on cold restore and rejects replacement login in that renderer', async () => {
       desktopGlobals({ keyringToken: 'st-restored' });
       await svc.restoreSession();
       expect(
@@ -555,17 +629,11 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
           ([command]) => command === 'desktop_notifications_clear',
         ),
       ).toBe(false);
-      await passwordLogin('st-new');
-      expect(invokeSpy).toHaveBeenCalledWith('desktop_notifications_clear', {
-        resetNavigation: true,
-      });
-      const commands = invokeSpy.mock.calls.map(([command]) => command);
-      // Fresh-login cleanup moved BEFORE the authentication request; the post-auth recreation is gone.
-      expect(commands).toContain('native_db_begin_login');
-      expect(commands.indexOf('native_db_begin_login')).toBeLessThan(
-        commands.indexOf('desktop_notifications_clear'),
-      );
-      expect(commands).not.toContain('native_db_recreate_cache');
+      await expect(firstValueFrom(
+        svc.login({ account: 'next', password: 'pw' }),
+      )).rejects.toBeInstanceOf(SessionSupersededError);
+      expect(invokeSpy.mock.calls.some(([command]) => command === 'native_db_begin_login')).toBe(false);
+      httpMock.expectNone((r) => /auth\/login$/.test(r.url));
     });
     it('a trusted login pushes the token to ProxyState and the keyring', async () => {
       desktopGlobals({ secureSetOk: true });
@@ -785,7 +853,7 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
       ).toBeNull();
     });
 
-    it.each(['login', 'logout'] as const)(
+    it.each(['logout'] as const)(
       'does not reset after an admitted restore is superseded by %s',
       async (action) => {
         desktopGlobals({ keyringToken: 'stored-token' });
@@ -801,8 +869,7 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
             TestBed.inject(UserService).restoreWebdb,
           ).toHaveBeenCalledOnce(),
         );
-        if (action === 'login') await passwordLogin('next-token');
-        else await firstValueFrom(svc.logout());
+        await firstValueFrom(svc.logout());
         fail(new DatabaseRestorationError(new Error('old read failed')));
         await restoring;
         expect(
@@ -810,13 +877,12 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
             ([command]) => command === 'native_reset_frontend_storage',
           ),
         ).toBe(false);
-        expect(svc.loggedIn()).toBe(action === 'login');
+        expect(svc.loggedIn()).toBe(false);
       },
     );
 
-    it('waits for renderer release and native physical deletion before issuing fresh login', async () => {
-      desktopGlobals({ keyringToken: 'stored-token' });
-      await svc.restoreSession();
+    it('waits for renderer release and native physical deletion before issuing first login', async () => {
+      desktopGlobals();
       let release!: () => void;
       vi.mocked(
         TestBed.inject(UserService).releaseSession,

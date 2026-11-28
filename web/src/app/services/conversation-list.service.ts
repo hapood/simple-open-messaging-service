@@ -18,13 +18,13 @@ export interface UnreadEntryBoundary {
 /**
  * UI-layer facade over {@link ThreadRepository} — the thin view-state + write-orchestration layer for the
  * conversation list. The DB-layer data (items, load status, SSE handling, IDB persistence, boot-from-cache)
- * lives in {@link ThreadRepository}; this service is what the ~20 UI injectors talk to, so its public
- * signal/method surface is preserved byte-for-byte (zero call-site changes).
+ * lives in {@link ThreadRepository}; this service exposes the shared data and single active selection
+ * to UI consumers. The active selection is distinct from which panes remain open.
  *
  * What stays HERE (and ONLY here) is the WRITE orchestration the 3-tier contract forbids from the DB layer:
  *  - {@link open}: freezes the entry-time unread boundary before selecting the thread.
  *  - {@link markReadStable}: persists a viewport-dwelled position locally, then advances the server cursor.
- *  - {@link close}: clears the open thread and its session-only unread boundary.
+ *  - {@link close}: clears the active selection and its session-only unread boundary.
  * The `markRead` write is the reason this facade exists: the DB layer never POSTs. Everything else delegates.
  */
 @Injectable({ providedIn: 'root' })
@@ -52,7 +52,7 @@ export class ConversationListService {
   readonly status = this.repo.status;
   readonly navigationReady = this.repo.navigationReady;
   readonly error = this.repo.error;
-  readonly openThreadId = this.repo.openThreadId;
+  readonly activeThreadId = this.repo.activeThreadId;
 
   /** Load (or force-refresh) the conversation list. Delegates to the repo's boot-from-cache + snapshot. */
   load(opts?: { force?: boolean }) {
@@ -64,16 +64,16 @@ export class ConversationListService {
   }
 
   /**
-   * Mark a thread as open and freeze its entry-time unread boundary before any viewport dwell can advance the
-   * read cursor. Opening alone does not mark anything read. The P2P/group metadata refreshes remain lazy.
+   * Select the active thread for navigation. Entry-time unread boundaries are captured separately on mount;
+   * opening alone does not mark anything read. The P2P/group metadata refreshes remain lazy.
    */
   open(threadId: number) {
-    const prev = this.repo.openThreadId();
+    const prev = this.repo.activeThreadId();
     if (threadId === prev) return;
     if (prev !== undefined) {
       this.unreadEntryBoundaries.delete(prev);
     }
-    void this.repo.setOpenThread(threadId);
+    this.repo.setActiveThread(threadId);
   }
 
   /** Capture this value before asynchronous entry work; unread eligibility is independent. */
@@ -143,11 +143,11 @@ export class ConversationListService {
     this.unreadEntryBoundaries.delete(threadId);
   }
 
-  /** Clear the open thread and discard its session-only entry boundary. An unstable (<500ms) viewport
+  /** Clear the active selection and discard its session-only entry boundary. An unstable (<500ms) viewport
    *  candidate lives only in MessageThread and is deliberately not flushed by navigation. */
   close() {
-    const threadId = this.repo.openThreadId();
-    void this.repo.setOpenThread(undefined);
+    const threadId = this.repo.activeThreadId();
+    this.repo.setActiveThread(undefined);
     if (threadId !== undefined) this.unreadEntryBoundaries.delete(threadId);
   }
 

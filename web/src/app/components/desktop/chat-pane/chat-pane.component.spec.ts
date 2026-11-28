@@ -90,7 +90,7 @@ const item = (threadId: number, name: string) => {
 describe('ChatPaneComponent A/B coordinator', () => {
   let fixture: ReturnType<typeof TestBed.createComponent<ChatPaneComponent>>;
   let comp: ChatPaneComponent;
-  let openThreadId: WritableSignal<number | undefined>;
+  let activeThreadId: WritableSignal<number | undefined>;
   let items: WritableSignal<ConversationItem[]>;
   let status: WritableSignal<string>;
   let mode: WritableSignal<'compact' | 'medium' | 'expanded'>;
@@ -98,7 +98,7 @@ describe('ChatPaneComponent A/B coordinator', () => {
   let closeChatSpy: Mock;
 
   beforeEach(() => {
-    openThreadId = signal<number | undefined>(undefined);
+    activeThreadId = signal<number | undefined>(undefined);
     items = signal<ConversationItem[]>([
       item(1, 'alice'),
       item(2, 'bob'),
@@ -132,7 +132,7 @@ describe('ChatPaneComponent A/B coordinator', () => {
         // Minimal mock ConvList: real signals the coordinator reads, spy for the actions it takes.
         {
           provide: ConversationListService,
-          useValue: { openThreadId, items, status, load: loadSpy },
+          useValue: { activeThreadId, items, status, load: loadSpy },
         },
         {
           provide: NavStateMachineService,
@@ -163,7 +163,7 @@ describe('ChatPaneComponent A/B coordinator', () => {
 
   /** Set the open thread id and let the coordinator effect run. */
   async function open(tid: number | undefined): Promise<void> {
-    openThreadId.set(tid);
+    activeThreadId.set(tid);
     await settle();
   }
 
@@ -192,8 +192,8 @@ describe('ChatPaneComponent A/B coordinator', () => {
     await open(2);
     const second = pane(2)!;
     // The outgoing slot remains visually foreground until promotion. The real
-    // thread additionally checks openThreadId before activating its composer.
-    expect(first.threadId()).not.toBe(openThreadId());
+    // thread additionally checks activeThreadId before activating its composer.
+    expect(first.threadId()).not.toBe(activeThreadId());
     expect(second.nativeComposerActive()).toBe(false);
     await ready(2);
     expect(second.nativeComposerActive()).toBe(true);

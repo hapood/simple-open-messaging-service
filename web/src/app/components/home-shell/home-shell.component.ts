@@ -67,10 +67,10 @@ export function crossesExpandedLayout(
  *  behavior so tapping the selected row cannot unexpectedly dismiss the full-screen chat overlay. */
 export function shouldCloseChatOnThreadSelect(
   mode: LayoutMode,
-  openThreadId: number | undefined,
+  activeThreadId: number | undefined,
   selectedThreadId: number,
 ): boolean {
-  return mode !== 'compact' && openThreadId === selectedThreadId;
+  return mode !== 'compact' && activeThreadId === selectedThreadId;
 }
 
 /** Compact overlay transition state. `static` = medium/expanded (inline chat / side panel, no transform);
@@ -193,8 +193,8 @@ export class HomeShellComponent {
 
   constructor() {
     void this.restoreListWidth();
-    // Nav state → openThreadId coordination. The state machine is the source of truth for which chat is
-    // open; this effect is the single writer of openThreadId's OPEN edge (mark-read + active-row highlight
+    // Nav state → activeThreadId coordination. The state machine is the source of truth for which chat is
+    // open; this effect is the single writer of activeThreadId's OPEN edge (mark-read + active-row highlight
     // + the always-mounted ChatPane resolving the thread). The CLOSE edge is timing-aware: on mobile it
     // LAGS so the chat-pane keeps its data through the leave slide (the real chat slides out, then
     // onSlideDone resets it); on desktop (no slide) it closes immediately.
@@ -239,7 +239,7 @@ export class HomeShellComponent {
       this.layout.freezeReflow();
   }
   /** (@overlaySlide.done) — close the immunity frame, AND on a mobile chat-close finish the lagged reset:
-   *  clear openThreadId so the chrome ChatPane tears down its kernel now that the real chat has slid out of
+   *  clear activeThreadId so the chrome ChatPane tears down its kernel now that the real chat has slid out of
    *  view (desktop closed immediately in the nav effect — no slide, so it never reaches here). Counter-based,
    *  so interrupted transitions stay balanced: every start has a matching done. */
   onSlideDone(event: AnimationEvent, slot: 'chat' | 'aside'): void {

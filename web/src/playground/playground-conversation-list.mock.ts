@@ -34,9 +34,9 @@ export class PlaygroundConversationList
   readonly navigationReady = signal(true);
   readonly status = signal(ConversationLoadStatus.READY);
   readonly error = signal('');
-  readonly openThreadId = signal<number | undefined>(undefined);
+  readonly activeThreadId = signal<number | undefined>(undefined);
   readonly current = computed(() =>
-    this.conversations().find((item) => item.threadId === this.openThreadId()),
+    this.conversations().find((item) => item.threadId === this.activeThreadId()),
   );
   readonly threadSeq$ = new Subject<{ threadId: number; seq: number }>();
   readonly threadNotifications$ = new Subject<ThreadNotificationUpdate[]>();
@@ -51,11 +51,11 @@ export class PlaygroundConversationList
   }
 
   open(threadId: number): void {
-    this.openThreadId.set(threadId);
+    this.activeThreadId.set(threadId);
   }
 
   close(): void {
-    this.openThreadId.set(undefined);
+    this.activeThreadId.set(undefined);
   }
 
   load(): void {
@@ -169,7 +169,7 @@ export class PlaygroundConversationList
     this.conversations.update((items) =>
       items.filter((item) => item.threadId !== threadId),
     );
-    if (this.openThreadId() === threadId) this.close();
+    if (this.activeThreadId() === threadId) this.close();
   }
 
   private upsert(item: ConversationItem): void {

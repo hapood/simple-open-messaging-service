@@ -25,7 +25,108 @@ describe('connection indicator startup phase', () => {
     startup = TestBed.inject(SessionStartupService);
   });
 
-  afterEach(() => TestBed.resetTestingModule());
+  afterEach(() => {
+    TestBed.resetTestingModule();
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  it('retargets a recovery fade from its current visual and rejects stale recovery timers', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const timers = vi.spyOn(window, 'setTimeout');
+    state.set('reconnecting');
+    const fixture = TestBed.createComponent(ConnectionBannerComponent);
+    fixture.detectChanges();
+    const host: HTMLElement = fixture.nativeElement;
+    const chip = host.querySelector<HTMLButtonElement>('button')!;
+    state.set('open');
+    fixture.detectChanges();
+    const staleTimer = timers.mock.calls.find((call) => call[1] === 980)?.[0];
+    expect(typeof staleTimer).toBe('function');
+    vi.advanceTimersByTime(980);
+    await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+    const fade = chip.getAnimations().find((animation) =>
+      animation.effect instanceof KeyframeEffect &&
+      animation.effect.getKeyframes().some((frame) => frame['opacity'] === '0'),
+    );
+    expect(fade).toBeDefined();
+    fade!.pause();
+    fade!.currentTime = 180;
+    const opacity = getComputedStyle(chip).opacity;
+    state.set('reconnecting');
+    fixture.detectChanges();
+    expect(host.querySelector('button')).toBe(chip);
+    expect(chip.dataset['state']).toBe('reconnecting');
+    expect(fixture.componentInstance.recovering()).toBe(false);
+    expect(chip.classList.contains('expanded')).toBe(true);
+    expect(fade!.playState).toBe('idle');
+    await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+    const enter = chip.getAnimations().find((animation) =>
+      animation.effect instanceof KeyframeEffect &&
+      animation.effect.getKeyframes().some((frame) => frame['opacity'] === '1'),
+    );
+    expect(enter?.effect).toBeInstanceOf(KeyframeEffect);
+    if (enter?.effect instanceof KeyframeEffect) {
+      expect(Number(enter.effect.getKeyframes()[0]['opacity'])).toBeCloseTo(Number(opacity), 4);
+    }
+    state.set('open');
+    fixture.detectChanges();
+    if (typeof staleTimer === 'function') staleTimer();
+    expect(fixture.componentInstance.recovering()).toBe(true);
+    state.set('reconnecting');
+    fixture.detectChanges();
+    vi.advanceTimersByTime(3000);
+    await Promise.resolve();
+    fixture.detectChanges();
+    expect(chip.dataset['state']).toBe('reconnecting');
+    expect(chip.style.opacity).toBe('1');
+  });
+
+  it('snaps reduced-motion recovery and never lets an interrupted hold hide a newer chip', () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const media = window.matchMedia('(prefers-reduced-motion: reduce)');
+    vi.spyOn(media, 'matches', 'get').mockReturnValue(true);
+    vi.spyOn(window, 'matchMedia').mockReturnValue(media);
+    state.set('reconnecting');
+    const fixture = TestBed.createComponent(ConnectionBannerComponent);
+    fixture.detectChanges();
+    const host: HTMLElement = fixture.nativeElement;
+    state.set('open');
+    fixture.detectChanges();
+    vi.advanceTimersByTime(500);
+    state.set('reconnecting');
+    fixture.detectChanges();
+    vi.advanceTimersByTime(1000);
+    fixture.detectChanges();
+    const chip = host.querySelector<HTMLButtonElement>('button')!;
+    expect(chip.dataset['state']).toBe('reconnecting');
+    expect(chip.style.opacity).toBe('1');
+    expect(chip.getAnimations()).toHaveLength(0);
+    state.set('open');
+    fixture.detectChanges();
+    vi.advanceTimersByTime(980);
+    fixture.detectChanges();
+    expect(host.querySelector('button')).toBeNull();
+  });
+
+  it('cancels active recovery animations and invalidates held timers on destruction', () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const timers = vi.spyOn(window, 'setTimeout');
+    state.set('reconnecting');
+    const fixture = TestBed.createComponent(ConnectionBannerComponent);
+    fixture.detectChanges();
+    state.set('open');
+    fixture.detectChanges();
+    const host: HTMLElement = fixture.nativeElement;
+    const chip = host.querySelector<HTMLButtonElement>('button')!;
+    const staleTimer = timers.mock.calls.find((call) => call[1] === 980)?.[0];
+    vi.advanceTimersByTime(980);
+    fixture.destroy();
+    if (typeof staleTimer === 'function') staleTimer();
+    vi.advanceTimersByTime(2000);
+    expect(chip.getAnimations()).toHaveLength(0);
+    expect(fixture.componentInstance.recovering()).toBe(false);
+  });
 
   it('reuses the chip across restoration and connection without a success flourish', () => {
     startup.restoring.set(true);

@@ -453,7 +453,7 @@ export class PeerProfileComponent {
   private readonly contactCardShare = inject(ContactCardShareService);
 
   /** The panel is open over the currently-viewed chat — read its id + item from the shared list. */
-  readonly threadId = this.convList.openThreadId;
+  readonly threadId = this.convList.activeThreadId;
   readonly userMsgTrd = computed<ConversationItem | undefined>(() => {
     const id = this.threadId();
     return id !== undefined

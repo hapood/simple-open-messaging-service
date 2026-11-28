@@ -10,6 +10,7 @@ import { HttpErrorResponse } from '@angular/common/http';
 import { Observable, firstValueFrom } from 'rxjs';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AuthService } from '../auth.service';
+import { AppDataLifetime, RESTART_APP_DOCUMENT } from '../app-data-lifetime.service';
 import { UserService } from '../user.service';
 import {
   BROWSER_SESSION,
@@ -49,7 +50,8 @@ function client(
   const database = new WebdbStorage();
   databases.push(database);
   preferenceStores.push(preferences);
-  const lifecycle = new SessionLifecycleService();
+  const appData = new AppDataLifetime();
+  const lifecycle = new SessionLifecycleService(appData);
   const state = new SessionStateService();
   const user = {
     sessionProfile: () => undefined,
@@ -90,12 +92,13 @@ function client(
         };
       }),
   };
-  const route = { redirect: vi.fn() };
   const toast = { warn: vi.fn(), info: vi.fn() };
   const injector = Injector.create({
     providers: [
       ServerConfigDialogService,
       SessionStartupService,
+      { provide: AppDataLifetime, useValue: appData },
+      { provide: RESTART_APP_DOCUMENT, useValue: vi.fn() },
       {
         provide: BrowserSessionService,
         useFactory: () =>
@@ -121,7 +124,6 @@ function client(
     () =>
       new AuthService(
         http as never,
-        route as never,
         { onLogin: vi.fn() } as never,
         {
           onLogin: vi.fn(),
@@ -130,7 +132,6 @@ function client(
         user as never,
         { translate: (key: string) => key } as never,
         toast as never,
-        { clear: vi.fn() } as never,
       ),
   );
   return {
@@ -143,6 +144,8 @@ function client(
     state,
     toast,
     lifecycle,
+    appData: injector.get(AppDataLifetime),
+    restart: injector.get(RESTART_APP_DOCUMENT),
     startup: injector.get(SessionStartupService),
     destroy: () => {
       if (injectors.delete(injector)) injector.destroy();
@@ -233,6 +236,34 @@ describe('browser AuthService with real session owner and IndexedDB caches', () 
     });
   });
 
+  it('rejects direct browser-owner replacement before cookie mutation or cache cleanup', async () => {
+    const app = client();
+    const original = await signIn(app);
+    const mutation = vi.fn();
+    await expect(app.owner!.authenticate(mutation)).rejects.toBeInstanceOf(SessionSupersededError);
+    expect(mutation).not.toHaveBeenCalled();
+    expect(app.owner!.currentSession?.id).toBe(original.id);
+    expect(app.appData.signal.aborted).toBe(false);
+  });
+
+  it('forced invalidation cancels immediately and restarts only after cleanup', async () => {
+    const app = client();
+    await signIn(app);
+    let close!: () => void;
+    const originalClose = app.database.close.bind(app.database);
+    vi.spyOn(app.database, 'close').mockImplementationOnce(async () => {
+      await new Promise<void>((resolve) => { close = resolve; });
+      await originalClose();
+    });
+    app.auth.redoLoginAuth();
+    expect(app.appData.signal.aborted).toBe(true);
+    await vi.waitFor(() => expect(close).toBeDefined());
+    expect(app.restart).not.toHaveBeenCalled();
+    await expect(firstValueFrom(app.auth.qrCreate('web'))).rejects.toBeInstanceOf(SessionSupersededError);
+    close();
+    await vi.waitFor(() => expect(app.restart).toHaveBeenCalledOnce());
+  });
+
   it('resets both notification checkpoints at the browser fresh-login boundary', async () => {
     await advanceNotificationSince(7);
     await advanceNotificationSince(9, 'state');
@@ -256,23 +287,22 @@ describe('browser AuthService with real session owner and IndexedDB caches', () 
     expect(
       (await indexedDB.databases()).map((item) => item.name),
     ).not.toContain(previous.indexedDbName);
-    const signingIn = firstValueFrom(
+    expect(app.appData.signal.aborted).toBe(true);
+    expect(app.restart).toHaveBeenCalledOnce();
+    await expect(firstValueFrom(
       app.auth.login({ account: 'alice', password: 'pw' }),
-    );
-    await vi.waitFor(() => expect(app.requests.length).toBe(3));
-    expect(
-      (await indexedDB.databases()).map((item) => item.name),
-    ).not.toContain(previous.indexedDbName);
-    document.cookie = 'logged_in=1; Path=/';
-    app.requests[2].flush({ code: 0, data: { session_token: 'new-token' } });
-    await signingIn;
-    expect(app.owner!.currentSession?.id).not.toBe(previous.id);
+    )).rejects.toBeInstanceOf(SessionSupersededError);
+    expect(app.requests).toHaveLength(2);
+    app.destroy();
+    const successor = client();
+    await signIn(successor);
+    expect(successor.owner!.currentSession?.id).not.toBe(previous.id);
     expect(
       app.requests.filter((item) => /\/auth\/logout$/.test(item.url)),
     ).toHaveLength(1);
   });
 
-  it('waits for blocked fixed-name deletion before dispatching a successor login', async () => {
+  it('waits for blocked deletion before restarting and rejects same-renderer successor login', async () => {
     const app = client();
     const previous = await signIn(app);
     const blocker = await new Promise<IDBDatabase>((resolve, reject) => {
@@ -287,20 +317,21 @@ describe('browser AuthService with real session owner and IndexedDB caches', () 
     blocker.onversionchange = () => blocked();
     const ending = app.auth.clearToken();
     await deletionRequested;
-    const pending = firstValueFrom(
+    expect(app.appData.signal.aborted).toBe(true);
+    expect(app.restart).not.toHaveBeenCalled();
+    await expect(firstValueFrom(
       app.auth.login({ account: 'alice', password: 'pw' }),
-    );
+    )).rejects.toBeInstanceOf(SessionSupersededError);
     expect(app.requests).toHaveLength(1);
     expect(app.owner!.currentSession).toBeNull();
     blocker.close();
     await ending;
-    await vi.waitFor(() => expect(app.requests).toHaveLength(2));
-    app.requests[1].flush({ code: 0, data: { session_token: 'successor' } });
-    await pending;
-    expect(app.owner!.currentSession?.id).not.toBe(previous.id);
-    expect((await indexedDB.databases()).map((item) => item.name)).toContain(
-      'soms-session',
-    );
+    expect(app.restart).toHaveBeenCalledOnce();
+    expect(app.requests).toHaveLength(1);
+    app.destroy();
+    const successor = client();
+    await signIn(successor);
+    expect(successor.owner!.currentSession?.id).not.toBe(previous.id);
   });
 
   it('does not adopt a residual cookie without active app-state or create login caches at boot', async () => {

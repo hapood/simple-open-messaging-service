@@ -676,32 +676,6 @@ export function createMsgCbElement(
 }
 
 /**
- * Ghost loading-indicator CbElement: when the kernel mounts the window's top item (the oldest slot, not yet
- * at the global oldest), its group-head/avatar/date depend on an older neighbor that isn't loaded yet — so
- * instead of rendering the real component, render a centered spinner placeholder (.cb-ghost-loading,
- * WhatsApp-style, see _cb.scss). Once loadOlder loads the older neighbor, the kernel's rebuildEntry rebuilds
- * it as the real component (prev becomes non-null → the caller no longer takes this branch).
- *
- * **Fixed height**: eliminates jitter from "the ghost height being stretched by real content / an async image
- * load changing the height" — the spinner host height is constant; rebuildDelta (real height − GHOST_H) is
- * compensated in one shot by the kernel's loadOlder via compensateAbove (the viewport doesn't jump). No
- * Angular component is built, no image/typography rendered — an empty host + a ::before ring (CSS-driven),
- * zero render cost.
- */
-export function createGhostCbElement(): CbElement<ChatItemData> {
-  const GHOST_H = 48; // fixed spinner row height (compact, WhatsApp-style), not stretched by content
-  const el = document.createElement('div');
-  el.className = 'cb-ghost-loading'; // the kernel's updateGhost still adds cb-ghost (visual marker, no functional dependency)
-  el.style.height = `${GHOST_H}px`;
-  return {
-    el,
-    update: () => {}, // ghosts are placeholders, never morphed in place (no optimistic send is ever a ghost)
-    predestory: () => {},
-    destroy: () => {},
-  };
-}
-
-/**
  * Own the rendered component lifetime. Initial and explicit updates are measured synchronously.
  * Subsequent layout mutations must request a kernel transaction before changing the DOM;
  * there is deliberately no passive height-observation fallback.

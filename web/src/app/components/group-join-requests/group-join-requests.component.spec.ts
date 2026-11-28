@@ -112,7 +112,7 @@ describe('GroupJoinRequestsComponent', () => {
       joinRequestReadFeedId: unreadApplications ? 0 : 2,
     };
     const markJoinRequestsReadLocally = vi.fn();
-    const openThreadId = signal<number | undefined>(7);
+    const activeThreadId = signal<number | undefined>(7);
     const http = {
       get: vi.fn(() => of(new Blob(['x'], { type: 'image/webp' }))),
     };
@@ -148,7 +148,7 @@ describe('GroupJoinRequestsComponent', () => {
         {
           provide: ConversationListService,
           useValue: {
-            openThreadId,
+            activeThreadId,
             items: () => [thread],
             markJoinRequestsReadLocally,
           },
@@ -172,7 +172,7 @@ describe('GroupJoinRequestsComponent', () => {
       groups,
       users,
       http,
-      openThreadId,
+      activeThreadId,
       markJoinRequestsReadLocally,
     };
   }
@@ -262,7 +262,7 @@ describe('GroupJoinRequestsComponent', () => {
 
   it('opens Applications explicitly with no unread badge, bound to the target rather than the old chat', async () => {
     const query = vi.fn(() => of(response()));
-    const { component, groups, openThreadId } = create(query, false, {
+    const { component, groups, activeThreadId } = create(query, false, {
       threadId: 42,
       initialTab: 'applications',
     });
@@ -273,7 +273,7 @@ describe('GroupJoinRequestsComponent', () => {
       take: 20,
     });
     expect(groups.queryInvitations).not.toHaveBeenCalled();
-    openThreadId.set(99);
+    activeThreadId.set(99);
     await component.handleApplication(applicationRow('a'), true);
     expect(groups.acceptJoinRequest).toHaveBeenCalledWith({
       groupId: 42,
@@ -622,14 +622,14 @@ describe('GroupJoinRequestsComponent', () => {
   });
 
   it('keeps a pending avatar fetch when the visible chat switches groups', async () => {
-    const { component, groups, http, openThreadId } = create(
+    const { component, groups, http, activeThreadId } = create(
       vi.fn(() => of(response())),
     );
     const pending = new Subject<Blob>();
     http.get.mockReturnValue(pending);
     TestBed.tick();
     component.invite({ ...lookupUser, avatar: '/uploads/avatars/friend.webp' });
-    openThreadId.set(8);
+    activeThreadId.set(8);
     TestBed.tick();
     // The invitation stays with its captured group; only destruction or
     // session end cancels the serialization or submission.
