@@ -1,3 +1,4 @@
+import { Logger } from '@nestjs/common';
 import { describe, expect, it, vi } from 'vitest';
 vi.mock('../common/locks/thread-content-lock.js', () => ({
   lockThreadContentInTx: vi.fn().mockResolvedValue(true),
@@ -193,21 +194,21 @@ describe('FederationThreadSyncStateService initial history interval', () => {
     );
   });
 
-  it('reserves even a singleton newest message', async () => {
+  it('records a singleton target without reserving a gap', async () => {
     const mock = missingStateTransaction(7);
-    await FederationThreadSyncStateService.reconcileRelationshipAuthorizationInTx(
-      mock.tx as never,
-      {
-        threadId: 31,
-        namespaceId: 3,
-        messageTargetSeq: 1,
-        deletionTargetSeq: 0,
-        reverseEnabled: true,
-      },
-    );
-    expect(mock.gapValues).toHaveBeenCalledWith(
-      expect.objectContaining({ startSeq: 1, endSeq: 1 }),
-    );
+    await expect(
+      FederationThreadSyncStateService.reconcileRelationshipAuthorizationInTx(
+        mock.tx as never,
+        {
+          threadId: 31,
+          namespaceId: 3,
+          messageTargetSeq: 1,
+          deletionTargetSeq: 0,
+          reverseEnabled: true,
+        },
+      ),
+    ).resolves.toMatchObject({ created: true, reverseRequired: true });
+    expect(mock.gapValues).not.toHaveBeenCalled();
   });
 
   it('creates no reverse gap when latest=0', async () => {
@@ -257,14 +258,7 @@ describe('FederationThreadSyncStateService initial history interval', () => {
       epochChanged: false,
       reverseRequired: true,
     });
-    expect(mock.gapValues).toHaveBeenCalledWith(
-      expect.objectContaining({
-        threadId: 31,
-        namespaceId: 3,
-        startSeq: 1,
-        endSeq: 2,
-      }),
-    );
+    expect(mock.gapValues).not.toHaveBeenCalled();
     expect(mock.stateValues).toHaveBeenCalledWith(
       expect.objectContaining({
         messageTargetSeq: 2,
@@ -287,13 +281,7 @@ describe('FederationThreadSyncStateService initial history interval', () => {
       },
     );
 
-    expect(mock.gapValues).toHaveBeenCalledWith(
-      expect.objectContaining({
-        startSeq: 1,
-        endSeq: 3,
-        messageSeqOffset: 3,
-      }),
-    );
+    expect(mock.gapValues).not.toHaveBeenCalled();
   });
 
   it('starts at the last applied deletion rather than adopting an advertisement', async () => {
@@ -349,13 +337,7 @@ describe('FederationThreadSyncStateService epoch interval reconciliation', () =>
       reverseRequired: true,
     });
 
-    expect(mock.gapValues).toHaveBeenCalledWith(
-      expect.objectContaining({
-        startSeq: 100,
-        endSeq: 200,
-        messageSeqOffset: 1,
-      }),
-    );
+    expect(mock.gapValues).not.toHaveBeenCalled();
     expect(mock.set).toHaveBeenCalledWith(
       expect.objectContaining({
         messageTargetSeq: 200,
@@ -387,13 +369,7 @@ describe('FederationThreadSyncStateService epoch interval reconciliation', () =>
       },
     );
 
-    expect(mock.gapValues).toHaveBeenCalledWith(
-      expect.objectContaining({
-        startSeq: 151,
-        endSeq: 200,
-        messageSeqOffset: 1,
-      }),
-    );
+    expect(mock.gapValues).not.toHaveBeenCalled();
   });
 
   it('creates the next interval after a reverse-only completed epoch', async () => {
@@ -419,13 +395,7 @@ describe('FederationThreadSyncStateService epoch interval reconciliation', () =>
       },
     );
 
-    expect(mock.gapValues).toHaveBeenCalledWith(
-      expect.objectContaining({
-        startSeq: 101,
-        endSeq: 200,
-        messageSeqOffset: 0,
-      }),
-    );
+    expect(mock.gapValues).not.toHaveBeenCalled();
   });
 
   it('reserves a singleton tail when new latest equals covered plus one', async () => {
@@ -450,9 +420,7 @@ describe('FederationThreadSyncStateService epoch interval reconciliation', () =>
       },
     );
 
-    expect(mock.gapValues).toHaveBeenCalledWith(
-      expect.objectContaining({ startSeq: 151, endSeq: 151 }),
-    );
+    expect(mock.gapValues).not.toHaveBeenCalled();
     expect(mock.set).toHaveBeenCalledWith(
       expect.objectContaining({
         messageTargetSeq: 151,
@@ -498,41 +466,31 @@ describe('FederationThreadSyncStateService reverse window reconstruction', () =>
 });
 
 describe('FederationThreadSyncStateService reverse closure commit', () => {
-  it('rejects changed upper edges before writing messages', async () => {
+  it('matches an existing gap offset and shrinks the gap without re-reserving', async () => {
     const execute = vi
       .fn()
-      .mockResolvedValueOnce({ rows: [{ authorizationEpoch: 7 }] })
-      .mockResolvedValueOnce({ rows: [{ startSeq: 1, endSeq: 110 }] });
-    const writeMessages = vi.fn();
-    await expect(
-      FederationThreadSyncStateService.commitReverseBatchInTx(
-        { execute } as never,
-        {
-          threadId: 31,
-          namespaceId: 3,
-          authorizationEpoch: 7,
-          gapId: 12n,
-          beforeSeq: 100,
-          throughSeq: 1,
-          scannedThrough: 50,
-          closesGap: false,
-          writeMessages,
-        },
-      ),
-    ).rejects.toThrow('requested reverse gap boundary changed');
-    expect(writeMessages).not.toHaveBeenCalled();
-  });
-
-  it('shrinks a committed reverse batch without waiting for message materialization', async () => {
-    const execute = vi
-      .fn()
-      .mockResolvedValueOnce({ rows: [{ authorizationEpoch: 7 }] })
-      .mockResolvedValueOnce({ rows: [{ startSeq: 1, endSeq: 99 }] });
-    const returning = vi.fn().mockResolvedValue([{ id: 12n }]);
-    const where = vi.fn().mockReturnValue({ returning });
+      .mockResolvedValueOnce({ rows: [{ authorizationEpoch: 7, curSeq: 200 }] })
+      .mockResolvedValueOnce({ rows: [{ messageProcessedThroughSeq: 0 }] })
+      .mockResolvedValueOnce({ rows: [{ endSeq: 0 }] })
+      .mockResolvedValueOnce({
+        rows: [
+          {
+            id: '12',
+            startSeq: 1,
+            endSeq: 99,
+            messageSeqOffset: 10,
+            recoverable: true,
+          },
+        ],
+      });
+    const where = vi.fn().mockResolvedValue(undefined);
     const set = vi.fn().mockReturnValue({ where });
     const update = vi.fn().mockReturnValue({ set });
-    const writeMessages = vi.fn().mockResolvedValue(undefined);
+    const observedOffsets: Array<number | null> = [];
+    const writeMessages = vi.fn(async (_lock, resolveOffset) => {
+      observedOffsets.push(await resolveOffset(80));
+      observedOffsets.push(await resolveOffset(50));
+    });
 
     await expect(
       FederationThreadSyncStateService.commitReverseBatchInTx(
@@ -541,7 +499,7 @@ describe('FederationThreadSyncStateService reverse closure commit', () => {
           threadId: 31,
           namespaceId: 3,
           authorizationEpoch: 7,
-          gapId: 12n,
+          gapId: null,
           beforeSeq: 100,
           scannedThrough: 50,
           throughSeq: 1,
@@ -551,22 +509,37 @@ describe('FederationThreadSyncStateService reverse closure commit', () => {
       ),
     ).resolves.toBe(50);
 
-    expect(writeMessages).toHaveBeenCalledOnce();
+    expect(observedOffsets).toEqual([10, 10]);
     expect(set).toHaveBeenCalledWith(expect.objectContaining({ endSeq: 49 }));
   });
 
   it('deletes the completed gap when scannedThrough reaches startSeq', async () => {
     const execute = vi
       .fn()
-      .mockResolvedValueOnce({ rows: [{ authorizationEpoch: 7 }] })
-      .mockResolvedValueOnce({ rows: [{ startSeq: 1, endSeq: 99 }] });
+      .mockResolvedValueOnce({ rows: [{ authorizationEpoch: 7, curSeq: 200 }] })
+      .mockResolvedValueOnce({ rows: [{ messageProcessedThroughSeq: 0 }] })
+      .mockResolvedValueOnce({ rows: [{ endSeq: 0 }] })
+      .mockResolvedValueOnce({
+        rows: [
+          {
+            id: '12',
+            startSeq: 1,
+            endSeq: 99,
+            messageSeqOffset: 10,
+            recoverable: true,
+          },
+        ],
+      });
     const deleteWhere = vi.fn().mockResolvedValue(undefined);
     const remove = vi.fn().mockReturnValue({ where: deleteWhere });
+    const update = vi.fn().mockReturnValue({
+      set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) }),
+    });
     const writeMessages = vi.fn().mockResolvedValue(undefined);
 
     await expect(
       FederationThreadSyncStateService.commitReverseBatchInTx(
-        { execute, delete: remove } as never,
+        { execute, update, delete: remove } as never,
         {
           threadId: 31,
           namespaceId: 3,
@@ -583,6 +556,175 @@ describe('FederationThreadSyncStateService reverse closure commit', () => {
 
     expect(writeMessages).toHaveBeenCalledOnce();
     expect(remove).toHaveBeenCalledWith(federationThreadHistoryGap);
+  });
+
+  it('skips messages with no matching gap when already processed or a gap exists to the right', async () => {
+    const execute = vi
+      .fn()
+      .mockResolvedValueOnce({ rows: [{ authorizationEpoch: 7, curSeq: 200 }] })
+      .mockResolvedValueOnce({ rows: [{ messageProcessedThroughSeq: 100 }] })
+      .mockResolvedValueOnce({ rows: [{ endSeq: 0 }] })
+      .mockResolvedValueOnce({
+        rows: [
+          {
+            id: '12',
+            startSeq: 1,
+            endSeq: 79,
+            messageSeqOffset: 10,
+            recoverable: true,
+          },
+          {
+            id: '13',
+            startSeq: 101,
+            endSeq: 129,
+            messageSeqOffset: 50,
+            recoverable: true,
+          },
+        ],
+      });
+    const remove = vi
+      .fn()
+      .mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) });
+    const update = vi.fn().mockReturnValue({
+      set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) }),
+    });
+    const observed: Array<number | null> = [];
+    const writeMessages = vi.fn(async (_lock, resolveOffset) => {
+      observed.push(await resolveOffset(110));
+      observed.push(await resolveOffset(90));
+      observed.push(await resolveOffset(70));
+    });
+
+    await FederationThreadSyncStateService.commitReverseBatchInTx(
+      { execute, update, delete: remove } as never,
+      {
+        threadId: 31,
+        namespaceId: 3,
+        authorizationEpoch: 7,
+        gapId: null,
+        beforeSeq: 130,
+        scannedThrough: 70,
+        throughSeq: 1,
+        closesGap: false,
+        writeMessages,
+      },
+    );
+
+    expect(observed).toEqual([50, null, 10]);
+  });
+
+  it('reserves a new tail gap once in memory, reuses its offset, and persists the remaining lower hole', async () => {
+    const execute = vi
+      .fn()
+      .mockResolvedValueOnce({ rows: [{ authorizationEpoch: 7, curSeq: 200 }] })
+      .mockResolvedValueOnce({ rows: [{ messageProcessedThroughSeq: 100 }] })
+      .mockResolvedValueOnce({ rows: [{ endSeq: 100 }] })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [] }); // reserveReverseSequenceRangeInTx UPDATE MessageThread
+    const onConflictDoUpdate = vi.fn().mockResolvedValue(undefined);
+    const values = vi.fn().mockReturnValue({ onConflictDoUpdate });
+    const insert = vi.fn().mockReturnValue({ values });
+    const update = vi.fn().mockReturnValue({
+      set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) }),
+    });
+    const observed: Array<number | null> = [];
+    const writeMessages = vi.fn(async (_lock, resolveOffset) => {
+      observed.push(await resolveOffset(150));
+      observed.push(await resolveOffset(140));
+    });
+
+    await FederationThreadSyncStateService.commitReverseBatchInTx(
+      { execute, insert, update } as never,
+      {
+        threadId: 31,
+        namespaceId: 3,
+        authorizationEpoch: 7,
+        gapId: null,
+        beforeSeq: 151,
+        scannedThrough: 130,
+        throughSeq: 101,
+        closesGap: false,
+        writeMessages,
+      },
+    );
+
+    // firstOriginSeq = 101, curSeq = 200 => offset = 100
+    expect(observed).toEqual([100, 100]);
+    expect(values).toHaveBeenCalledWith(
+      expect.objectContaining({
+        startSeq: 101,
+        endSeq: 129,
+        messageSeqOffset: 100,
+        recoverable: true,
+      }),
+    );
+  });
+
+  it('fails the batch when a message falls in an unrecoverable gap', async () => {
+    const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+    const execute = vi
+      .fn()
+      .mockResolvedValueOnce({ rows: [{ authorizationEpoch: 7, curSeq: 200 }] })
+      .mockResolvedValueOnce({ rows: [{ messageProcessedThroughSeq: 0 }] })
+      .mockResolvedValueOnce({ rows: [{ endSeq: 0 }] })
+      .mockResolvedValueOnce({
+        rows: [
+          {
+            id: '12',
+            startSeq: 90,
+            endSeq: 120,
+            messageSeqOffset: 4,
+            recoverable: false,
+          },
+        ],
+      });
+    const writeMessages = vi.fn(async (_lock, resolveOffset) => {
+      await resolveOffset(110);
+    });
+
+    await expect(
+      FederationThreadSyncStateService.commitReverseBatchInTx(
+        { execute } as never,
+        {
+          threadId: 31,
+          namespaceId: 3,
+          authorizationEpoch: 7,
+          gapId: null,
+          beforeSeq: 151,
+          scannedThrough: 90,
+          throughSeq: 90,
+          closesGap: false,
+          writeMessages,
+        },
+      ),
+    ).rejects.toThrow('unrecoverable gap');
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it('advances messageProcessedThroughSeq when marking a synthetic tail unavailable (gapId === null)', async () => {
+    const execute = vi
+      .fn()
+      .mockResolvedValueOnce({ rows: [{ authorizationEpoch: 7 }] })
+      .mockResolvedValueOnce({ rows: [{ left: 0, right: 40 }] });
+    const where = vi.fn().mockResolvedValue(undefined);
+    const set = vi.fn().mockReturnValue({ where });
+    const update = vi.fn().mockReturnValue({ set });
+
+    const intervals =
+      await FederationThreadSyncStateService.markReverseGapUnavailableInTx(
+        { execute, update } as never,
+        {
+          threadId: 31,
+          namespaceId: 3,
+          authorizationEpoch: 7,
+          gapId: null,
+          beforeSeq: 101,
+        },
+      );
+
+    expect(intervals).toEqual([{ left: 0, right: 40 }]);
+    expect(update).toHaveBeenCalledWith(federationThreadSyncState);
   });
 });
 

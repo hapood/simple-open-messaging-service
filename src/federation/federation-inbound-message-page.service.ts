@@ -80,6 +80,7 @@ export interface MessageProcessedInterval {
 export interface MessagePageWriteContext {
   threadLock: ThreadContentLock;
   processedInterval: MessageProcessedInterval;
+  messageSeqOffset?: number;
 }
 
 type PageSequenceAssignment =
@@ -481,6 +482,17 @@ export class FederationInboundMessagePageService {
     if (thread.type === 'GROUP' && thread.authorityNamespaceId === 0)
       return { kind: 'APPEND', lastSeq: thread.curSeq };
     const { left, right } = context.processedInterval;
+    if (context.messageSeqOffset !== undefined) {
+      return {
+        kind: 'RESERVED',
+        mapping: {
+          kind: 'MAP_ORIGIN',
+          beforeSeq: right + 1,
+          throughSeq: left + 1,
+          messageSeqOffset: context.messageSeqOffset,
+        },
+      };
+    }
     const gaps = await tx.execute<{ messageSeqOffset: number }>(sql`
       SELECT "messageSeqOffset"
       FROM "FederationThreadHistoryGap"

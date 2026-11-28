@@ -7,7 +7,6 @@ import { FederationThreadSyncStateService } from './federation-thread-sync-state
 function harness(kind: 'GROUP' | 'P2P' = 'GROUP') {
   const states = {
     prepareMessageRound: vi.fn().mockResolvedValue(undefined),
-    reserveReverseTail: vi.fn().mockResolvedValue(undefined),
     resolveReverseWindow: vi.fn().mockResolvedValue({
       authorizationEpoch: 7,
       gapId: 12n,

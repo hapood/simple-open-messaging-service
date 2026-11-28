@@ -13,7 +13,6 @@ const WINDOW: FederationReverseWindow = {
 function harness(window: FederationReverseWindow | null = WINDOW) {
   const states = {
     prepareMessageRound: vi.fn().mockResolvedValue(undefined),
-    reserveReverseTail: vi.fn().mockResolvedValue(undefined),
     resolveReverseWindow: vi.fn().mockResolvedValue(window),
     require: vi.fn().mockResolvedValue({
       authorizationEpoch: window?.authorizationEpoch ?? 0,
@@ -64,17 +63,15 @@ describe('FederationThreadReverseRoundService', () => {
     });
   });
 
-  it('reserves a new tail only when dirty is true', async () => {
+  it('prepares the message round only when dirty is true', async () => {
     const { service, states, driver } = harness();
 
     await service.run(31, 12, driver, new AbortController().signal, 50, false);
     expect(states.prepareMessageRound).not.toHaveBeenCalled();
-    expect(states.reserveReverseTail).not.toHaveBeenCalled();
     expect(states.resolveReverseWindow).toHaveBeenCalledWith(31, 12);
 
     await service.run(31, 12, driver, new AbortController().signal, 50, true);
     expect(states.prepareMessageRound).toHaveBeenCalledWith(31, 12);
-    expect(states.reserveReverseTail).toHaveBeenCalledWith(31, 12);
   });
 
   it('closes the gap when a committed batch scans through its inclusive start', async () => {

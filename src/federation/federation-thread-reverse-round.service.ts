@@ -13,11 +13,11 @@ export type FederationReverseMessageResult =
 /** Exact reverse network progress exists only for the lifetime of one scheduler process. */
 export interface FederationReverseRoundContext {
   authorizationEpoch: number;
-  gapId: bigint;
+  gapId: bigint | null;
   gapBeforeSeq: number;
   nextBeforeSeq: number;
   throughSeq: number;
-  messageSeqOffset: number;
+  messageSeqOffset: number | null;
 }
 
 export interface FederationThreadReverseRoundDriver {
@@ -65,8 +65,6 @@ export class FederationThreadReverseRoundService {
     const take = resolveFederationThreadRoundTake(requestedTake);
     if (dirty) {
       await this.states.prepareMessageRound(threadId, namespaceId);
-      signal.throwIfAborted();
-      await this.states.reserveReverseTail(threadId, namespaceId);
       signal.throwIfAborted();
     }
     const context = await this.createContext(threadId, namespaceId);

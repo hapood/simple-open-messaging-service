@@ -327,35 +327,97 @@ export class FederationThreadReverseRoundExecutorService {
         scannedThrough: context.nextBeforeSeq,
         throughSeq: context.throughSeq,
         closesGap,
-        writeMessages: async (threadLock) => {
+        hasMessages: messages.length > 0,
+        writeMessages: async (threadLock, resolveOffset) => {
           await FederationThreadSourceService.assertAudienceInTx(
             threadLock,
             source,
           );
-          if (messages.length > 0) {
+          if (messages.length === 0) return;
+
+          const groups = new Map<
+            number,
+            {
+              messages: Array<(typeof messages)[number]>;
+              minSeq: number;
+              maxSeq: number;
+            }
+          >();
+          for (const prepared of messages) {
+            const messageSeqOffset = await resolveOffset(prepared.item.seq);
+            if (messageSeqOffset === null) continue;
+            const existing = groups.get(messageSeqOffset);
+            if (existing) {
+              existing.messages.push(prepared);
+              if (prepared.item.seq < existing.minSeq)
+                existing.minSeq = prepared.item.seq;
+              if (prepared.item.seq > existing.maxSeq)
+                existing.maxSeq = prepared.item.seq;
+            } else {
+              groups.set(messageSeqOffset, {
+                messages: [prepared],
+                minSeq: prepared.item.seq,
+                maxSeq: prepared.item.seq,
+              });
+            }
+          }
+
+          const allEffects: Awaited<
+            ReturnType<
+              FederationInboundMessageCommitService['commitMessagePageInTx']
+            >
+          > = [];
+          let earliestLocalSeq: number | undefined;
+          let lastLocalSeq: number | undefined;
+          const singleGroup = groups.size === 1;
+
+          for (const [messageSeqOffset, group] of groups.entries()) {
+            const processedLeft = singleGroup
+              ? context.nextBeforeSeq - 1
+              : group.minSeq - 1;
+            const processedRight = singleGroup
+              ? batch.before - 1
+              : group.maxSeq;
             const effects =
               await this.inboundMessageCommits.commitMessagePageInTx(tx, {
-                messages,
+                messages: group.messages,
                 peerToken: batch.response.peerToken,
                 threadLock,
+                messageSeqOffset,
                 processedInterval: {
-                  left: context.nextBeforeSeq - 1,
-                  right: batch.before - 1,
+                  left: processedLeft,
+                  right: processedRight,
                 },
               });
-            if (effects.length > 0) {
-              publish = async () => {
-                this.historyIntervals.publishCommitted({
-                  threadId: source.threadId,
-                  left: context.nextBeforeSeq + context.messageSeqOffset - 1,
-                  right: batch.before + context.messageSeqOffset - 1,
-                });
-                await this.messageEffects.publish(
-                  batch.response.peerDomain,
-                  effects,
-                );
-              };
+            for (const effect of effects) {
+              const seq =
+                effect.kind === 'pending' ? effect.seq : effect.message.seq;
+              if (earliestLocalSeq === undefined || seq < earliestLocalSeq)
+                earliestLocalSeq = seq;
+              if (lastLocalSeq === undefined || seq > lastLocalSeq)
+                lastLocalSeq = seq;
+              allEffects.push(effect);
             }
+          }
+
+          if (
+            allEffects.length > 0 &&
+            earliestLocalSeq !== undefined &&
+            lastLocalSeq !== undefined
+          ) {
+            const committedEarliest = earliestLocalSeq;
+            const committedLast = lastLocalSeq;
+            publish = async () => {
+              this.historyIntervals.publishCommitted({
+                threadId: source.threadId,
+                left: committedEarliest - 1,
+                right: committedLast,
+              });
+              await this.messageEffects.publish(
+                batch.response.peerDomain,
+                allEffects,
+              );
+            };
           }
         },
       });
