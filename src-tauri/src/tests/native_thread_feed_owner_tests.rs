@@ -170,8 +170,7 @@ async fn paged_feed(invalid_second: bool) {
     let server = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let origin = format!("http://{}", server.local_addr().unwrap());
     let proxy = ServerSessionState::new();
-    *proxy.api_origin.lock().unwrap() = origin.clone();
-    *proxy.api_origin_primary.lock().unwrap() = origin;
+    proxy.routes.replace(origin, None);
     let intent = fixture(&proxy);
     let owner = intent.work.owner().clone();
     owner.with_database(|conn| {
@@ -185,8 +184,7 @@ async fn paged_feed(invalid_second: bool) {
         ).map_err(|e| e.to_string())
     }).unwrap();
     // Mutating global routing/credentials after capture cannot change either page request.
-    *proxy.api_origin.lock().unwrap() = "http://127.0.0.1:9".into();
-    *proxy.api_origin_primary.lock().unwrap() = "http://127.0.0.1:9".into();
+    proxy.routes.replace("http://127.0.0.1:9".into(), None);
     let serving = tokio::spawn(async move {
         let (mut socket, _) = server.accept().await.unwrap();
         let (headers, _) = read_request(&mut socket).await;
@@ -294,8 +292,7 @@ async fn end_and_repair_close_an_actual_stalled_feed_response() {
         let server = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let origin = format!("http://{}", server.local_addr().unwrap());
         let proxy = ServerSessionState::new();
-        *proxy.api_origin.lock().unwrap() = origin.clone();
-        *proxy.api_origin_primary.lock().unwrap() = origin;
+        proxy.routes.replace(origin, None);
         let mut intent = fixture(&proxy);
         let owner = intent.work.owner().clone();
         let (started, ready) = tokio::sync::oneshot::channel();

@@ -39,9 +39,7 @@ fn a_request_cannot_be_paired_with_another_physical_owner_even_for_the_same_uuid
 }
 
 fn origins(proxy: &ServerSessionState, primary: &str, secondary: Option<String>) {
-    *proxy.api_origin.lock().unwrap() = primary.into();
-    *proxy.api_origin_primary.lock().unwrap() = primary.into();
-    *proxy.api_origin_secondary.lock().unwrap() = secondary;
+    proxy.routes.replace(primary.into(), secondary);
 }
 
 async fn read_request(socket: &mut TcpStream) -> String {
@@ -229,7 +227,7 @@ async fn verify_captured_failover(post_query: bool) {
     .unwrap();
     assert_eq!(response.body, "replayed");
     serve.await.unwrap();
-    assert_eq!(*proxy.api_origin.lock().unwrap(), successor_origin);
+    assert_eq!(proxy.routes.snapshot().active, successor_origin);
     assert!(
         tokio::time::timeout(Duration::from_millis(50), successor.accept())
             .await

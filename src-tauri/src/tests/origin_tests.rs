@@ -34,6 +34,7 @@ fn runtime_clone_reads_the_single_login_owner() {
 #[test]
 fn attaching_shell_preserves_background_selected_origin() {
     let background = ServerSessionState::new();
+    background.routes.replace("https://primary.example".into(), Some("https://secondary.example".into()));
     activate_origin(
         &background,
         "https://secondary.example",
@@ -41,10 +42,10 @@ fn attaching_shell_preserves_background_selected_origin() {
     );
     let shell = background.clone();
     assert_eq!(
-        *shell.api_origin.lock().unwrap(),
+        shell.routes.snapshot().active,
         "https://secondary.example"
     );
-    assert_eq!(*shell.origin_mode.lock().unwrap(), OriginMode::Secondary);
+    assert_eq!(shell.routes.snapshot().mode, OriginMode::Secondary);
 }
 
 #[test]

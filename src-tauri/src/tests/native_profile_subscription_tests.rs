@@ -82,8 +82,7 @@ async fn shared_pending_demand_survives_one_consumers_release() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let proxy = ServerSessionState::new();
     let origin = format!("http://{}", listener.local_addr().unwrap());
-    *proxy.api_origin.lock().unwrap() = origin.clone();
-    *proxy.api_origin_primary.lock().unwrap() = origin;
+    proxy.routes.replace(origin, None);
     let intent = fixture(&proxy);
     let count = Arc::new(AtomicUsize::new(0));
     let calls = count.clone();
@@ -180,8 +179,7 @@ async fn settled_profile_enters_lru_and_a_rewatch_answers_without_http() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let proxy = ServerSessionState::new();
     let origin = format!("http://{}", listener.local_addr().unwrap());
-    *proxy.api_origin.lock().unwrap() = origin.clone();
-    *proxy.api_origin_primary.lock().unwrap() = origin;
+    proxy.routes.replace(origin, None);
     let intent = fixture(&proxy);
     let count = Arc::new(AtomicUsize::new(0));
     let calls = count.clone();

@@ -15,7 +15,7 @@ pub extern "system" fn Java_com_soms_client_RustRuntimeBridge_notificationPresen
     let target = visible_thread(PresentationFacts {
         visible: visible != 0,
         focused: focused != 0,
-        open_thread: Some(thread_id),
+        active_thread: Some(thread_id),
     });
     if target.is_some() {
         crate::android_notifications::presentation_changed();
@@ -372,17 +372,10 @@ pub extern "system" fn Java_com_soms_client_RustRuntimeBridge_getServerOrigins(
 ) -> jstring {
     let result = (|| -> Result<String, String> {
         let state = proxy_state()?;
-        let primary = state
-            .api_origin_primary
-            .lock()
-            .map_err(|_| "primary lock poisoned")?
-            .clone();
-        let secondary = state
-            .api_origin_secondary
-            .lock()
-            .map_err(|_| "secondary lock poisoned")?
-            .clone();
-        let mode = match *state.origin_mode.lock().map_err(|_| "mode lock poisoned")? {
+        let routes = state.routes.snapshot();
+        let primary = &routes.primary;
+        let secondary = &routes.secondary;
+        let mode = match routes.mode {
             crate::OriginMode::Primary => "primary",
             crate::OriginMode::Secondary => "secondary",
         };

@@ -281,8 +281,7 @@ async fn verify_state_feed_pages_on_captured_connection(
     let server = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let origin = format!("http://{}", server.local_addr().unwrap());
     let proxy = crate::ServerSessionState::new();
-    *proxy.api_origin.lock().unwrap() = origin.clone();
-    *proxy.api_origin_primary.lock().unwrap() = origin;
+    proxy.routes.replace(origin, None);
     owner
         .with_database(|conn| {
             conn.execute_batch(

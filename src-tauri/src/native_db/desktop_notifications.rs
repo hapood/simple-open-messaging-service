@@ -897,7 +897,7 @@ pub(crate) async fn deliver_batch(
     ).await
 }
 
-/// Observe OS window state and reuse the existing native open-thread fact. This
+/// Observe OS window state and reuse the existing native active-thread fact. This
 /// adapter reports facts only; shared Rust policy decides notification suppression.
 pub(crate) fn presentation_facts(
     app: &tauri::AppHandle,
@@ -911,7 +911,7 @@ pub(crate) fn presentation_facts(
         focused: window
             .as_ref()
             .is_some_and(|window| window.is_focused().unwrap_or(false)),
-        open_thread: super::attention::open_thread_id().and_then(|id| i32::try_from(id).ok()),
+        active_thread: super::attention::active_thread_id().and_then(|id| i32::try_from(id).ok()),
     }
 }
 

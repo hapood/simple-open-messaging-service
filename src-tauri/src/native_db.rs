@@ -1652,11 +1652,11 @@ mod login_cache_tests {
                 let state = crate::ServerSessionState::new();
                 crate::server_setup::restore(&state).unwrap();
                 assert_eq!(
-                    *state.api_origin_primary.lock().unwrap(),
+                    state.routes.snapshot().primary,
                     "https://chat.example.com"
                 );
                 assert_eq!(
-                    state.api_origin_secondary.lock().unwrap().as_deref(),
+                    state.routes.snapshot().secondary.as_deref(),
                     Some("https://lan.example.com")
                 );
             }

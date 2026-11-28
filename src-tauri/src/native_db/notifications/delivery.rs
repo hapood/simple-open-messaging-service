@@ -563,7 +563,7 @@ mod tests {
         let owner = owner();
         let work = owner.capture_database_work().unwrap();
         deliver(work.clone(), show(), policy(), true,
-            || Ok(super::super::content::PresentationFacts { visible: true, focused: true, open_thread: Some(7) }),
+            || Ok(super::super::content::PresentationFacts { visible: true, focused: true, active_thread: Some(7) }),
             |prepared| async move {
                 assert!(matches!(prepared.command, NotificationCommand::Remove { target: NotificationTarget::Thread { thread_id: 7 } }));
                 Ok(DeliveryResult::Accepted { handle: None })

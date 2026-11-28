@@ -4,7 +4,8 @@ use crate::{ServerSessionState, API_BODY_INACTIVITY_TIMEOUT, API_HEADERS_TIMEOUT
 use std::sync::Arc;
 
 /// Bounded admission for scheduled short API requests, independent of long-lived SSE streams.
-static SHORT_REQUEST_SEMAPHORE: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(8);
+pub(crate) static SHORT_REQUEST_SEMAPHORE: tokio::sync::Semaphore =
+    tokio::sync::Semaphore::const_new(8);
 
 /// A network intent carries its login, credential, clients and endpoint candidates through every
 /// await and retry. No request can resolve successor credentials or publish global origin changes.
@@ -84,21 +85,7 @@ impl LoginRequest {
         owner: Arc<LoginConnection>,
     ) -> Result<Self, String> {
         let credential = owner.credential().map_err(|e| e.to_string())?;
-        let active = proxy
-            .api_origin
-            .lock()
-            .map_err(|_| "origin lock poisoned")?
-            .clone();
-        let primary = proxy
-            .api_origin_primary
-            .lock()
-            .map_err(|_| "primary lock poisoned")?
-            .clone();
-        let secondary = proxy
-            .api_origin_secondary
-            .lock()
-            .map_err(|_| "secondary lock poisoned")?
-            .clone();
+        let snapshot = proxy.routes.snapshot();
         let route = |origin: String| {
             let client = proxy.api_client(&origin);
             (origin, client)
@@ -106,9 +93,9 @@ impl LoginRequest {
         let request = Self {
             owner,
             credential,
-            active: route(active),
-            primary: route(primary),
-            secondary: secondary.map(route),
+            active: route(snapshot.active.clone()),
+            primary: route(snapshot.primary.clone()),
+            secondary: snapshot.secondary.clone().map(route),
         };
         request.owner.assert_active().map_err(|e| e.to_string())?;
         Ok(request)

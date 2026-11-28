@@ -78,12 +78,12 @@ pub(crate) enum NotificationCommand {
 pub(crate) struct PresentationFacts {
     pub(crate) visible: bool,
     pub(crate) focused: bool,
-    /// None when the host is not displaying a conversation.
-    pub(crate) open_thread: Option<i32>,
+    /// The single active selection, not all open panes; None when no conversation is selected.
+    pub(crate) active_thread: Option<i32>,
 }
 
 pub(crate) fn visible_thread(facts: PresentationFacts) -> Option<i32> {
-    facts.open_thread.filter(|id| facts.visible && facts.focused && *id > 0)
+    facts.active_thread.filter(|id| facts.visible && facts.focused && *id > 0)
 }
 
 /// Recheck queued shows against the host facts at execution time. Existing removals
@@ -333,7 +333,7 @@ mod tests {
     #[test]
     fn queued_show_is_removed_when_its_thread_becomes_active() {
         let show = NotificationCommand::Show(content(&thread(), false, copy()));
-        let facts = PresentationFacts { visible: true, focused: true, open_thread: Some(7) };
+        let facts = PresentationFacts { visible: true, focused: true, active_thread: Some(7) };
         assert_eq!(observe_before_delivery(show, facts), NotificationCommand::Remove { target: NotificationTarget::Thread { thread_id: 7 } });
         assert_eq!(observe_before_delivery(NotificationCommand::Remove { target: NotificationTarget::Thread { thread_id: 7 } },
             PresentationFacts::default()), NotificationCommand::Remove { target: NotificationTarget::Thread { thread_id: 7 } });
@@ -342,8 +342,8 @@ mod tests {
     #[test]
     fn queued_show_is_preserved_when_another_thread_or_unfocused_window_is_observed() {
         for facts in [
-            PresentationFacts { visible: true, focused: true, open_thread: Some(8) },
-            PresentationFacts { visible: true, focused: false, open_thread: Some(7) },
+            PresentationFacts { visible: true, focused: true, active_thread: Some(8) },
+            PresentationFacts { visible: true, focused: false, active_thread: Some(7) },
         ] {
             let show = NotificationCommand::Show(content(&thread(), false, copy()));
             assert_eq!(observe_before_delivery(show.clone(), facts), show);
@@ -357,7 +357,7 @@ mod tests {
             for visible in [false, true] {
                 for focused in [false, true] {
                     assert_eq!(visible_thread(PresentationFacts {
-                        visible, focused, open_thread: Some(id),
+                        visible, focused, active_thread: Some(id),
                     }), (id > 0 && visible && focused).then_some(id));
                 }
             }
@@ -369,7 +369,7 @@ mod tests {
         let preferences = super::super::super::preferences::NotificationPreferences {
             enabled: true, sound: true, private_preview: false,
         };
-        for (visible, focused, open_thread, suppressed) in [
+        for (visible, focused, active_thread, suppressed) in [
             (true, true, Some(7), true),
             (false, true, Some(7), false),
             (true, false, Some(7), false),
@@ -377,7 +377,7 @@ mod tests {
             (true, true, None, false),
         ] {
             let command = command_with_facts(&thread(), &preferences,
-                PresentationFacts { visible, focused, open_thread }, copy());
+                PresentationFacts { visible, focused, active_thread }, copy());
             assert_eq!(matches!(command, NotificationCommand::Remove { .. }), suppressed);
         }
     }

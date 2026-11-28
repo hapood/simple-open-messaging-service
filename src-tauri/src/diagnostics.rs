@@ -147,7 +147,7 @@ async fn post_diagnostics_bundle(
     manifest: &serde_json::Value,
     request_id: &str,
 ) -> Result<i64, String> {
-    let origin = proxy.api_origin.lock().expect("origin lock").clone();
+    let origin = proxy.routes.snapshot().active.clone();
     let url = format!("{}/api/v1/diagnostics/report", origin.trim_end_matches('/'));
     let client = proxy.api_client(&origin);
     let part = reqwest::multipart::Part::bytes(bundle.to_vec())

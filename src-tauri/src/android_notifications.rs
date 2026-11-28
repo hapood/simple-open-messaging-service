@@ -113,7 +113,7 @@ fn facts() -> Result<PresentationFacts, String> {
         Ok(PresentationFacts {
             visible,
             focused,
-            open_thread: (thread > 0).then_some(thread),
+            active_thread: (thread > 0).then_some(thread),
         })
     })
 }

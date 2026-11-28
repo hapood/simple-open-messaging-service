@@ -8,7 +8,7 @@ use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
-/// All drains in this file target one thread id because the open-thread guard is a process
+/// All drains in this file target one thread id because the active-thread guard is a process
 /// static and tests run concurrently: every observation stays `Some(THREAD_ID)`.
 const THREAD_ID: i64 = 52;
 
@@ -21,9 +21,7 @@ fn sentinel(repair: bool) -> &'static str {
 }
 
 fn origins(proxy: &ServerSessionState, origin: &str) {
-    *proxy.api_origin.lock().unwrap() = origin.into();
-    *proxy.api_origin_primary.lock().unwrap() = origin.into();
-    *proxy.api_origin_secondary.lock().unwrap() = None;
+    proxy.routes.replace(origin.into(), None);
 }
 
 fn seed_group_thread(conn: &mut Connection, user_id: i64, meta_end: &str) {
@@ -168,7 +166,7 @@ async fn delayed_drain_futures_reject_end_and_repair_before_any_work() {
     for repair in [false, true] {
         let proxy = ServerSessionState::new();
         let intent = fixture(&proxy, true);
-        OPEN_THREAD_ID.store(THREAD_ID, std::sync::atomic::Ordering::Release);
+        ACTIVE_THREAD_ID.store(THREAD_ID, std::sync::atomic::Ordering::Release);
         let group = Box::pin(sync_group_meta_thread(intent.clone(), THREAD_ID));
         let mut tombstone_intent = intent.clone();
         let tombstone = Box::pin(sync_tombstone_thread(&mut tombstone_intent, THREAD_ID));
@@ -216,7 +214,7 @@ async fn stalled_drain_sockets_close_on_end_or_repair() {
             let proxy = ServerSessionState::new();
             origins(&proxy, &format!("http://{}", server.local_addr().unwrap()));
             let intent = fixture(&proxy, group);
-            OPEN_THREAD_ID.store(THREAD_ID, std::sync::atomic::Ordering::Release);
+            ACTIVE_THREAD_ID.store(THREAD_ID, std::sync::atomic::Ordering::Release);
             let (started, ready) = tokio::sync::oneshot::channel();
             let expected = if group {
                 "GET /api/v1/user/group-meta?threadId=52&after=0&take=100&through=2 HTTP/1.1\r\n"
@@ -424,7 +422,7 @@ async fn tombstone_cutoff_exhaustion_keeps_last_applied_cursor_and_rereads_maxim
     let proxy = ServerSessionState::new();
     origins(&proxy, &format!("http://{}", server.local_addr().unwrap()));
     let mut intent = fixture(&proxy, false);
-    OPEN_THREAD_ID.store(THREAD_ID, std::sync::atomic::Ordering::Release);
+    ACTIVE_THREAD_ID.store(THREAD_ID, std::sync::atomic::Ordering::Release);
     let owner = intent.work.owner().clone();
     let serving = tokio::spawn(async move {
         let (mut first, _) = server.accept().await.unwrap();
@@ -491,7 +489,7 @@ async fn tombstone_drain_commits_through_the_captured_connection() {
     let proxy = ServerSessionState::new();
     origins(&proxy, &format!("http://{}", server.local_addr().unwrap()));
     let intent = fixture(&proxy, false);
-    OPEN_THREAD_ID.store(THREAD_ID, std::sync::atomic::Ordering::Release);
+    ACTIVE_THREAD_ID.store(THREAD_ID, std::sync::atomic::Ordering::Release);
     origins(&proxy, "http://127.0.0.1:1");
     let serving = tokio::spawn(async move {
         let (mut socket, _) = server.accept().await.unwrap();

@@ -241,14 +241,11 @@ async fn probe_client_compat(origin: &str) -> bool {
 
 /// Apply a chosen origin + mode, notifying the shared SSE supervisor when the endpoint changes
 /// (API/SSE lockstep). An unchanged endpoint does not schedule a reconnect.
+#[cfg(test)]
 pub(crate) fn activate_origin(state: &ServerSessionState, origin: &str, mode: OriginMode) {
-    let prev = {
-        let mut g = state.api_origin.lock().expect("origin lock");
-        std::mem::replace(&mut *g, origin.to_string())
-    };
-    *state.origin_mode.lock().expect("mode lock") = mode;
-    if prev.as_str() != origin {
-        warn!("origin: {prev} → {origin} ({mode:?})");
+    let previous = state.routes.snapshot();
+    if state.routes.select(&previous, origin, mode) == Some(true) {
+        warn!("origin: {} → {origin} ({mode:?})", previous.active);
         // Nudge the shared SSE supervisor to reopen on the changed endpoint. Notify holds one permit.
         state.origin_notify.notify_one();
     }
@@ -259,11 +256,16 @@ pub(crate) fn activate_origin(state: &ServerSessionState, origin: &str, mode: Or
 /// no secondary is configured (dev / no SOMS_LAN_DOMAIN). Single-flight (one race at a time). Never adopts
 /// a dead origin: if both fail, the active is left as-is.
 pub(crate) async fn pick_origin_race(state: &ServerSessionState) -> Option<String> {
-    pick_origin_race_with_commit(state, |origin, mode| {
-        activate_origin(state, origin, mode);
-        true
-    })
-    .await
+    let _guard = state.select_lock.lock().await;
+    let routes = state.routes.snapshot();
+    let secondary = routes.secondary.as_deref()?;
+    let (origin, mode) = race_origin_candidates(&routes.primary, secondary).await?;
+    let changed = state.routes.select(&routes, &origin, mode)?;
+    if changed {
+        warn!("origin: {} → {origin} ({mode:?})", routes.active);
+        state.origin_notify.notify_one();
+    }
+    Some(origin)
 }
 
 /// Probe captured endpoints without reading or publishing global routing state. Dropping the
@@ -292,41 +294,6 @@ pub(crate) async fn race_origin_candidates(
             }
         }
     }
-}
-
-/// Probe without holding a lifecycle lock; the caller admits the synchronous selection commit.
-pub(crate) async fn pick_origin_race_with_commit(
-    state: &ServerSessionState,
-    commit: impl FnOnce(&str, OriginMode) -> bool,
-) -> Option<String> {
-    let _guard = state.select_lock.lock().await;
-    let Some(secondary) = state
-        .api_origin_secondary
-        .lock()
-        .expect("secondary lock")
-        .clone()
-    else {
-        #[cfg(debug_assertions)]
-        log::info!("origin race: no secondary configured; keeping primary");
-        return None; // no fallback configured → no-op
-    };
-    let active = state.api_origin.lock().expect("origin lock").clone();
-    let primary = state
-        .api_origin_primary
-        .lock()
-        .expect("primary lock")
-        .clone();
-    #[cfg(debug_assertions)]
-    log::info!("origin race: start active={active} primary={primary} secondary={secondary}");
-
-    // Single-flight the race. Do not serially "cheap-check" the current address first: when it is down,
-    // every such check burns a full timeout before the reachable fallback is even considered.
-    let chosen = race_origin_candidates(&primary, &secondary).await;
-    let Some((origin, mode)) = chosen else {
-        warn!("pick_origin_race: both origins unreachable; staying on {active}");
-        return None;
-    };
-    commit(&origin, mode).then_some(origin)
 }
 
 /// Shared Rust runtime origin switch; Android's OS adapter does not select endpoints.
@@ -399,7 +366,50 @@ impl Drop for RequestCancellation {
     }
 }
 
+type PreparedRequests = std::collections::HashMap<(usize, String), (std::time::Instant, CancellationToken)>;
+static PREPARED_REQUESTS: std::sync::OnceLock<std::sync::Mutex<PreparedRequests>> = std::sync::OnceLock::new();
+
+fn prepared_requests() -> &'static std::sync::Mutex<PreparedRequests> {
+    PREPARED_REQUESTS.get_or_init(Default::default)
+}
+
+fn preparation_key(proxy: &ServerSessionState, id: &str) -> (usize, String) {
+    (std::sync::Arc::as_ptr(&proxy.http_cancels) as usize, id.to_string())
+}
+
+/// Two-phase IPC admission: the renderer waits for this acknowledgement before it can
+/// dispatch or cancel. Expired reservations fail closed, never become fresh requests.
+fn prepare_request(proxy: &ServerSessionState, id: &str) -> Result<(), String> {
+    let mut prepared = prepared_requests().lock().map_err(|_| "request preparation poisoned")?;
+    prepared.retain(|_, (created, _)| created.elapsed() < Duration::from_secs(60));
+    let key = preparation_key(proxy, id);
+    if prepared.contains_key(&key) || proxy.http_cancels.lock().map_err(|_| "http cancellation registry poisoned")?.contains_key(id) {
+        return Err("duplicate request cancellation ID".into());
+    }
+    if prepared.len() >= 1024 { return Err("too many prepared HTTP requests".into()); }
+    prepared.insert(key, (std::time::Instant::now(), CancellationToken::new()));
+    Ok(())
+}
+
+fn claim_prepared_request(proxy: &ServerSessionState, id: String) -> Result<RequestCancellation, String> {
+    let mut prepared = prepared_requests().lock().map_err(|_| "request preparation poisoned")?;
+    let (created, token) = prepared.remove(&preparation_key(proxy, &id)).ok_or("HTTP request preparation missing or expired")?;
+    if created.elapsed() >= Duration::from_secs(60) { return Err("HTTP request preparation expired".into()); }
+    let mut registry = proxy.http_cancels.lock().map_err(|_| "http cancellation registry poisoned")?;
+    if registry.contains_key(&id) { return Err("duplicate request cancellation ID".into()); }
+    registry.insert(id.clone(), token.clone());
+    Ok(RequestCancellation { token, request_id: Some(id), registry: proxy.http_cancels.clone() })
+}
+
 pub(crate) fn cancel_registered_request(proxy: &ServerSessionState, request_id: &str) -> bool {
+    // Keep the preparation lock until checking the active map, so claim cannot move
+    // a token between the two registries while cancellation is searching for it.
+    let Ok(prepared) = prepared_requests().lock() else { return false; };
+    if let Some((_, token)) = prepared.get(&preparation_key(proxy, request_id)) {
+        let was_active = !token.is_cancelled();
+        token.cancel();
+        return was_active;
+    }
     let Ok(registry) = proxy.http_cancels.lock() else {
         return false;
     };
@@ -410,6 +420,16 @@ pub(crate) fn cancel_registered_request(proxy: &ServerSessionState, request_id: 
         }
     }
     false
+}
+
+/// Transport lifetime only; server authorization still validates the captured credential.
+#[derive(Clone, Copy, Default, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum RequestScope {
+    #[default]
+    Session,
+    Authentication,
+    Server,
 }
 
 #[tauri::command]
@@ -423,25 +443,78 @@ pub(crate) async fn http_request(
     body: Option<Vec<u8>>,
     binary: bool,
     replay_safe: bool,
+    scope: Option<RequestScope>,
+    short_request: Option<bool>,
+    prepare_only: Option<bool>,
+    prepared: Option<bool>,
 ) -> Result<HttpResponseResult, String> {
     if !is_allowed_http_path(&path) {
         return Err(format!(
             "http_request: only /api/v1/* and /uploads/* allowed (got {path})"
         ));
     }
-    let cancellation = RequestCancellation::register(&proxy, req_id)?;
-    perform_http_request_with_events(
-        Some(&app),
-        &proxy,
-        method,
-        path,
-        headers,
-        body,
-        binary,
-        replay_safe,
-        Some(cancellation.token()),
-    )
-    .await
+    if prepare_only.unwrap_or(false) {
+        prepare_request(&proxy, req_id.as_deref().ok_or("preparation requires a request ID")?)?;
+        return Ok(HttpResponseResult { status: 204, headers: Default::default(), text: None, bytes: None });
+    }
+    let cancellation = if prepared.unwrap_or(false) {
+        claim_prepared_request(&proxy, req_id.ok_or("prepared request requires an ID")?)?
+    } else {
+        RequestCancellation::register(&proxy, req_id)?
+    };
+    let owner = match scope.unwrap_or_default() {
+        RequestScope::Session => Some(crate::native_db::active_login()?),
+        RequestScope::Authentication | RequestScope::Server => None,
+    };
+    perform_scheduled_http_request(Some(&app), &proxy, method, path, headers, body, binary,
+        replay_safe, cancellation.token(), owner, short_request.unwrap_or(false)).await
+}
+
+async fn perform_scheduled_http_request(
+    app: Option<&tauri::AppHandle>,
+    proxy: &ServerSessionState,
+    method: String,
+    path: String,
+    headers: std::collections::HashMap<String, String>,
+    body: Option<Vec<u8>>,
+    binary: bool,
+    replay_safe: bool,
+    cancel: &CancellationToken,
+    owner: Option<std::sync::Arc<crate::login_connection::LoginConnection>>,
+    short_request: bool,
+) -> Result<HttpResponseResult, String> {
+    let intent = owner.as_ref().map(|owner| {
+        crate::login_request::LoginRequest::capture(&proxy, owner.clone())
+    }).transpose()?;
+    let owner_cancel = owner.as_ref().map(|owner| owner.cancellation()).unwrap_or_default();
+    // Capture all credentials before admission. Independent auth/server requests never borrow
+    // business authority; logout uses its own previously captured revocation operation.
+    let credential = if let Some(intent) = &intent {
+        Some(intent.endpoint()?.credential)
+    } else {
+        // Authentication and server metadata are public routes, not a way to borrow
+        // an unrelated active login's bearer. Native logout owns its captured bearer.
+        None
+    };
+    let independent = CapturedHttpRoute::capture(proxy);
+    let operation = async {
+        let _permit = if short_request && is_short_http_path(&path, binary, &headers) {
+            Some(crate::login_request::SHORT_REQUEST_SEMAPHORE.acquire().await
+                .map_err(|_| "short request admission closed".to_string())?)
+        } else { None };
+        perform_http_request_with_events(
+            app, proxy, method, path, headers, body, binary, replay_safe,
+            Some(cancel), intent, credential, independent,
+        ).await
+    };
+    let result = tokio::select! {
+        biased;
+        _ = cancel.cancelled() => Err("http_request cancelled".into()),
+        _ = owner_cancel.cancelled() => Err("native login superseded".into()),
+        result = operation => result,
+    };
+    if let Some(owner) = owner { owner.assert_active().map_err(|e| e.to_string())?; }
+    result
 }
 
 #[tauri::command]
@@ -452,9 +525,46 @@ pub(crate) fn cancel_http_request(
     cancel_registered_request(&proxy, &req_id)
 }
 
-pub(crate) async fn perform_http_request_with_events(
-    app: Option<&tauri::AppHandle>,
-    proxy: &ServerSessionState,
+fn is_short_http_path(path: &str, binary: bool, headers: &std::collections::HashMap<String, String>) -> bool {
+    let path = path.split('?').next().unwrap_or(path);
+    path.starts_with("/api/v1/") && !binary
+        && !["/api/v1/upload", "/api/v1/uploads"].iter().any(|prefix| path == *prefix || path.starts_with(&format!("{prefix}/")))
+        && !headers.get("accept").is_some_and(|value| value.contains("text/event-stream"))
+}
+
+struct CapturedHttpRoute {
+    active: (String, reqwest::Client),
+    primary: (String, reqwest::Client),
+    secondary: Option<(String, reqwest::Client)>,
+}
+impl CapturedHttpRoute {
+    fn capture(proxy: &ServerSessionState) -> Self {
+        Self::capture_with_client(proxy, |origin| proxy.api_client(origin))
+    }
+
+    fn capture_with_client(
+        proxy: &ServerSessionState,
+        mut client: impl FnMut(&str) -> reqwest::Client,
+    ) -> Self {
+        let snapshot = proxy.routes.snapshot();
+        let mut route = |origin: &str| (origin.to_string(), client(origin));
+        Self {
+            active: route(&snapshot.active),
+            primary: route(&snapshot.primary),
+            secondary: snapshot.secondary.as_deref().map(route),
+        }
+    }
+    async fn select(&mut self) -> Option<String> {
+        let secondary = self.secondary.as_ref()?;
+        let (origin, _) = race_origin_candidates(&self.primary.0, &secondary.0).await?;
+        self.active = if origin == self.primary.0 { self.primary.clone() } else { secondary.clone() };
+        Some(origin)
+    }
+}
+
+async fn perform_http_request_with_events(
+    _app: Option<&tauri::AppHandle>,
+    _proxy: &ServerSessionState,
     method: String,
     path: String,
     headers: std::collections::HashMap<String, String>,
@@ -462,15 +572,22 @@ pub(crate) async fn perform_http_request_with_events(
     binary: bool,
     replay_safe: bool,
     cancel: Option<&CancellationToken>,
+    mut intent: Option<crate::login_request::LoginRequest>,
+    credential: Option<String>,
+    mut independent: CapturedHttpRoute,
 ) -> Result<HttpResponseResult, String> {
     let method = reqwest::Method::from_bytes(method.as_bytes()).unwrap_or(reqwest::Method::GET);
     let mut attempt = 0u8;
     let upstream = loop {
-        let api_origin = proxy.api_origin.lock().expect("origin lock").clone();
+        let (api_origin, client) = if let Some(intent) = &intent {
+            let endpoint = intent.endpoint()?;
+            (endpoint.origin, endpoint.client)
+        } else {
+            independent.active.clone()
+        };
         let target = format!("{}{}", api_origin, path);
-        let client = proxy.api_client(&api_origin);
         let mut req = client.request(method.clone(), &target);
-        if let Some(t) = proxy.session_token() {
+        if let Some(t) = &credential {
             req = req.header("authorization", format!("Bearer {}", t));
         }
         for name in [
@@ -507,10 +624,15 @@ pub(crate) async fn perform_http_request_with_events(
                     return Err(format!("http_request send: {e}"));
                 }
 
-                let selected = pick_origin_race(proxy).await;
-                if let (Some(app), Some(origin)) = (app, selected.as_ref()) {
-                    let _ = app.emit("active-origin-changed", origin);
-                }
+                let selected = if let Some(captured) = &intent {
+                    if let Some((endpoint, _)) = captured.select_endpoint().await {
+                        let origin = endpoint.origin.clone();
+                        intent = Some(captured.at_endpoint(&endpoint));
+                        Some(origin)
+                    } else { None }
+                } else {
+                    independent.select().await
+                };
                 if replay_safe && attempt == 0 && selected.is_some() {
                     attempt = 1;
                     warn!("http_request {target} failed; replaying on active origin");
@@ -582,6 +704,10 @@ pub(crate) async fn perform_http_request_with_events(
 }
 
 #[cfg(test)]
+#[path = "tests/proxy_scheduler_tests.rs"]
+mod scheduler_tests;
+
+#[cfg(test)]
 mod realtime_origin_tests {
     use super::*;
     use futures_util::FutureExt;
@@ -589,7 +715,8 @@ mod realtime_origin_tests {
     #[tokio::test]
     async fn only_changed_endpoints_schedule_a_stream_wake() {
         let state = ServerSessionState::new();
-        let primary = state.api_origin.lock().unwrap().clone();
+        let primary = state.routes.snapshot().active.clone();
+        state.routes.replace(primary.clone(), Some("http://127.0.0.1:39999".into()));
         activate_origin(&state, &primary, OriginMode::Primary);
         assert!(state.origin_notify.notified().now_or_never().is_none());
         let secondary = "http://127.0.0.1:39999";

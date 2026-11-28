@@ -592,8 +592,7 @@ mod tests {
     }
     fn proxy(origin: &str) -> ServerSessionState {
         let proxy = ServerSessionState::new();
-        *proxy.api_origin.lock().unwrap() = origin.into();
-        *proxy.api_origin_primary.lock().unwrap() = origin.into();
+        proxy.routes.replace(origin.into(), None);
         proxy
     }
     async fn dispatch(

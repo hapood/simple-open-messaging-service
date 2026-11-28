@@ -20,8 +20,7 @@ fn intent(origin: &str) -> NativeHistoryIntent {
         .commit("interval-token".into())
         .unwrap();
     let proxy = ServerSessionState::new();
-    *proxy.api_origin.lock().unwrap() = origin.into();
-    *proxy.api_origin_primary.lock().unwrap() = origin.into();
+    proxy.routes.replace(origin.into(), None);
     let work = owner.capture_database_work().unwrap();
     NativeHistoryIntent {
         request: LoginRequest::capture(&proxy, owner).unwrap(),

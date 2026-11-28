@@ -50,6 +50,7 @@ mod proxy;
 mod realtime;
 #[cfg(desktop)]
 mod secure_storage;
+mod route_configuration;
 mod server_setup;
 mod sse;
 #[cfg(target_os = "android")]
@@ -64,7 +65,9 @@ fn exit_app(app: tauri::AppHandle) {
     app.exit(0);
 }
 
-pub(crate) use proxy::{activate_origin, is_network_failure, pick_origin_race, runtime_switch};
+#[cfg(test)]
+pub(crate) use proxy::activate_origin;
+pub(crate) use proxy::{is_network_failure, pick_origin_race, runtime_switch};
 
 use std::borrow::Cow;
 use std::fs;
@@ -129,7 +132,7 @@ const ORIGIN_PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 /// the config form (persisted in `app_state`); desktop dev can still override via SOMS_API_ORIGIN.
 const DEFAULT_API_ORIGIN: &str = "https://example.com:7667";
 
-/// Which origin `api_origin` currently holds, for the native fallback state machine.
+/// Which configured origin is active in the native route snapshot.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum OriginMode {
     /// Active origin = the primary (normal operation).
@@ -143,20 +146,8 @@ enum OriginMode {
 /// command handler sees the same live values.
 #[derive(Clone)]
 pub(crate) struct ServerSessionState {
-    /// The ACTIVE origin — every transport (api_request/media_request/proxy_media/upload_stream_file)
-    /// and the desktop SSE supervisor read THIS. Swapped in-place by `select_origin` on fallback, so the
-    /// read sites never change. Cold-start select_origin may flip it from the persisted primary to the
-    /// secondary before the first request flies.
-    api_origin: Arc<Mutex<String>>,
-    /// The configured primary origin. Setup installs it together with the backup; failover changes
-    /// only the active address. `is_origin_configured` therefore stays stable across network switches.
-    api_origin_primary: Arc<Mutex<String>>,
-    /// The optional LAN (secondary) origin (field-2). None = no fallback configured → select_origin is a
-    /// complete no-op and the shell behaves exactly as before.
-    api_origin_secondary: Arc<Mutex<Option<String>>>,
-    /// Which origin `api_origin` currently holds. No periodic proactive switch-back — movement either way
-    /// is handled by re-racing on the next network-level failure.
-    origin_mode: Arc<Mutex<OriginMode>>,
+    /// Configured candidates, active endpoint and mode are one atomic immutable publication.
+    routes: Arc<route_configuration::RouteConfiguration>,
     /// Woken on a committed origin switch (select_origin) so the desktop SSE supervisor cancels its current
     /// stream and reopens on the new active origin immediately — API and SSE never split on a single active
     /// origin. Race-free (Notify holds one permit). Mobile follows via the shared EncryptedSharedPreferences
@@ -207,12 +198,9 @@ impl ServerSessionState {
             .and_then(|s| validate_origin(&s))
             .unwrap_or_else(|| DEFAULT_API_ORIGIN.to_string());
         ServerSessionState {
-            api_origin: Arc::new(Mutex::new(initial_origin.clone())),
-            // Pre-setup best guess: primary == active == the boot origin (env/default). setup() overrides both
-            // from app_state; the secondary starts None until setup restores the saved configuration.
-            api_origin_primary: Arc::new(Mutex::new(initial_origin.clone())),
-            api_origin_secondary: Arc::new(Mutex::new(None)),
-            origin_mode: Arc::new(Mutex::new(OriginMode::Primary)),
+            routes: Arc::new(route_configuration::RouteConfiguration::new(
+                initial_origin.clone(),
+            )),
             origin_notify: Arc::new(Notify::new()),
             select_lock: Arc::new(tokio::sync::Mutex::new(())),
             server_setup: Arc::new(server_setup::ServerSetup::default()),
@@ -236,17 +224,15 @@ impl ServerSessionState {
     /// Return a reusable reqwest client for `origin`, retaining clients across configured routes
     /// (active, primary, secondary) so failover/probing never churns pools.
     fn api_client(&self, origin: &str) -> reqwest::Client {
-        let active = self.api_origin.lock().ok().map(|g| g.clone());
-        let primary = self.api_origin_primary.lock().ok().map(|g| g.clone());
-        let secondary = self.api_origin_secondary.lock().ok().and_then(|g| g.clone());
+        let routes = self.routes.snapshot();
         let mut g = self.api_http.lock().expect("api_http lock");
         if let Some(client) = g.get(origin) {
             return client.clone();
         }
         g.retain(|cached, _| {
-            active.as_deref() == Some(cached.as_str())
-                || primary.as_deref() == Some(cached.as_str())
-                || secondary.as_deref() == Some(cached.as_str())
+            routes.active == *cached
+                || routes.primary == *cached
+                || routes.secondary.as_deref() == Some(cached.as_str())
         });
         let client = http_client_for(origin);
         g.insert(origin.to_string(), client.clone());
@@ -528,7 +514,7 @@ pub fn run() {
                     native_db::attention::native_thread_feed_changes,
                     native_db::attention::native_db_advance_thread_read,
                     native_db::attention::native_db_project_thread_attention,
-                    native_db::attention::native_db_set_open_thread,
+                    native_db::attention::native_db_set_active_thread,
                     native_db::preferences::native_db_get_preference,
                     native_db::preferences::native_db_put_preference,
                     native_db::preferences::native_db_delete_preference,
@@ -643,7 +629,7 @@ pub fn run() {
                     native_db::attention::native_thread_feed_changes,
                     native_db::attention::native_db_advance_thread_read,
                     native_db::attention::native_db_project_thread_attention,
-                    native_db::attention::native_db_set_open_thread,
+                    native_db::attention::native_db_set_active_thread,
                     native_db::preferences::native_db_get_preference,
                     native_db::preferences::native_db_put_preference,
                     native_db::preferences::native_db_delete_preference,

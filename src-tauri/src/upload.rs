@@ -275,7 +275,7 @@ async fn upload_resumable_open_file(
         .expect("upload_cancels lock")
         .register(client_message_id);
     let transfer = async {
-    let origin = proxy.api_origin.lock().expect("origin lock").clone();
+    let origin = proxy.routes.snapshot().active.clone();
     let client = proxy.api_client(&origin);
     let token = proxy.session_token();
     let auth = |request: reqwest::RequestBuilder| {

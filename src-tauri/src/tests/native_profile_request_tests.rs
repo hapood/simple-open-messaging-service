@@ -15,8 +15,7 @@ fn demand() -> Value {
 }
 fn origin(proxy: &ServerSessionState, listener: &TcpListener) {
     let origin = format!("http://{}", listener.local_addr().unwrap());
-    *proxy.api_origin.lock().unwrap() = origin.clone();
-    *proxy.api_origin_primary.lock().unwrap() = origin;
+    proxy.routes.replace(origin, None);
 }
 
 #[tokio::test]

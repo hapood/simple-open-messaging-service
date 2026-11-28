@@ -167,12 +167,13 @@ impl FeedIntent {
 // This is not the cache lifetime lock: network waits must not block account cleanup.
 static THREAD_FEED_SYNC: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-// The thread currently open in the UI, used only for desktop notification suppression.
-static OPEN_THREAD_ID: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+// The single active selection in the UI, not the set of open threads.
+// Used only for desktop notification suppression while the window is visible and focused.
+static ACTIVE_THREAD_ID: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
 
 #[cfg(desktop)]
-pub(crate) fn open_thread_id() -> Option<i64> {
-    let value = OPEN_THREAD_ID.load(std::sync::atomic::Ordering::Acquire);
+pub(crate) fn active_thread_id() -> Option<i64> {
+    let value = ACTIVE_THREAD_ID.load(std::sync::atomic::Ordering::Acquire);
     (value > 0).then_some(value)
 }
 
@@ -186,20 +187,16 @@ struct LocalEventPayload {
     data: serde_json::Value,
 }
 
-/// Update the currently open thread for desktop notification suppression.
+/// Update the single active thread selection for desktop notification suppression.
 #[tauri::command]
-pub(crate) async fn native_db_set_open_thread(
+pub(crate) async fn native_db_set_active_thread(
     _app: tauri::AppHandle,
-    user_id: i64,
     thread_id: i64,
 ) -> Result<(), String> {
-    if user_id <= 0 {
-        return Err("invalid user id".into());
-    }
     if thread_id <= 0 {
-        OPEN_THREAD_ID.store(0, std::sync::atomic::Ordering::Release);
+        ACTIVE_THREAD_ID.store(0, std::sync::atomic::Ordering::Release);
     } else {
-        OPEN_THREAD_ID.store(thread_id, std::sync::atomic::Ordering::Release);
+        ACTIVE_THREAD_ID.store(thread_id, std::sync::atomic::Ordering::Release);
     }
     #[cfg(desktop)]
     if let Err(error) =

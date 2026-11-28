@@ -271,7 +271,7 @@ commands.allow = [
   "native_db_write_profile_namespace_tomb",
   "native_db_write_profile_tomb",
   "native_db_set_message_media_status",
-  "native_db_set_open_thread",
+  "native_db_set_active_thread",
 ]
 
 [[permission]]

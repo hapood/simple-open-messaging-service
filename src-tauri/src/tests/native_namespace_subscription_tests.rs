@@ -90,8 +90,7 @@ async fn namespace_watch_emits_empty_then_ready_and_lru_short_circuits_rewatch()
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let proxy = ServerSessionState::new();
     let origin = format!("http://{}", listener.local_addr().unwrap());
-    *proxy.api_origin.lock().unwrap() = origin.clone();
-    *proxy.api_origin_primary.lock().unwrap() = origin;
+    proxy.routes.replace(origin, None);
     let intent = fixture(&proxy);
     let count = Arc::new(AtomicUsize::new(0));
     let calls = count.clone();
@@ -180,8 +179,7 @@ async fn namespace_pending_round_resolves_after_a_wake() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let proxy = ServerSessionState::new();
     let origin = format!("http://{}", listener.local_addr().unwrap());
-    *proxy.api_origin.lock().unwrap() = origin.clone();
-    *proxy.api_origin_primary.lock().unwrap() = origin;
+    proxy.routes.replace(origin, None);
     let intent = fixture(&proxy);
     let (released, received) = oneshot::channel::<()>();
     let server = tokio::spawn(async move {
@@ -221,8 +219,7 @@ async fn namespace_unrecoverable_answer_writes_a_tomb_and_ends_terminal() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let proxy = ServerSessionState::new();
     let origin = format!("http://{}", listener.local_addr().unwrap());
-    *proxy.api_origin.lock().unwrap() = origin.clone();
-    *proxy.api_origin_primary.lock().unwrap() = origin;
+    proxy.routes.replace(origin, None);
     let intent = fixture(&proxy);
     let server = tokio::spawn(async move {
         let (mut socket, _) = listener.accept().await.unwrap();

@@ -29,9 +29,7 @@ fn owner() -> Arc<LoginConnection> {
 }
 
 fn origins(proxy: &ServerSessionState, origin: &str) {
-    *proxy.api_origin.lock().unwrap() = origin.into();
-    *proxy.api_origin_primary.lock().unwrap() = origin.into();
-    *proxy.api_origin_secondary.lock().unwrap() = None;
+    proxy.routes.replace(origin.into(), None);
 }
 
 fn intent(owner: &Arc<LoginConnection>, proxy: &ServerSessionState) -> NativeHistoryIntent {

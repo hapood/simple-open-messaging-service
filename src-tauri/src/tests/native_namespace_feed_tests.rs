@@ -98,8 +98,7 @@ async fn drain_applies_pages_advances_the_cursor_and_warms_bindings() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let proxy = ServerSessionState::new();
     let origin = format!("http://{}", listener.local_addr().unwrap());
-    *proxy.api_origin.lock().unwrap() = origin.clone();
-    *proxy.api_origin_primary.lock().unwrap() = origin;
+    proxy.routes.replace(origin, None);
     let (owner, work, request) = owned(&proxy);
     // Seed a live binding an older change coordinate; the page's change 5
     // must expire it, and the warm round must converge it again.

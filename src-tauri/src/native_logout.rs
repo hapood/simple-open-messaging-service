@@ -164,7 +164,7 @@ impl LogoutCoordinator {
         let transition = state.auth_lifecycle.enter(crate::auth_lifecycle::Phase::Logout)?;
         let owner = crate::native_db::active_login()?;
         let token = owner.credential().map_err(|e| e.to_string())?;
-        let origin = state.api_origin.lock().map_err(|_| "origin lock poisoned")?.clone();
+        let origin = state.routes.snapshot().active.clone();
         let origin = crate::validate_origin(&origin).ok_or("invalid logout origin")?;
         let mut operation = LogoutOperation::new(state.api_client(&origin), origin, token, transition);
         operation.session = Some(owner.id().clone());

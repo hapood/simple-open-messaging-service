@@ -11,11 +11,7 @@ pub(crate) fn get_api_origin(state: tauri::State<'_, ServerSessionState>) -> Str
     // JS never needs the active for URL building, and seeding the JS signal from the stable primary keeps
     // the origin-change SSE effect from firing on a fallback switch. The active MODE is exposed via
     // get_origin_mode (for the "正在使用内网服务器" indicator).
-    state
-        .api_origin_primary
-        .lock()
-        .expect("primary lock")
-        .clone()
+    state.routes.snapshot().primary.clone()
 }
 
 /// The exact endpoint every Rust-owned HTTP transport uses right now. Unlike `get_api_origin` this is
@@ -23,7 +19,7 @@ pub(crate) fn get_api_origin(state: tauri::State<'_, ServerSessionState>) -> Str
 /// without changing either configured address.
 #[tauri::command]
 pub(crate) fn get_active_api_origin(state: tauri::State<'_, ServerSessionState>) -> String {
-    state.api_origin.lock().expect("origin lock").clone()
+    state.routes.snapshot().active.clone()
 }
 
 /// Whether a real backend origin has been configured — the authoritative "has a SOMS backend been
@@ -34,8 +30,8 @@ pub(crate) fn get_active_api_origin(state: tauri::State<'_, ServerSessionState>)
 pub(crate) fn is_origin_configured(state: tauri::State<'_, ServerSessionState>) -> bool {
     // Reads the PRIMARY — a fallback swap to the secondary must NOT flip this to "configured" (nor must a
     // swap back trip it). The guard asks "did the user configure a real backend" = primary configured.
-    let origin = state.api_origin_primary.lock().expect("primary lock");
-    !origin.is_empty() && *origin != DEFAULT_API_ORIGIN
+    let routes = state.routes.snapshot();
+    !routes.primary.is_empty() && routes.primary != DEFAULT_API_ORIGIN
 }
 
 /// The configured LAN (secondary) origin, or null when no fallback is configured (dev, or servers without
@@ -44,18 +40,14 @@ pub(crate) fn is_origin_configured(state: tauri::State<'_, ServerSessionState>) 
 pub(crate) fn get_api_origin_secondary(
     state: tauri::State<'_, ServerSessionState>,
 ) -> Option<String> {
-    state
-        .api_origin_secondary
-        .lock()
-        .expect("secondary lock")
-        .clone()
+    state.routes.snapshot().secondary.clone()
 }
 
 /// Which origin is currently ACTIVE — for the "正在使用内网服务器" indicator. `primary` = normal;
 /// `secondary` = the primary was unreachable and a switch moved to the LAN origin.
 #[tauri::command]
 pub(crate) fn get_origin_mode(state: tauri::State<'_, ServerSessionState>) -> String {
-    match *state.origin_mode.lock().expect("mode lock") {
+    match state.routes.snapshot().mode {
         OriginMode::Primary => "primary".to_string(),
         OriginMode::Secondary => "secondary".to_string(),
     }
@@ -70,7 +62,7 @@ pub(crate) async fn init_pick_origin(
     state: tauri::State<'_, ServerSessionState>,
 ) -> Result<String, String> {
     pick_origin_race(&state).await;
-    Ok(state.api_origin.lock().expect("origin lock").clone())
+    Ok(state.routes.snapshot().active.clone())
 }
 
 /// Activate the native login identity captured by the original authentication operation. The expected

@@ -1,4 +1,6 @@
-use crate::{activate_origin, validate_origin, OriginMode, ServerSessionState};
+use crate::{validate_origin, ServerSessionState};
+#[cfg(test)]
+use crate::{activate_origin, OriginMode};
 use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
 use tokio_util::sync::CancellationToken;
@@ -250,9 +252,12 @@ pub(crate) fn persist(state: &ServerSessionState, origins: ServerOrigins) -> Res
 }
 
 fn apply(state: &ServerSessionState, origins: &ServerOrigins) {
-    *state.api_origin_primary.lock().expect("primary lock") = origins.primary.clone();
-    *state.api_origin_secondary.lock().expect("secondary lock") = origins.secondary.clone();
-    activate_origin(state, &origins.primary, OriginMode::Primary);
+    if state
+        .routes
+        .replace(origins.primary.clone(), origins.secondary.clone())
+    {
+        state.origin_notify.notify_one();
+    }
 }
 
 pub(crate) fn restore(state: &ServerSessionState) -> Result<(), String> {
@@ -411,13 +416,13 @@ mod tests {
             firebase_config: None,
         };
         persist(&state, single.clone()).unwrap();
-        assert_eq!(*state.api_origin.lock().unwrap(), single.primary);
-        assert!(state.api_origin_secondary.lock().unwrap().is_none());
-        assert_eq!(*state.origin_mode.lock().unwrap(), OriginMode::Primary);
+        assert_eq!(state.routes.snapshot().active, single.primary);
+        assert!(state.routes.snapshot().secondary.is_none());
+        assert_eq!(state.routes.snapshot().mode, OriginMode::Primary);
         let restored = ServerSessionState::new();
         restore(&restored).unwrap();
-        assert_eq!(*restored.api_origin_primary.lock().unwrap(), single.primary);
-        assert!(restored.api_origin_secondary.lock().unwrap().is_none());
+        assert_eq!(restored.routes.snapshot().primary, single.primary);
+        assert!(restored.routes.snapshot().secondary.is_none());
         forget_saved_server();
     }
 
@@ -425,7 +430,7 @@ mod tests {
     fn failed_save_leaves_the_live_configuration_unchanged() {
         let _filesystem = device_database();
         let state = ServerSessionState::new();
-        let before = state.api_origin.lock().unwrap().clone();
+        let before = state.routes.snapshot().active.clone();
         let preferences = crate::native_db::preferences_connection().unwrap();
         preferences
             .with_database(|conn| {
@@ -450,7 +455,7 @@ mod tests {
             })
             .unwrap();
         assert!(result.is_err());
-        assert_eq!(*state.api_origin.lock().unwrap(), before);
+        assert_eq!(state.routes.snapshot().active, before);
     }
 
     #[test]
@@ -458,7 +463,7 @@ mod tests {
         let _filesystem = device_database();
         let preferences = crate::native_db::preferences_connection().unwrap();
         let state = ServerSessionState::new();
-        let before = state.api_origin.lock().unwrap().clone();
+        let before = state.routes.snapshot().active.clone();
         forget_saved_server();
         preferences
             .with_database(|conn| {
@@ -492,7 +497,7 @@ mod tests {
             })
             .unwrap();
         assert!(result.is_err());
-        assert_eq!(*state.api_origin.lock().unwrap(), before);
+        assert_eq!(state.routes.snapshot().active, before);
     }
 
     // The database guard is held on the test thread for the whole test. The body runs on a
@@ -582,7 +587,7 @@ mod tests {
             .unwrap();
         let saved: ServerOrigins = serde_json::from_str(&raw).unwrap();
         assert_eq!(saved, origins);
-        assert_eq!(*state.api_origin_primary.lock().unwrap(), origins.primary);
+        assert_eq!(state.routes.snapshot().primary, origins.primary);
         assert_eq!(
             crate::native_db::preferences_connection()
                 .unwrap()

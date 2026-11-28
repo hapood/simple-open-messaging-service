@@ -41,8 +41,7 @@ async fn setup() -> (
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let proxy = ServerSessionState::new();
     let origin = format!("http://{}", listener.local_addr().unwrap());
-    *proxy.api_origin.lock().unwrap() = origin.clone();
-    *proxy.api_origin_primary.lock().unwrap() = origin;
+    proxy.routes.replace(origin, None);
     let intent = fixture(&proxy);
     seed(&intent);
     let (sender, received) = mpsc::unbounded_channel();
