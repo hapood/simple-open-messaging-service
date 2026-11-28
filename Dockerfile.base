@@ -123,3 +123,7 @@ FROM ${NODE_IMAGE}
 LABEL org.opencontainers.image.title="soms-base"
 COPY --from=caddy-build /usr/bin/caddy /usr/bin/caddy
 RUN chmod +x /usr/bin/caddy
+# ca-certificates: Caddy's HTTPS to the DNS-01 provider + Let's Encrypt.
+# ffmpeg: media transcoding at runtime.
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates ffmpeg \
+    && rm -rf /var/lib/apt/lists/*

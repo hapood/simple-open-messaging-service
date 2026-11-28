@@ -70,12 +70,6 @@ COPY database ./database
 #   docker build -t soms-base:latest -f Dockerfile.base .   (scripts/build-image.sh does this for you)
 FROM ${SOMS_BASE} AS runtime
 WORKDIR /app
-# ca-certificates: Caddy's HTTPS to the DNS-01 provider + Let's Encrypt.
-# This RUN precedes ARG APP_VERSION on purpose: build-image.sh injects a new APP_VERSION on every
-# release, and any layer before the ARG would be invalidated by the bump — re-downloading ffmpeg
-# (and everything below) for each release.
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates ffmpeg \
-    && rm -rf /var/lib/apt/lists/*
 # App version, injected at build time (scripts/build-image.sh reads package.json). Surfaces in
 # `docker image inspect`, /client/compat (serverVersion), and /somfp/discovery. Default "dev".
 ARG APP_VERSION=dev
