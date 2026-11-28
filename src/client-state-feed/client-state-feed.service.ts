@@ -1,9 +1,4 @@
-import {
-  HttpStatus,
-  Injectable,
-  Logger,
-  OnModuleDestroy,
-} from '@nestjs/common';
+import { HttpStatus, Injectable, Logger } from '@nestjs/common';
 import { PushService } from '../push/push.service.js';
 import { and, eq, gt, lte, sql } from 'drizzle-orm';
 import { account, clientStateFeed } from '../database/schema.js';
@@ -76,14 +71,8 @@ export interface GroupRequestReadEvent {
 
 /** Transports the account's compacted client state heads; owns no domain lifecycle. */
 @Injectable()
-export class ClientStateFeedService implements OnModuleDestroy {
+export class ClientStateFeedService {
   private readonly logger = new Logger(ClientStateFeedService.name);
-  private static readonly PUSH_COALESCE_MS = 1_000;
-  private readonly pushHighWatermarks = new Map<number, number>();
-  private readonly pendingPushTimers = new Map<
-    number,
-    ReturnType<typeof setTimeout>
-  >();
 
   constructor(
     private readonly database: DatabaseService,
@@ -121,18 +110,7 @@ export class ClientStateFeedService implements OnModuleDestroy {
       case 'thread-meta-head':
         break;
     }
-    const current = this.pushHighWatermarks.get(update.userId) ?? 0;
-    if (update.feedId <= current) return;
-    this.pushHighWatermarks.set(update.userId, update.feedId);
-    if (this.pendingPushTimers.has(update.userId)) return;
-    const timer = setTimeout(() => {
-      this.pendingPushTimers.delete(update.userId);
-      const feedId = this.pushHighWatermarks.get(update.userId);
-      if (feedId !== undefined)
-        this.sse.onStateFeedUpdated(update.userId, { feedId });
-    }, ClientStateFeedService.PUSH_COALESCE_MS);
-    timer.unref?.();
-    this.pendingPushTimers.set(update.userId, timer);
+    this.sse.onStateFeedUpdated(update.userId, { feedId: update.feedId });
   }
 
   private enqueueRequestWake(target: {
@@ -150,12 +128,6 @@ export class ClientStateFeedService implements OnModuleDestroy {
 
   notifyFeedUpdates(updates: Iterable<PendingClientStateFeedUpdate>): void {
     for (const update of updates) this.notifyFeedUpdated(update);
-  }
-
-  onModuleDestroy(): void {
-    for (const timer of this.pendingPushTimers.values()) clearTimeout(timer);
-    this.pendingPushTimers.clear();
-    this.pushHighWatermarks.clear();
   }
 
   async readEndId(userId: number): Promise<number> {

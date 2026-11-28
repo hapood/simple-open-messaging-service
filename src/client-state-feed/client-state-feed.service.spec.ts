@@ -10,54 +10,49 @@ describe('ClientStateFeedService', () => {
       { onStateFeedUpdated: vi.fn(), onThreadFeedUpdated } as never,
       { enqueueForRequestAttention } as never,
     );
-    try {
-      service.notifyFeedUpdates([
-        { kind: 'personal-request-arrival', userId: 1, feedId: 9 },
-        {
-          kind: 'group-request-read',
-          userId: 1,
-          feedId: 8,
-          threadFeedEndId: 4,
-        },
-        { kind: 'thread-feed', userId: 2, feedId: 4, threadFeedEndId: 50 },
-        { kind: 'personal-request-read', userId: 1, feedId: 7 },
-        {
-          kind: 'group-request-arrival',
-          userId: 3,
-          feedId: 6,
-          threadFeedEndId: 11,
-        },
-      ]);
-      // Independent events never merge into one wake; PushService coalesces
-      // per session by coordinate.
-      expect(enqueueForRequestAttention).toHaveBeenCalledTimes(4);
-      expect(enqueueForRequestAttention).toHaveBeenNthCalledWith(1, [
-        { userId: 1, stateFeedEndId: 9, convergence: false },
-      ]);
-      expect(enqueueForRequestAttention).toHaveBeenNthCalledWith(2, [
-        { userId: 1, threadFeedEndId: 4, convergence: true },
-      ]);
-      expect(enqueueForRequestAttention).toHaveBeenNthCalledWith(3, [
-        { userId: 1, stateFeedEndId: 7, convergence: true },
-      ]);
-      expect(enqueueForRequestAttention).toHaveBeenNthCalledWith(4, [
-        { userId: 3, threadFeedEndId: 11, convergence: false },
-      ]);
-      expect(onThreadFeedUpdated).toHaveBeenCalledWith(1, {
+    service.notifyFeedUpdates([
+      { kind: 'personal-request-arrival', userId: 1, feedId: 9 },
+      {
+        kind: 'group-request-read',
+        userId: 1,
+        feedId: 8,
         threadFeedEndId: 4,
-      });
-      expect(onThreadFeedUpdated).toHaveBeenCalledWith(2, {
-        threadFeedEndId: 50,
-      });
-      expect(onThreadFeedUpdated).toHaveBeenCalledWith(3, {
+      },
+      { kind: 'thread-feed', userId: 2, feedId: 4, threadFeedEndId: 50 },
+      { kind: 'personal-request-read', userId: 1, feedId: 7 },
+      {
+        kind: 'group-request-arrival',
+        userId: 3,
+        feedId: 6,
         threadFeedEndId: 11,
-      });
-    } finally {
-      service.onModuleDestroy();
-    }
+      },
+    ]);
+    // Independent events never merge into one wake; PushService coalesces
+    // per session by coordinate.
+    expect(enqueueForRequestAttention).toHaveBeenCalledTimes(4);
+    expect(enqueueForRequestAttention).toHaveBeenNthCalledWith(1, [
+      { userId: 1, stateFeedEndId: 9, convergence: false },
+    ]);
+    expect(enqueueForRequestAttention).toHaveBeenNthCalledWith(2, [
+      { userId: 1, threadFeedEndId: 4, convergence: true },
+    ]);
+    expect(enqueueForRequestAttention).toHaveBeenNthCalledWith(3, [
+      { userId: 1, stateFeedEndId: 7, convergence: true },
+    ]);
+    expect(enqueueForRequestAttention).toHaveBeenNthCalledWith(4, [
+      { userId: 3, threadFeedEndId: 11, convergence: false },
+    ]);
+    expect(onThreadFeedUpdated).toHaveBeenCalledWith(1, {
+      threadFeedEndId: 4,
+    });
+    expect(onThreadFeedUpdated).toHaveBeenCalledWith(2, {
+      threadFeedEndId: 50,
+    });
+    expect(onThreadFeedUpdated).toHaveBeenCalledWith(3, {
+      threadFeedEndId: 11,
+    });
   });
-  it('does not merge independent thread heads and does not suppress them with an unchanged state head', async () => {
-    vi.useFakeTimers();
+  it('forwards state and thread feed hints immediately to SseService for leading-edge throttling', () => {
     const onStateFeedUpdated = vi.fn();
     const onThreadFeedUpdated = vi.fn();
     const service = new ClientStateFeedService(
@@ -67,138 +62,27 @@ describe('ClientStateFeedService', () => {
         enqueueForRequestAttention: vi.fn().mockResolvedValue(undefined),
       } as never,
     );
-    try {
-      service.notifyFeedUpdates([
-        { kind: 'thread-feed', userId: 1, feedId: 9, threadFeedEndId: 4 },
-        { kind: 'thread-feed', userId: 1, feedId: 7, threadFeedEndId: 8 },
-        { kind: 'thread-feed', userId: 2, feedId: 2, threadFeedEndId: 3 },
-      ]);
-      expect(onThreadFeedUpdated).toHaveBeenCalledTimes(3);
-      expect(onThreadFeedUpdated).toHaveBeenCalledWith(1, {
-        threadFeedEndId: 4,
-      });
-      expect(onThreadFeedUpdated).toHaveBeenCalledWith(1, {
-        threadFeedEndId: 8,
-      });
-      expect(onThreadFeedUpdated).toHaveBeenCalledWith(2, {
-        threadFeedEndId: 3,
-      });
-      await vi.advanceTimersByTimeAsync(1000);
-      expect(onStateFeedUpdated).toHaveBeenCalledWith(1, { feedId: 9 });
-      service.notifyFeedUpdated({
-        kind: 'thread-feed',
-        userId: 1,
-        feedId: 9,
-        threadFeedEndId: 10,
-      });
-      expect(onThreadFeedUpdated).toHaveBeenLastCalledWith(1, {
-        threadFeedEndId: 10,
-      });
-      await vi.advanceTimersByTimeAsync(1000);
-      expect(onStateFeedUpdated).toHaveBeenCalledTimes(2);
-    } finally {
-      service.onModuleDestroy();
-      vi.useRealTimers();
-    }
-  });
-  it('coalesces committed SSE high watermarks in an independent window per feed', async () => {
-    vi.useFakeTimers();
-    const onStateFeedUpdated = vi.fn();
-    const service = new ClientStateFeedService(
-      undefined as never,
-      { onStateFeedUpdated } as never,
-      {
-        enqueueForRequestAttention: vi.fn().mockResolvedValue(undefined),
-      } as never,
-    );
-
     service.notifyFeedUpdates([
-      { kind: 'personal-request-read', userId: 1, feedId: 4 },
-      { kind: 'personal-request-read', userId: 2, feedId: 3 },
-      { kind: 'personal-request-read', userId: 1, feedId: 9 },
-      { kind: 'personal-request-read', userId: 2, feedId: 2 },
+      { kind: 'thread-feed', userId: 1, feedId: 9, threadFeedEndId: 4 },
+      { kind: 'thread-feed', userId: 1, feedId: 7, threadFeedEndId: 8 },
+      { kind: 'thread-feed', userId: 2, feedId: 2, threadFeedEndId: 3 },
+      { kind: 'personal-request-arrival', userId: 3, feedId: 5 },
     ]);
-
-    expect(onStateFeedUpdated).not.toHaveBeenCalled();
-    await vi.advanceTimersByTimeAsync(1_000);
-    expect(onStateFeedUpdated).toHaveBeenCalledTimes(2);
-    expect(onStateFeedUpdated).toHaveBeenCalledWith(1, { feedId: 9 });
-    expect(onStateFeedUpdated).toHaveBeenCalledWith(2, { feedId: 3 });
-    service.onModuleDestroy();
-    vi.useRealTimers();
-  });
-
-  it('does not share one feed coalescing window with a later feed', async () => {
-    vi.useFakeTimers();
-    const onStateFeedUpdated = vi.fn();
-    const service = new ClientStateFeedService(
-      undefined as never,
-      { onStateFeedUpdated } as never,
-      {
-        enqueueForRequestAttention: vi.fn().mockResolvedValue(undefined),
-      } as never,
-    );
-
-    service.notifyFeedUpdated({
-      kind: 'personal-request-read',
-      userId: 1,
-      feedId: 4,
+    expect(onThreadFeedUpdated).toHaveBeenCalledTimes(3);
+    expect(onThreadFeedUpdated).toHaveBeenCalledWith(1, {
+      threadFeedEndId: 4,
     });
-    await vi.advanceTimersByTimeAsync(500);
-    service.notifyFeedUpdated({
-      kind: 'personal-request-read',
-      userId: 2,
-      feedId: 8,
+    expect(onThreadFeedUpdated).toHaveBeenCalledWith(1, {
+      threadFeedEndId: 8,
     });
-    await vi.advanceTimersByTimeAsync(500);
-
-    expect(onStateFeedUpdated).toHaveBeenCalledTimes(1);
-    expect(onStateFeedUpdated).toHaveBeenLastCalledWith(1, { feedId: 4 });
-
-    await vi.advanceTimersByTimeAsync(500);
-    expect(onStateFeedUpdated).toHaveBeenCalledTimes(2);
-    expect(onStateFeedUpdated).toHaveBeenLastCalledWith(2, { feedId: 8 });
-    service.onModuleDestroy();
-    vi.useRealTimers();
-  });
-
-  it('retains each feed high watermark beyond its one-second window', async () => {
-    vi.useFakeTimers();
-    const onStateFeedUpdated = vi.fn();
-    const service = new ClientStateFeedService(
-      undefined as never,
-      { onStateFeedUpdated } as never,
-      {
-        enqueueForRequestAttention: vi.fn().mockResolvedValue(undefined),
-      } as never,
-    );
-
-    service.notifyFeedUpdated({
-      kind: 'personal-request-read',
-      userId: 1,
-      feedId: 9,
+    expect(onThreadFeedUpdated).toHaveBeenCalledWith(2, {
+      threadFeedEndId: 3,
     });
-    await vi.advanceTimersByTimeAsync(1_000);
-    service.notifyFeedUpdated({
-      kind: 'personal-request-read',
-      userId: 1,
-      feedId: 7,
-    });
-    await vi.advanceTimersByTimeAsync(1_000);
-
-    expect(onStateFeedUpdated).toHaveBeenCalledTimes(1);
-    expect(onStateFeedUpdated).toHaveBeenLastCalledWith(1, { feedId: 9 });
-
-    service.notifyFeedUpdated({
-      kind: 'personal-request-read',
-      userId: 1,
-      feedId: 10,
-    });
-    await vi.advanceTimersByTimeAsync(1_000);
-    expect(onStateFeedUpdated).toHaveBeenCalledTimes(2);
-    expect(onStateFeedUpdated).toHaveBeenLastCalledWith(1, { feedId: 10 });
-    service.onModuleDestroy();
-    vi.useRealTimers();
+    expect(onStateFeedUpdated).toHaveBeenCalledTimes(4);
+    expect(onStateFeedUpdated).toHaveBeenNthCalledWith(1, 1, { feedId: 9 });
+    expect(onStateFeedUpdated).toHaveBeenNthCalledWith(2, 1, { feedId: 7 });
+    expect(onStateFeedUpdated).toHaveBeenNthCalledWith(3, 2, { feedId: 2 });
+    expect(onStateFeedUpdated).toHaveBeenNthCalledWith(4, 3, { feedId: 5 });
   });
 
   it.each([false, true])(
